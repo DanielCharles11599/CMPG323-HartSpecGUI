@@ -1,0 +1,44 @@
+# This is the HartSpec GUI Quality Control Robot (CI Pipeline)
+name: HartSpec GUI Continuous Integration
+
+# The robot runs every time a developer asks to join their work to the main branch [1]
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  quality-control:
+    # Use Ubuntu, as it matches the observatory's server environment [2]
+    runs-on: ubuntu-latest
+
+    steps:
+    # Get the latest code from the repository
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Set up Python 3.11 (the recommended version for this project) [2]
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # Step A: Prepare the Tools
+    # Installs the exact versions of Streamlit, Plotly, and Astropy [3, 4]
+    - name: Step A - Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # Step B: Neatness Check (Linting)
+    # Checks that code is tidy and no lines are longer than 120 characters [1]
+    - name: Step B - Neatness Check
+      run: |
+        pip install flake8
+        flake8 . --max-line-length=120
+
+    # Step C & D: Math Accuracy and Thoroughness
+    # Runs pytest using reference data to ensure math is accurate to 6 significant figures [5, 6]
+    # Also fails if developers tested less than 70% of the scientific code [1, 7, 8]
+    - name: Step C & D - Math Accuracy and Coverage
+      run: |
+        pytest --cov=clc --cov-fail-under=70
