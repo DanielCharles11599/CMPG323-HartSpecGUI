@@ -1,1 +1,8 @@
+[server]
+port = 8501
+address = '192.168.x.x'     # Observatory intranet IP
+enableCORS = false
+enableXsrfProtection = true
 
+[theme]
+primaryColor = '#2E75B6'
