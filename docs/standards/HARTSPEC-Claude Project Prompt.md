@@ -57,6 +57,7 @@ Server deployment root is `/opt/hartspec/`. Repo layout mirrors this:
 ```
 /opt/hartspec/
 ├── hartspec_gui/
+│   ├── Home.py              # Streamlit entry point — run via `streamlit run hartspec_gui/Home.py`
 │   ├── pages/              # Streamlit multipage stages, numbered consecutively
 │   │   ├── 01_Source_Browser.py
 │   │   ├── 02_File_Loader.py
@@ -74,7 +75,7 @@ Server deployment root is `/opt/hartspec/`. Repo layout mirrors this:
 └── pss/                      # PSS database text files used for calibration
 
 <repo root>/
-├── docs/                     # User Manual, Developer Guide, analysis diagrams, standards 
+├── docs/                     # User Manual, Developer Guide, analysis diagrams
 └── tests/                    # Automated tests + reference spectra for regression testing
 ```
 
@@ -137,6 +138,82 @@ imported directly as libraries. Rules:
   original CLI output to **6 significant figures** — treat this as a hard regression
   requirement, not a nice-to-have, and mention it when writing or reviewing fitting/
   calibration code
+- **Standardized commenting** — apply the same commenting style on every page/module,
+  regardless of who's prompting Claude or which machine it's written on:
+  - Every file starts with a short header comment: what the file does, which FR(s) it
+    implements (e.g. `# 04_Baseline_Editor.py — FR-05/06/07: interactive baseline block
+    selection + polynomial order comparison`)
+  - Every function gets a docstring (purpose, args, returns) — not just a one-liner if
+    the function does anything non-trivial
+  - Inline comments explain *why*, not *what* (skip `# increment counter`; keep
+    `# recompute completed_stages from session JSON, not a separate counter, to avoid drift`)
+  - Any deviation from the style guide or build spec gets a `# TODO: confirm against
+    design — see build spec §3` comment rather than being silently resolved either way
+  - Keep this consistent enough that a page written by one teammate reads like it was
+    written by the same person who wrote everyone else's — that's the point of
+    standardizing it at all
+
+## Local setup — before building anything
+
+Every teammate runs these steps once, on their own machine, before writing page code.
+Goal: confirm Streamlit launches in the browser with a clean environment before anyone
+starts on real pipeline pages.
+
+1. **Create the virtual environment** (Python 3.11, per spec):
+   ```
+   python3.11 -m venv .venv
+   ```
+2. **Activate it**:
+   - macOS/Linux: `source .venv/bin/activate`
+   - Windows: `.venv\Scripts\activate`
+3. **Confirm `requirements.txt`** at the repo root with the pinned versions from the build
+   spec, plus `python-dotenv` for `.env` loading:
+   ```
+   streamlit==1.32.0
+   plotly==5.20.0
+   dash==2.16.0
+   astropy>=5.3,<6.0
+   numpy>=1.24
+   scipy>=1.10
+   pandas>=2.0
+   pytest>=7.4
+   pytest-cov>=4.0
+   python-dotenv
+   ```
+4. **Install**:
+   ```
+   pip install -r requirements.txt
+   ```
+5. **Set up `.env`**: copy `.env.example` to `.env`, fill in local paths (they don't need
+   to point at real HartRAO data yet — any local folder works for a first smoke test):
+   ```
+   FITS_ARCHIVE_PATH=./data/fits
+   SESSIONS_PATH=./data/sessions
+   PSS_DATA_PATH=./data/pss
+   DASH_BRIDGE_PORT=8050
+   STREAMLIT_AUTH_ENABLED=false
+   ```
+6. **Create the entry point** so there's something to run before pages 01–08 exist.
+   Streamlit multipage apps need one top-level script alongside `pages/` — the entry
+   point is `hartspec_gui/Home.py`:
+   ```python
+   import streamlit as st
+
+   st.set_page_config(page_title="HARTSPEC GUI", layout="wide")
+   st.write("HARTSPEC GUI — environment OK. Pages will appear in the sidebar once added.")
+   ```
+7. **Run it**:
+   ```
+   streamlit run hartspec_gui/Home.py
+   ```
+   This opens the app at `http://localhost:8501` in your browser. Once real numbered
+   pages land in `pages/`, Streamlit auto-lists them in the sidebar nav — no change to
+   `Home.py` needed. If port 8050 (Dash bridge) is needed later, that's separate and only
+   comes up once the Baseline Editor (page 04) work starts.
+
+Confirm this works — clean venv, install, browser tab opens — before writing any
+pipeline-stage code. If it doesn't, that's an environment problem to fix now, not
+something to debug three pages in.
 
 ## Out of scope — don't suggest these
 

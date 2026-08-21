@@ -297,8 +297,6 @@ page files.
 
 ## 6. What's intentionally not locked down yet
 
-- Whether the dark-mode toggle is user-facing in-app or just a documented alternate
-  theme — needs a product decision, see the Streamlit note in §5.
 - Mobile/tablet breakpoints — not needed, intranet desktop tool only.
 - Exact Plotly axis/gridline styling — use the "axis lines only, no gridlines" rule from
   §4 but pixel values weren't mocked in detail; use judgment and flag in review if unsure.
