@@ -23,6 +23,7 @@ import streamlit as st
 
 from utils import session_store, sidebar, styles
 
+
 CURRENT_STAGE = 1
 STAGE_KEY = "01_source_browser"
 
