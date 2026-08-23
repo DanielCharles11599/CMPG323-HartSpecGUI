@@ -41,10 +41,11 @@ import time
 import streamlit as st
 
 from utils import fits_ingest, session_store, sidebar, styles
+from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
-LOAD_FILENAME = "faulty.fits"  # fallback target until page 01 selection is wired
+LOAD_FILENAME = "spectrum_002.fits"  # fallback target until page 01 selection is wired
 
 # --------------------------------------------------------------------------
 # Sample data -- reproduces the build spec's exact sample rows (§7, page 02).
@@ -117,7 +118,26 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
 
 
 def _get_target_filename() -> str:
-    """Which file this page loads -- session-state driven, see module docstring."""
+    """Which file this page loads.
+
+    Prefers the real Page 01 handoff: st.session_state["pipeline_data"]
+    [SOURCE_BROWSER_STAGE_KEY]["selected_files"][0], set by
+    01_Source_Browser.py when the user clicks "Load into Pipeline". Falls
+    back to st.session_state["file_loader_target_filename"] /
+    LOAD_FILENAME so this page can still be run/tested standalone, without
+    going through page 01 first.
+
+    TODO: page 01 supports selecting multiple files at once
+    (selected_files is a list) -- per explicit confirmation, this
+    deliberately loads only the FIRST selected file for now. Full
+    multi-file handling is deferred to the FR-03 validation-table redesign,
+    where the build spec's own sample data already shows multiple files
+    (a spectrum + a PSS file) validated together.
+    """
+    pipeline_selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    selected = pipeline_selection.get("selected_files") or []
+    if selected:
+        return selected[0]
     return st.session_state.setdefault("file_loader_target_filename", LOAD_FILENAME)
 
 

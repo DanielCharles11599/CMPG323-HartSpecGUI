@@ -37,6 +37,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from utils.env import load_dotenv_if_present
+
+load_dotenv_if_present()
+
 # Default FITS archive root per the project's mandated folder layout
 # (/data/fits/, read-only, separate from the app directory). Overridable
 # via HARTSPEC_FITS_ARCHIVE_ROOT so tests/dev machines without a real
@@ -56,6 +60,15 @@ def get_archive_root() -> Path:
 # (e.g. `import File_Manage as FE` inside File_Manage.py itself), not a
 # Python package -- so we add it to sys.path rather than assuming
 # `from clc import load_file` works with a package-style import.
+#
+# CURRENT LAYOUT (confirmed 2026-08-23, may change): clc/ sits one level
+# ABOVE hartspec_gui/ -- i.e. a sibling of hartspec_gui/, not inside it.
+# This differs from the folder structure documented in the project's own
+# spec (clc/ as a symlink INSIDE hartspec_gui/, sibling of utils/) -- the
+# team is deciding whether to move it inside hartspec_gui/ to match the
+# spec. If/when that happens, this needs to go back to parents[1]:
+#   CLC_DIR = Path(__file__).resolve().parents[1] / "clc"   # inside hartspec_gui/
+# For now, parents[2] is correct for the real on-disk layout:
 CLC_DIR = Path(__file__).resolve().parents[2] / "clc"
 if str(CLC_DIR) not in sys.path:
     sys.path.insert(0, str(CLC_DIR))

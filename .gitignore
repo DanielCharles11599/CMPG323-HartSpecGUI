@@ -11,6 +11,7 @@ venv/
 # Ignore Python cache files
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Ignore temporary system files
 .DS_Store
