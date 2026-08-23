@@ -4,16 +4,27 @@ Layout reference: HARTSPEC-Page_Build_Spec.md §7, page 02. Column/row widths
 below are expressed as flex proportions derived from that spec's pixel
 values, not literal pixels -- see utils/styles.py module docstring for why.
 
-Two integration points are stubbed with TODOs rather than guessed, per the
-project's "ask, don't invent spec details" rule:
+`utils/styles.py` on main dropped `render_table_header` / `render_table_row`
+(the team is moving tables toward `st.dataframe`/`pandas.Styler`, matching
+the FR-02 spec's "clean Pandas DataFrame ... st.dataframe()" requirement).
+This revision is a MINIMAL fix to restore working tests against that
+change -- it recreates the two removed helpers as page-local private
+functions with identical visual output, so nothing else about page
+behavior changes yet. The header-fields table's move to a real
+`st.dataframe`/`Styler`, and the validation section's move to
+`st.warning`/`st.error` blocks per the new FR-03 UI spec, are separate,
+deliberate steps -- not folded in here.
+
+Two integration points are still stubbed with TODOs, per the project's
+"ask, don't invent spec details" rule:
 
 1. The FR-02 load itself currently *simulates* progress rather than calling
-   into clc/load_file.py, because that module's function signature /
-   progress-callback shape (if any) hasn't been confirmed yet.
+   into utils/fits_ingest.py's real ingestion -- wiring that in is the next
+   confirmed step.
 2. The FR-03 Quarantine button updates session state and logs the action,
-   but doesn't yet call a real "move file out of /data/fits/" function,
-   because clc/File_check.py's quarantine entry point (if one already
-   exists) hasn't been confirmed.
+   but doesn't yet call a real "move file out of /data/fits/" function --
+   also a separate step (fits_ingest.py doesn't have that function yet
+   either).
 
 Both are marked with `# TODO: confirm against design` per the build spec's
 own instruction (§8) for exactly this situation.
@@ -55,13 +66,62 @@ HEADER_FIELDS_ROWS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Page-local replacements for the two table helpers that were removed from
+# utils/styles.py. Same visual output as before (flex-row divs against the
+# theme's table-header-bg/table-header-text/bg-panel-alt tokens). Kept
+# private (leading underscore) and page-local on purpose -- if page 04/06/
+# 07/08 need the same thing, promote this back to utils/styles.py as a
+# shared helper instead of copy-pasting it per page; not done here without
+# confirmation since styles.py is actively being edited by the team.
+# --------------------------------------------------------------------------
+def _render_table_header(columns: list[tuple[str, str]]) -> None:
+    theme = styles.get_theme()
+    cells = "".join(
+        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10px; '
+        f'font-weight:600; color:{theme["table-header-text"]};">{label}</div>'
+        for label, width in columns
+    )
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; height:{styles.TABLE_HEADER_HEIGHT}px;
+                    background-color:{theme['table-header-bg']}; border-radius:{styles.PANEL_RADIUS}px
+                    {styles.PANEL_RADIUS}px 0 0;">
+          {cells}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
+    theme = styles.get_theme()
+    bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
+    cells = "".join(
+        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; '
+        f'color:{theme["text-body"]};">{content}</div>'
+        for content, width in cells_html
+    )
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; height:{styles.TABLE_ROW_HEIGHT}px;
+                    background-color:{bg}; border-bottom:1px solid {theme['border-subtle']};">
+          {cells}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _simulate_fits_load() -> None:
     """Animate the FR-02 load progress bar once per session.
 
     TODO: confirm against design -- replace this simulation with a real
-    call into clc/load_file.py once its signature (and whether it exposes
-    a progress callback) is confirmed. Until then this only demonstrates
-    the UI: track/fill/caption computed at runtime per the build spec.
+    call into utils/fits_ingest.py's ingest_fits_file() once we've agreed
+    how the page should surface per-file progress (fits_ingest.py's current
+    call is effectively instantaneous for a single file -- there's no
+    natural "64% loaded" signal to hook a progress bar to, so this needs a
+    design decision, not just a code change).
     """
     placeholder = st.empty()
     theme = styles.get_theme()
@@ -126,10 +186,10 @@ def _render_load_progress() -> None:
 def _quarantine_file(filename: str) -> None:
     """Mark a file quarantined in session state and log the action.
 
-    TODO: confirm against design -- this should call the real
-    clc/File_check.py quarantine entry point (moving the file out of the
-    read-only /data/fits/ archive) once that function is confirmed to
-    exist; right now this only updates UI-facing session state.
+    TODO: confirm against design -- should call a real quarantine function
+    (moving the file out of the read-only /data/fits/ archive into
+    Flagged/) once that's built into utils/fits_ingest.py and confirmed;
+    right now this only updates UI-facing session state.
     """
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
@@ -140,7 +200,7 @@ def _render_validation_table() -> None:
     quarantined = st.session_state.get("file_loader_quarantined", set())
 
     styles.render_panel_open("")
-    styles.render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
+    _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
     for idx, row in enumerate(VALIDATION_ROWS):
         striped = idx % 2 == 1
@@ -150,7 +210,7 @@ def _render_validation_table() -> None:
         if row["file"] in {r["file"] for r in VALIDATION_ROWS if r["status"] == "error"}:
             # The flagged row gets a real inline Quarantine button, so it's
             # laid out with st.columns (matching the header's proportions)
-            # instead of the static render_table_row HTML helper.
+            # instead of the static _render_table_row helper.
             is_quarantined = row["file"] in quarantined
             status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
 
@@ -185,7 +245,7 @@ def _render_validation_table() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
         else:
             badge = styles.render_badge("OK", "ok")
-            styles.render_table_row(
+            _render_table_row(
                 [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
                 striped=striped,
             )
@@ -215,10 +275,10 @@ def _render_header_fields_table() -> None:
         )
     else:
         col_width = f"{100 / len(visible_columns):.4f}%"
-        styles.render_table_header([(c, col_width) for c in visible_columns])
+        _render_table_header([(c, col_width) for c in visible_columns])
         for idx, row in enumerate(HEADER_FIELDS_ROWS):
             values = [row[HEADER_FIELDS_COLUMNS.index(c)] for c in visible_columns]
-            styles.render_table_row([(v, col_width) for v in values], striped=(idx % 2 == 1))
+            _render_table_row([(v, col_width) for v in values], striped=(idx % 2 == 1))
     styles.render_panel_close()
 
 
