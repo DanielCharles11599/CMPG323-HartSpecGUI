@@ -72,16 +72,30 @@ styles.inject_base_css()
 # session_store's pipeline_data — that only happens on "Load into Pipeline")
 # ---------------------------------------------------------------------------
 def _init_page_state() -> None:
-    # Matches the build spec's demo state (spectrum_002.fits pre-selected in
-    # the mocked summary bar text). A real deployment likely wants to start
-    # empty — flagged rather than silently decided either way.
-    st.session_state.setdefault("source_browser_selected_files", ["spectrum_002.fits"])
+    # No file is pre-selected by default — the archive is scanned live, so
+    # there's no guarantee any particular filename exists in it.
+    st.session_state.setdefault("source_browser_selected_files", [])
     st.session_state.setdefault("source_browser_frequency", FREQUENCY_OPTIONS[0])
 
 
 _init_page_state()
 
-_groups = get_source_groups()
+
+@st.cache_data(ttl=30, show_spinner="Scanning source archive…")
+def _load_source_groups():
+    """Cached wrapper around get_source_groups().
+
+    Streamlit reruns this whole script on every widget interaction (every
+    checkbox click, every button press) — without caching, that would mean
+    re-scanning FITS_ARCHIVE_PATH / PSS_DATA_PATH and re-reading every FITS
+    header from disk on every single click. A 30s TTL keeps browsing snappy
+    while still picking up newly-arrived files within half a minute, without
+    needing a full page reload.
+    """
+    return get_source_groups()
+
+
+_groups = _load_source_groups()
 _all_filenames = all_filenames(_groups)
 _files_index = files_by_name(_groups)
 
@@ -215,6 +229,18 @@ styles.render_page_header(
 with st.container(border=True):
     st.markdown('<div class="hs-panel-title">Source Browser — FR-01</div>', unsafe_allow_html=True)
 
+    if not _groups:
+        # A genuinely empty archive is now a real, expected state (fresh
+        # clone, FITS_ARCHIVE_PATH/PSS_DATA_PATH not populated yet) rather
+        # than something that could only happen from a bug — style guide §6
+        # leaves empty-state visual language unspecified, so this stays a
+        # plain text message rather than inventing a new component for it.
+        st.markdown(
+            '<div class="hs-file-caption">No files found. Check that FITS_ARCHIVE_PATH and '
+            'PSS_DATA_PATH in your .env point at a populated archive.</div>',
+            unsafe_allow_html=True,
+        )
+
     for group in _groups:
         group_filenames = [f.filename for f in group.files]
 
@@ -242,7 +268,7 @@ with st.container(border=True):
             st.markdown(
                 f'<div class="hs-group-header">'
                 f'<span class="hs-group-label">{group.label}</span>'
-                f'<div class="hs-group-count">{group.displayed_count} files</div>'
+                f'<div class="hs-group-count">{len(group.files)} files</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
