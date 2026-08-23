@@ -1,0 +1,376 @@
+"""Theme tokens, layout constants, and shared CSS/HTML helpers for the HARTSPEC GUI.
+
+This module is the single source of truth for both the light and dark color
+palettes, plus small HTML-rendering helpers (badges, panels, the page header
+with its pipeline progress bar) that every page in ``pages/`` reuses. Values
+below come from ``hartspec_gui_codegen_prompt.md`` sections 4-10.
+
+Streamlit renders as a fluid, reactive HTML flow layout, not an absolute-
+position canvas, so the exact pixel x/y coordinates from the Figma-derived
+prompt are not dropped in verbatim. Instead:
+
+* Fixed-size tokens (border radii, row heights, font sizes, gaps, padding)
+  are applied literally, since these don't depend on viewport width.
+* Proportional widths (panel widths, table column widths) are expressed as
+  flexbox/column ratios so the layout stays correct at any window size.
+
+This file targets Streamlit 1.32.0. It intentionally avoids the newer
+``st-key-`` auto-generated CSS class feature for styling individual widgets,
+since that convenience wasn't confirmed present in this pinned version --
+selectors below use the older, stable ``data-testid`` attributes instead.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import streamlit as st
+
+ThemeName = Literal["light", "dark"]
+StatusName = Literal["ok", "warning", "error", "info"]
+
+# --------------------------------------------------------------------------
+# Layout constants (fixed pixel values -- carry over directly regardless of
+# viewport width; see module docstring for how proportional widths differ).
+# --------------------------------------------------------------------------
+FRAME_WIDTH = 1440
+FRAME_HEIGHT = 900
+SIDEBAR_WIDTH = 220
+CONTENT_GUTTER = 24  # per style guide -- gap between sidebar and content
+CONTENT_X = SIDEBAR_WIDTH + CONTENT_GUTTER  # = 244
+CONTENT_RIGHT_MARGIN = 24  # per style guide -- gap between content and page right edge
+CONTENT_WIDTH = FRAME_WIDTH - CONTENT_X - CONTENT_RIGHT_MARGIN  # = 1172
+
+HEADER_HEIGHT = 64
+SECTION_GAP = 16
+PANEL_RADIUS = 8
+BUTTON_RADIUS = 6
+PILL_RADIUS = 16
+BADGE_RADIUS = 9
+TABLE_ROW_HEIGHT = 28
+TABLE_HEADER_HEIGHT = 32
+
+PROGRESS_BAR_WIDTH = 260
+PROGRESS_BAR_HEIGHT = 8
+PROGRESS_BAR_RADIUS = 4
+TOTAL_STAGES = 8
+
+# --------------------------------------------------------------------------
+# Brand constants -- identical in both themes, never theme these.
+# --------------------------------------------------------------------------
+ACCENT = "#587BBD"
+HARTRAO_DARK_BLUE = "#395790"
+
+LCP_COLOR = "#1F77B4"
+RCP_COLOR = "#FF7F0E"
+
+FIT_LINE_COLOR: dict[ThemeName, str] = {
+    "light": "#DC2626",
+    "dark": "#F87171",
+}
+
+PROGRESS_BAR_COLORS = {
+    "track": "#E2E8F0",
+    "fill": ACCENT,
+    "label": "#64748B",
+    "caption": "#94A3B8",
+}
+
+# --------------------------------------------------------------------------
+# Theme token tables (prompt section 4). Keys are identical across both
+# themes on purpose -- pages should never need an if/else on theme name.
+# --------------------------------------------------------------------------
+THEMES: dict[ThemeName, dict[str, str]] = {
+    "light": {
+        "bg-primary": "#FFFFFF",
+        "bg-sidebar": "#395790",
+        "bg-panel": "#FFFFFF",
+        "bg-panel-alt": "#F8FAFC",
+        "border-default": "#CBD5E1",
+        "border-subtle": "#E2E8F0",
+        "accent": ACCENT,
+        "text-heading": "#0F172A",
+        "text-body": "#334155",
+        "text-muted": "#64748B",
+        "text-faint": "#94A3B8",
+        "sidebar-text-active": "#FFFFFF",
+        "sidebar-text-inactive": "#B7C3DA",
+        "sidebar-btn-bg": "#334155",
+        "sidebar-btn-border": "#475569",
+        "table-header-bg": "#395790",
+        "table-header-text": "#F1F5F9",
+    },
+    "dark": {
+        # Note: dark-mode bg-primary intentionally equals light-mode
+        # bg-sidebar (#395790) -- that's the design, not a bug. Because of
+        # this, dark-mode panels/tables MUST keep their own bg-panel fill
+        # and border-subtle outline -- without it a table header blends
+        # into the page background.
+        "bg-primary": "#395790",
+        "bg-sidebar": "#16233D",
+        "bg-panel": "#1E293B",
+        "bg-panel-alt": "#243044",
+        "border-default": "#334155",
+        "border-subtle": "#2B3A52",
+        "accent": ACCENT,
+        "text-heading": "#F1F5F9",
+        "text-body": "#CBD5E1",
+        "text-muted": "#94A3B8",
+        "text-faint": "#64748B",
+        "sidebar-text-active": "#FFFFFF",
+        "sidebar-text-inactive": "#7F92B5",
+        "sidebar-btn-bg": "#233450",
+        "sidebar-btn-border": "#3A4C6E",
+        "table-header-bg": "#395790",
+        "table-header-text": "#F1F5F9",
+    },
+}
+
+STATUS_BADGES: dict[ThemeName, dict[StatusName, tuple[str, str]]] = {
+    "light": {
+        "ok": ("#DCFCE7", "#166534"),
+        "warning": ("#FEF9C3", "#854D0E"),
+        "error": ("#FEE2E2", "#991B1B"),
+        "info": ("#DBEAFE", "#1E40AF"),
+    },
+    "dark": {
+        "ok": ("#14532D", "#86EFAC"),
+        "warning": ("#78350F", "#FDE68A"),
+        "error": ("#7F1D1D", "#FCA5A5"),
+        "info": ("#1E3A5F", "#93C5FD"),
+    },
+}
+
+
+def get_theme_name() -> ThemeName:
+    """Return the active theme name, defaulting to ``"light"`` on first run."""
+    return st.session_state.setdefault("theme", "light")
+
+
+def get_theme() -> dict[str, str]:
+    """Return the token dict for the currently active theme."""
+    return THEMES[get_theme_name()]
+
+
+def get_status_badges() -> dict[StatusName, tuple[str, str]]:
+    """Return the (fill, text) badge color pairs for the active theme."""
+    return STATUS_BADGES[get_theme_name()]
+
+
+def get_fit_line_color() -> str:
+    """Return the dashed fit-overlay color for the active theme (see §4)."""
+    return FIT_LINE_COLOR[get_theme_name()]
+
+
+def inject_base_css() -> None:
+    """Inject global CSS for the active theme.
+
+    Call near the top of every page script -- after ``st.set_page_config``
+    and ``sidebar.render_sidebar``, before any other UI is rendered.
+    """
+    theme = get_theme()
+
+    st.markdown(
+        f"""
+        <style>
+        /* -- Font -------------------------------------------------------
+           Inter must be self-hosted: the intranet server has no internet
+           dependency, so this can't point at Google Fonts. Place woff2
+           files under `static/fonts/` and add
+               [server]
+               enableStaticServing = true
+           to .streamlit/config.toml (already stubbed in this project's
+           config.toml). Falls back to the system sans-serif stack if the
+           font files aren't present yet, so the app still renders. */
+        @font-face {{
+            font-family: 'Inter';
+            font-weight: 400;
+            src: url('app/static/fonts/Inter-Regular.woff2') format('woff2');
+        }}
+        @font-face {{
+            font-family: 'Inter';
+            font-weight: 600;
+            src: url('app/static/fonts/Inter-SemiBold.woff2') format('woff2');
+        }}
+        @font-face {{
+            font-family: 'Inter';
+            font-weight: 700;
+            src: url('app/static/fonts/Inter-Bold.woff2') format('woff2');
+        }}
+
+        html, body, [class*="css"] {{
+            font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+        }}
+
+        /* Hide Streamlit's chrome + default multipage nav -- the custom
+           sidebar in utils/sidebar.py replaces the nav entirely. */
+        #MainMenu, footer, header {{ visibility: hidden; }}
+        [data-testid="stSidebarNav"] {{ display: none; }}
+
+        .stApp {{
+            background-color: {theme['bg-primary']};
+        }}
+
+        [data-testid="stSidebar"] {{
+            background-color: {theme['bg-sidebar']};
+            width: {SIDEBAR_WIDTH}px !important;
+            min-width: {SIDEBAR_WIDTH}px !important;
+        }}
+
+        [data-testid="stSidebar"] * {{
+            color: {theme['sidebar-text-inactive']};
+        }}
+
+        .block-container {{
+            padding-top: 2rem;
+            padding-left: {CONTENT_GUTTER}px;
+            padding-right: {CONTENT_RIGHT_MARGIN}px;
+            max-width: {CONTENT_WIDTH}px;
+        }}
+
+        .hs-title {{
+            color: {theme['text-heading']};
+            font-weight: 700;
+        }}
+
+        .hs-subtitle {{
+            color: {theme['text-muted']};
+            font-size: 13px;
+        }}
+
+        .hs-eyebrow {{
+            color: {theme['text-muted']};
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }}
+
+        .hs-panel {{
+            background-color: {theme['bg-panel']};
+            border: 1px solid {theme['border-default']};
+            border-radius: {PANEL_RADIUS}px;
+            padding: 16px;
+            margin-bottom: {SECTION_GAP}px;
+        }}
+
+        .hs-panel-title {{
+            color: {theme['text-body']};
+            font-size: 10.5px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }}
+
+        .hs-badge {{
+            display: inline-block;
+            border-radius: {BADGE_RADIUS}px;
+            padding: 3px 10px;
+            font-size: 10px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+        }}
+
+        /* Buttons -- Streamlit exposes button "kind" via a stable
+           data-testid rather than the newer key-based CSS class. */
+        button[data-testid="baseButton-primary"] {{
+            background-color: {theme['accent']} !important;
+            border: none !important;
+            color: #FFFFFF !important;
+            border-radius: {BUTTON_RADIUS}px !important;
+            font-weight: 600 !important;
+        }}
+        button[data-testid="baseButton-secondary"] {{
+            background-color: {theme['bg-panel']} !important;
+            border: 1px solid {theme['border-default']} !important;
+            color: {theme['text-body']} !important;
+            border-radius: {BUTTON_RADIUS}px !important;
+            font-weight: 600 !important;
+        }}
+
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            border-radius: {PANEL_RADIUS}px !important;
+        }}
+
+        [data-testid="stSelectbox"] > div > div {{
+            border-radius: {BUTTON_RADIUS}px !important;
+            border-color: {theme['border-default']} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_badge(label: str, status: StatusName) -> str:
+    """Return an HTML ``<span>`` for a status badge in the active theme.
+
+    Always a fill/text color pair -- never a bare colored dot -- per the
+    component spec in prompt §8.
+    """
+    fill, text = get_status_badges()[status]
+    return f'<span class="hs-badge" style="background-color:{fill}; color:{text};">{label}</span>'
+
+
+def render_panel_open(title: str) -> None:
+    """Open a themed panel ``<div>``, optionally with a title. Pair with `render_panel_close`."""
+    title_html = f'<div class="hs-panel-title">{title}</div>' if title else ""
+    st.markdown(f'<div class="hs-panel">{title_html}', unsafe_allow_html=True)
+
+
+def render_panel_close() -> None:
+    """Close a panel opened with `render_panel_open`."""
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_page_header(title: str, subtitle: str, current_stage: int, completed_stages: int) -> None:
+    """Render the shared page header: H1 + subtitle on the left, the
+    pipeline progress bar top-right -- matches the layout used across all
+    8 dark-mode Figma frames, applied uniformly to every page/theme
+    (prompt §8 "Pipeline progress bar" / §10).
+
+    Parameters
+    ----------
+    title:
+        Page H1, e.g. ``"Source Browser"``.
+    subtitle:
+        FR-reference subtitle line.
+    current_stage:
+        1-indexed stage number (1-8), shown as "Stage N of 8".
+    completed_stages:
+        Count of stages strictly before this one that are already
+        complete. Used to size the progress fill -- pass
+        ``session_store.completed_count()``.
+    """
+    pct = max(0.0, min(1.0, completed_stages / TOTAL_STAGES))
+    fill_width = max(4, round(PROGRESS_BAR_WIDTH * pct))
+    colors = PROGRESS_BAR_COLORS
+    theme = get_theme()
+
+    st.markdown(
+        f"""
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;
+                    border-bottom:1px solid {theme['border-subtle']};
+                    padding-bottom:16px; margin-bottom:{SECTION_GAP}px;">
+          <div>
+            <div class="hs-title" style="font-size:24px;">{title}</div>
+            <div class="hs-subtitle">{subtitle}</div>
+          </div>
+          <div style="width:{PROGRESS_BAR_WIDTH}px; text-align:right; flex-shrink:0;">
+            <div style="font-size:10px; font-weight:600; color:{colors['label']};">
+                Stage {current_stage} of {TOTAL_STAGES}
+            </div>
+            <div style="width:100%; height:{PROGRESS_BAR_HEIGHT}px; border-radius:{PROGRESS_BAR_RADIUS}px;
+                        background-color:{colors['track']}; margin:6px 0 4px;">
+              <div style="width:{fill_width}px; height:100%; border-radius:{PROGRESS_BAR_RADIUS}px;
+                          background-color:{colors['fill']};"></div>
+            </div>
+            <div style="font-size:9px; color:{colors['caption']};">
+                {completed_stages}/{TOTAL_STAGES} stages complete
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
