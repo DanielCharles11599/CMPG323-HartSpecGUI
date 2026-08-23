@@ -324,66 +324,6 @@ def render_panel_close() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_table_header(columns: list[tuple[str, str]]) -> None:
-    """Render a themed table header row.
-
-    Parameters
-    ----------
-    columns:
-        ``(label, flex_basis)`` pairs, e.g. ``[("File", "45%"), ("Issue", "35%")]``.
-        Widths are proportional (flex-basis), not literal Figma pixel
-        values -- see module docstring. Reused across every page with a
-        table (02, 04, 06, 07, 08) so header styling never drifts per-page.
-    """
-    theme = get_theme()
-    cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10px; '
-        f'font-weight:600; color:{theme["table-header-text"]};">{label}</div>'
-        for label, width in columns
-    )
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; height:{TABLE_HEADER_HEIGHT}px;
-                    background-color:{theme['table-header-bg']}; border-radius:{PANEL_RADIUS}px
-                    {PANEL_RADIUS}px 0 0;">
-          {cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
-    """Render one themed, non-interactive table row.
-
-    Parameters
-    ----------
-    cells_html:
-        ``(html_content, flex_basis)`` pairs -- content can include a badge
-        from `render_badge`. For rows needing a real widget (e.g. an inline
-        button), don't use this helper -- lay that row out with
-        `st.columns` instead, matching these same flex_basis proportions.
-    striped:
-        Whether this row gets the `bg-panel-alt` stripe (alternate rows).
-    """
-    theme = get_theme()
-    bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
-    cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; '
-        f'color:{theme["text-body"]};">{content}</div>'
-        for content, width in cells_html
-    )
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; height:{TABLE_ROW_HEIGHT}px;
-                    background-color:{bg}; border-bottom:1px solid {theme['border-subtle']};">
-          {cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def render_page_header(title: str, subtitle: str, current_stage: int, completed_stages: int) -> None:
     """Render the shared page header: H1 + subtitle on the left, the
     pipeline progress bar top-right -- matches the layout used across all
