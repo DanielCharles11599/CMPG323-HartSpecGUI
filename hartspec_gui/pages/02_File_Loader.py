@@ -7,27 +7,31 @@ values, not literal pixels -- see utils/styles.py module docstring for why.
 `utils/styles.py` on main dropped `render_table_header` / `render_table_row`
 (the team is moving tables toward `st.dataframe`/`pandas.Styler`, matching
 the FR-02 spec's "clean Pandas DataFrame ... st.dataframe()" requirement).
-This revision is a MINIMAL fix to restore working tests against that
-change -- it recreates the two removed helpers as page-local private
-functions with identical visual output, so nothing else about page
-behavior changes yet. The header-fields table's move to a real
-`st.dataframe`/`Styler`, and the validation section's move to
-`st.warning`/`st.error` blocks per the new FR-03 UI spec, are separate,
-deliberate steps -- not folded in here.
+The previous revision recreated those two helpers as page-local private
+functions so the tables kept working -- untouched by this revision.
 
-Two integration points are still stubbed with TODOs, per the project's
-"ask, don't invent spec details" rule:
+This revision wires the Load panel to the real `utils/fits_ingest.py`
+(FR-02) instead of the old animated simulation. Two deliberate design
+choices, flagged rather than silently picked:
 
-1. The FR-02 load itself currently *simulates* progress rather than calling
-   into utils/fits_ingest.py's real ingestion -- wiring that in is the next
-   confirmed step.
-2. The FR-03 Quarantine button updates session state and logs the action,
-   but doesn't yet call a real "move file out of /data/fits/" function --
-   also a separate step (fits_ingest.py doesn't have that function yet
-   either).
+1. No animated progress bar anymore. `load_file`/`load_file2` don't expose
+   a progress callback -- there's no real "64% loaded" signal to animate
+   against, and faking one against a real (now near-instant) call would be
+   actively misleading, not just a placeholder. The load runs inside
+   `st.spinner`, and the bar is drawn at 0% or 100% only -- reflecting
+   what we can actually measure.
+2. The target filename is read from
+   `st.session_state["file_loader_target_filename"]` (falling back to
+   `LOAD_FILENAME` if unset) rather than hardcoded, so this page is ready
+   to receive a real selection from page 01 (Source Browser) once that's
+   wired, and so tests can point it at a fixture file via session_state
+   without touching this module. The archive root itself is resolved by
+   `fits_ingest.get_archive_root()`, which honors the
+   `HARTSPEC_FITS_ARCHIVE_ROOT` env var for the same reason.
 
-Both are marked with `# TODO: confirm against design` per the build spec's
-own instruction (§8) for exactly this situation.
+FR-03 corruption detection (fits.verify) and quarantine (shutil.move to
+Flagged/) are still NOT wired in -- the Quarantine button below still only
+touches session state. That's the next step, not this one.
 """
 
 from __future__ import annotations
@@ -36,12 +40,11 @@ import time
 
 import streamlit as st
 
-from utils import session_store, sidebar, styles
+from utils import fits_ingest, session_store, sidebar, styles
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
-LOAD_FILENAME = "spectrum_002.fits"
-LOAD_SIMULATED_DURATION_S = 5.0  # matches the <5s FR-02 performance target
+LOAD_FILENAME = "faulty.fits"  # fallback target until page 01 selection is wired
 
 # --------------------------------------------------------------------------
 # Sample data -- reproduces the build spec's exact sample rows (§7, page 02).
@@ -113,60 +116,64 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
     )
 
 
-def _simulate_fits_load() -> None:
-    """Animate the FR-02 load progress bar once per session.
+def _get_target_filename() -> str:
+    """Which file this page loads -- session-state driven, see module docstring."""
+    return st.session_state.setdefault("file_loader_target_filename", LOAD_FILENAME)
 
-    TODO: confirm against design -- replace this simulation with a real
-    call into utils/fits_ingest.py's ingest_fits_file() once we've agreed
-    how the page should surface per-file progress (fits_ingest.py's current
-    call is effectively instantaneous for a single file -- there's no
-    natural "64% loaded" signal to hook a progress bar to, so this needs a
-    design decision, not just a code change).
+
+def _run_real_load(filename: str) -> fits_ingest.IngestResult:
+    """Call the real FR-02 ingestion wrapper once per filename, then cache.
+
+    Cached in session_state so clicking Quarantine (which triggers a
+    st.rerun()) doesn't silently re-open the FITS file on every rerun --
+    and so the FR-20 audit log entry below is written exactly once per
+    real load, not once per rerun.
     """
-    placeholder = st.empty()
-    theme = styles.get_theme()
-    steps = 40
-    for i in range(1, steps + 1):
-        pct = i / steps
-        elapsed = pct * LOAD_SIMULATED_DURATION_S
-        fill_px = round(1140 * pct)
-        with placeholder.container():
-            st.markdown(
-                f"""
-                <div>
-                  <div style="font-size:14px; color:{theme['text-body']};">
-                      Loading {LOAD_FILENAME}
-                  </div>
-                  <div style="width:100%; height:10px; border-radius:5px;
-                              background-color:{theme['border-subtle']}; margin:14px 0 8px;">
-                    <div style="width:{fill_px}px; max-width:100%; height:100%; border-radius:5px;
-                                background-color:{theme['accent']};"></div>
-                  </div>
-                  <div style="font-size:11px; color:{theme['text-muted']};">
-                      {elapsed:.1f}s elapsed \u00b7 {round(pct * 100)}%
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        time.sleep(LOAD_SIMULATED_DURATION_S / steps)
+    cache_key = f"file_loader_ingest_result::{filename}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
 
-    st.session_state["file_loader_load_done"] = True
-    session_store.log_event(f"{LOAD_FILENAME} loaded in {LOAD_SIMULATED_DURATION_S:.1f}s")
+    path = fits_ingest.get_archive_root() / filename
+    start = time.perf_counter()
+    result = fits_ingest.ingest_fits_file(path)
+    elapsed = time.perf_counter() - start
+
+    st.session_state[cache_key] = result
+    st.session_state["file_loader_load_elapsed_s"] = elapsed
+
+    if result.ok:
+        session_store.log_event(
+            f"{filename} loaded in {elapsed:.2f}s (convention: {result.convention})"
+        )
+    else:
+        session_store.log_event(
+            f"{filename} FAILED to load in {elapsed:.2f}s -- {result.load_errors}"
+        )
+    return result
 
 
 def _render_load_progress() -> None:
+    theme = styles.get_theme()
+    filename = _get_target_filename()
+    cache_key = f"file_loader_ingest_result::{filename}"
+
     styles.render_panel_open("")
-    if not st.session_state.get("file_loader_load_done"):
-        _simulate_fits_load()
-        st.rerun()
+    if cache_key in st.session_state:
+        result = _run_real_load(filename)  # cache hit, no spinner needed
     else:
-        theme = styles.get_theme()
+        with st.spinner(f"Loading {filename}\u2026"):
+            result = _run_real_load(filename)
+    elapsed = st.session_state.get("file_loader_load_elapsed_s", 0.0)
+
+    if result.ok:
+        st.session_state["file_loader_load_done"] = True
+        convention_label = {"date": "DATE", "date-obs": "DATE-OBS"}.get(result.convention, "unknown")
+        badge = styles.render_badge(convention_label, "info")
         st.markdown(
             f"""
             <div>
               <div style="font-size:14px; color:{theme['text-body']};">
-                  Loaded {LOAD_FILENAME}
+                  Loaded {filename} <span style="margin-left:8px;">{badge}</span>
               </div>
               <div style="width:100%; height:10px; border-radius:5px;
                           background-color:{theme['border-subtle']}; margin:14px 0 8px;">
@@ -174,12 +181,26 @@ def _render_load_progress() -> None:
                             background-color:{theme['accent']};"></div>
               </div>
               <div style="font-size:11px; color:{theme['text-muted']};">
-                  {LOAD_SIMULATED_DURATION_S:.1f}s elapsed \u00b7 100%
+                  {elapsed:.2f}s elapsed \u00b7 100%
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        spectrum = result.spectrum or {}
+        st.caption(
+            f"Object: {spectrum.get('object', '?')} \u00b7 Date: {spectrum.get('date', '?')} \u00b7 "
+            "No RA/Dec in header -- only telescope LONGITUD/LATITUDE (pointing, not source coords)."
+        )
+    else:
+        st.session_state["file_loader_load_done"] = False
+        st.error(
+            f"Could not load {filename} -- neither the DATE nor DATE-OBS convention loader "
+            "could read this file. See details below."
+        )
+        with st.expander("Load attempt details"):
+            for attempt in result.attempts:
+                st.caption(attempt)
     styles.render_panel_close()
 
 
