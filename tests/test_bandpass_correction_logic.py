@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
-from utils.bandpass_correction_logic import (  # noqa: E402
+from hartspec_gui.utils.bandpass_correction_logic import (  # noqa: E402
     MODE_OPTIONS,
     freq_switch_correct,
     get_corrected_spectrum,
