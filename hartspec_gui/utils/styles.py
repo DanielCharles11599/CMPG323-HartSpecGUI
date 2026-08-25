@@ -373,8 +373,5 @@ def render_page_header(title: str, subtitle: str, current_stage: int, completed_
         </div>
         """,
         unsafe_allow_html=True,
-<<<<<<< HEAD
     )
-=======
-    )
->>>>>>> JC
+

@@ -91,8 +91,5 @@ def render_sidebar(current_stage: int) -> None:
 
         if st.button("Reset Session", key="session_reset", use_container_width=True):
             session_store.reset_session()
-<<<<<<< HEAD
             st.rerun()
-=======
-            st.rerun()
->>>>>>> JC
+
