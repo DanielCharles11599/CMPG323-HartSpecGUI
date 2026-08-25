@@ -45,7 +45,7 @@ from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KE
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
-LOAD_FILENAME = "spectrum_002.fits"  # fallback target until page 01 selection is wired
+LOAD_FILENAME = "good.fits"  # fallback target until page 01 selection is wired
 
 # --------------------------------------------------------------------------
 # Sample data -- reproduces the build spec's exact sample rows (§7, page 02).
@@ -115,6 +115,38 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_target_file_override() -> None:
+    """Manual filename override -- lets you pick which file this page loads
+    directly in the browser, without going through Page 01 first.
+
+    TEMPORARY, until Page 01 does a real scan of the FITS archive instead
+    of its current hardcoded sample list (spectrum_001/002/003.fits,
+    pss_survey_*.txt) -- right now Page 01 has no way to select good.fits
+    or faulty.fits even if you go through it, since it doesn't know they
+    exist. Remove this once Page 01's file list is real. Only shown when
+    there's no Page 01 selection yet, so it gets out of the way once the
+    real handoff is wired end-to-end.
+    """
+    pipeline_selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    if pipeline_selection.get("selected_files"):
+        return  # a real page 01 selection exists -- don't show the manual override
+
+    with st.expander("Dev override: choose a file manually", expanded=False):
+        current = st.session_state.get("file_loader_target_filename", LOAD_FILENAME)
+        typed = st.text_input(
+            "Filename (relative to HARTSPEC_FITS_ARCHIVE_ROOT)",
+            value=current,
+            key="file_loader_manual_filename_input",
+        )
+        if st.button("Load this file", key="file_loader_manual_load_btn"):
+            st.session_state["file_loader_target_filename"] = typed
+            # No explicit st.rerun() needed here -- Streamlit already
+            # reruns the script automatically after any widget interaction
+            # (including this button click), so the new target filename is
+            # already in session_state by the time _get_target_filename()
+            # runs on that natural rerun.
 
 
 def _get_target_filename() -> str:
@@ -337,6 +369,7 @@ def main() -> None:
         completed_stages=session_store.completed_count(),
     )
 
+    _render_target_file_override()
     _render_load_progress()
     _render_validation_table()
 

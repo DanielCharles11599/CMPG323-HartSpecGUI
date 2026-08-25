@@ -20,7 +20,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-PAGE_PATH = str(Path(__file__).resolve().parents[1] / "pages" / "02_File_Loader.py")
+PAGE_PATH = str(Path(__file__).resolve().parents[1] / "hartspec_gui" / "pages" / "02_File_Loader.py")
 
 
 def _app_for(filename: str) -> AppTest:
@@ -33,6 +33,36 @@ def _app_for(filename: str) -> AppTest:
     at = AppTest.from_file(PAGE_PATH)
     at.session_state["file_loader_target_filename"] = filename
     return at
+
+
+# --------------------------------------------------------------------------
+# Real files (good.fits / faulty.fits) -- opt-in via real_fits_archive.
+# These don't assert a specific outcome for faulty.fits, since we don't yet
+# know WHY it's faulty (wrong convention vs. genuinely corrupt/incomplete) --
+# run with `-s` to see IngestResult.convention/load_errors printed, then we
+# can tighten these into real assertions once we know what we're looking at.
+# --------------------------------------------------------------------------
+def test_real_good_fits_loads(real_fits_archive):
+    at = _app_for("good.fits")
+    at.run(timeout=30)
+    assert not at.exception, f"Exception(s): {[str(e) for e in at.exception]}"
+    assert at.session_state["file_loader_load_done"] is True
+    print(f"\ngood.fits loaded OK")
+
+
+def test_real_faulty_fits_does_not_crash_the_page(real_fits_archive):
+    """Whatever 'faulty' means, the page itself must never raise -- it
+    should either load with a convention, or fail gracefully via st.error()."""
+    at = _app_for("faulty.fits")
+    at.run(timeout=30)
+    assert not at.exception, f"Exception(s): {[str(e) for e in at.exception]}"
+    load_done = at.session_state["file_loader_load_done"]
+    if load_done:
+        print(f"\nfaulty.fits actually loaded fine (not corrupt at the header level)")
+    else:
+        error_texts = "\n".join(e.value for e in at.error)
+        print(f"\nfaulty.fits failed to load, as expected. Page error shown:\n{error_texts}")
+        assert "Could not load" in error_texts
 
 
 # --------------------------------------------------------------------------

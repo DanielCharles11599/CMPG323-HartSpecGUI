@@ -37,6 +37,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+# clc/load_file.py and clc/load_file2.py both do `import matplotlib.pyplot
+# as plt` at module level, even though neither ever actually plots
+# anything -- it's a dead import inherited from the original CLI scripts.
+# On Windows, matplotlib commonly defaults to the TkAgg GUI backend, and
+# initializing Tkinter on a background thread is a known hang (Tkinter
+# isn't thread-safe) -- which is exactly the thread Streamlit's AppTest
+# (and, less obviously, Streamlit's own script-runner) executes page code
+# on. This MUST run before `import load_file` / `import load_file2` below,
+# and before those modules are imported anywhere else in the process.
+# Can't fix this in the CLC modules themselves (off-limits), so it's
+# forced here instead -- "Agg" is a headless, file-only backend, safe on
+# any thread, and this call is a no-op if a backend was already set.
+import matplotlib
+
+matplotlib.use("Agg")
+
 from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()
