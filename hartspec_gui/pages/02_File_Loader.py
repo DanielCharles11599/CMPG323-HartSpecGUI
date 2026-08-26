@@ -45,7 +45,7 @@ from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KE
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
-LOAD_FILENAME = "good.fits"  # fallback target until page 01 selection is wired
+LOAD_FILENAME = "faulty.fits"  # fallback target until page 01 selection is wired
 
 # --------------------------------------------------------------------------
 # Sample data -- reproduces the build spec's exact sample rows (§7, page 02).
