@@ -210,12 +210,11 @@ class VerificationResult:
     path: Path
     ok: bool                    # no structural issues found
     issues: list[str] = field(default_factory=list)
-    checksum_checked: bool = False   # True only if the file actually carried
-                                      # CHECKSUM/DATASUM keywords to check --
-                                      # most raw telescope output won't, so
-                                      # False here does NOT mean "unverified
-                                      # and therefore suspect", just "nothing
-                                      # to checksum-check in this file".
+    # True only if the file actually carried CHECKSUM/DATASUM keywords to
+    # check -- most raw telescope output won't, so False here does NOT mean
+    # "unverified and therefore suspect", just "nothing to checksum-check
+    # in this file".
+    checksum_checked: bool = False
 
 
 def verify_fits_file(path: str | Path) -> VerificationResult:

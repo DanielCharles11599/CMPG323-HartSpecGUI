@@ -7,31 +7,54 @@ values, not literal pixels -- see utils/styles.py module docstring for why.
 `utils/styles.py` on main dropped `render_table_header` / `render_table_row`
 (the team is moving tables toward `st.dataframe`/`pandas.Styler`, matching
 the FR-02 spec's "clean Pandas DataFrame ... st.dataframe()" requirement).
-The previous revision recreated those two helpers as page-local private
+An earlier revision recreated those two helpers as page-local private
 functions so the tables kept working -- untouched by this revision.
 
-This revision wires the Load panel to the real `utils/fits_ingest.py`
-(FR-02) instead of the old animated simulation. Two deliberate design
-choices, flagged rather than silently picked:
+--------------------------------------------------------------------------
+FR-03 MULTI-FILE REVISION (this revision)
+--------------------------------------------------------------------------
+Per the FR-03 handoff's CORE DESIGN CONSTRAINT: page 01 lets the user
+select MULTIPLE files, and page 02 must load + validate ALL of them, not
+just the first. This revision replaces the earlier single-file
+`_get_target_filename()` with `_get_target_filenames()` (plural), and the
+static `VALIDATION_ROWS` sample data with real per-file
+ingest + verify results, looped over every selected file.
 
-1. No animated progress bar anymore. `load_file`/`load_file2` don't expose
-   a progress callback -- there's no real "64% loaded" signal to animate
-   against, and faking one against a real (now near-instant) call would be
-   actively misleading, not just a placeholder. The load runs inside
-   `st.spinner`, and the bar is drawn at 0% or 100% only -- reflecting
-   what we can actually measure.
-2. The target filename is read from
-   `st.session_state["file_loader_target_filename"]` (falling back to
-   `LOAD_FILENAME` if unset) rather than hardcoded, so this page is ready
-   to receive a real selection from page 01 (Source Browser) once that's
-   wired, and so tests can point it at a fixture file via session_state
-   without touching this module. The archive root itself is resolved by
-   `fits_ingest.get_archive_root()`, which honors the
-   `HARTSPEC_FITS_ARCHIVE_ROOT` env var for the same reason.
+Three design questions from the handoff were explicitly answered before
+this was built (not guessed):
 
-FR-03 corruption detection (fits.verify) and quarantine (shutil.move to
-Flagged/) are still NOT wired in -- the Quarantine button below still only
-touches session state. That's the next step, not this one.
+1. Load/validate ordering -> **load all files first, then validate all**
+   (not interleaved). `_render_load_progress()` runs the full ingest loop;
+   `_render_validation_table()` then runs verification per file afterward.
+2. Multi-file progress UI -> **"Loading file X of N" text + a single
+   aggregate bar** (not per-file spinners, not a bare aggregate-only bar).
+3. Header-fields table -> **confirmed it will be one row per file** once
+   built -- but that build is explicitly deferred to a later step in the
+   handoff's own sequencing (step 6, after quarantine is wired in step 5).
+   `_render_header_fields_table()` below is UNCHANGED / still static
+   sample data in this revision -- don't mistake that for an oversight.
+
+FR-03 corruption detection now runs for real (`fits_ingest.verify_fits_file`,
+built in the prior step and confirmed against real good.fits/faulty.fits).
+Quarantine is still NOT wired to a real `shutil.move()` -- the Quarantine
+button still only touches session state. That's the next step, not this
+one.
+--------------------------------------------------------------------------
+
+Two design choices carried over from the original single-file revision,
+still true here:
+
+1. No animated progress bar. `load_file`/`load_file2` don't expose a
+   progress callback -- there's no real "64% loaded" signal to animate
+   against. The per-file loop below only ever reflects what's actually
+   measured: which file (of N) is currently being loaded, and the real
+   elapsed time once the loop finishes.
+2. The target filenames are read from Page 01's handoff
+   (`pipeline_data["01_source_browser"]["selected_files"]`) when present,
+   falling back to `st.session_state["file_loader_target_filenames"]` (a
+   list) / `[LOAD_FILENAME]` so this page can still be run/tested
+   standalone, and so tests can point it at fixture files via
+   session_state without touching this module.
 """
 
 from __future__ import annotations
@@ -45,20 +68,15 @@ from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KE
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
-LOAD_FILENAME = "faulty.fits"  # fallback target until page 01 selection is wired
+LOAD_FILENAME = "good.fits"  # fallback target until page 01 selection is wired
 
 # --------------------------------------------------------------------------
-# Sample data -- reproduces the build spec's exact sample rows (§7, page 02).
-# The header-fields table previews a 30+ field dataset but only the 9
-# priority fields below are specified; the search box only searches these
-# until the rest of the field list is confirmed (see module docstring).
+# Sample data -- header-fields table only. Reproduces the build spec's
+# exact sample rows (§7, page 02). Still static/single-purpose in this
+# revision -- see module docstring, this is deliberately deferred to a
+# later step, not an oversight. The validation table below no longer uses
+# static sample data; see _build_validation_rows().
 # --------------------------------------------------------------------------
-VALIDATION_ROWS = [
-    {"file": "spectrum_002.fits", "issue": "\u2014", "status": "ok"},
-    {"file": "spectrum_003.fits", "issue": "Header checksum mismatch", "status": "error"},
-    {"file": "pss_survey_015.txt", "issue": "\u2014", "status": "ok"},
-]
-
 HEADER_FIELDS_COLUMNS = [
     "Vlsr", "LCP/RCP", "HPBW", "Tsys", "Date", "Object", "RA/Dec", "Focus", "Humidity",
 ]
@@ -118,68 +136,73 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
 
 
 def _render_target_file_override() -> None:
-    """Manual filename override -- lets you pick which file this page loads
-    directly in the browser, without going through Page 01 first.
+    """Manual filename override -- lets you pick which file(s) this page
+    loads directly in the browser, without going through Page 01 first.
+
+    Now a multi-line text area (one filename per line) instead of a
+    single text input, matching the FR-03 multi-file requirement. Stores
+    a list in `st.session_state["file_loader_target_filenames"]`.
 
     TEMPORARY, until Page 01 does a real scan of the FITS archive instead
-    of its current hardcoded sample list (spectrum_001/002/003.fits,
-    pss_survey_*.txt) -- right now Page 01 has no way to select good.fits
-    or faulty.fits even if you go through it, since it doesn't know they
-    exist. Remove this once Page 01's file list is real. Only shown when
-    there's no Page 01 selection yet, so it gets out of the way once the
-    real handoff is wired end-to-end.
+    of its current hardcoded sample list -- right now Page 01 has no way
+    to select good.fits/faulty.fits even if you go through it, since it
+    doesn't know they exist. Remove this once Page 01's file list is real
+    and always populates `selected_files`. Only shown when there's no
+    Page 01 selection yet, so it gets out of the way once the real
+    handoff is wired end-to-end.
     """
     pipeline_selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
     if pipeline_selection.get("selected_files"):
         return  # a real page 01 selection exists -- don't show the manual override
 
-    with st.expander("Dev override: choose a file manually", expanded=False):
-        current = st.session_state.get("file_loader_target_filename", LOAD_FILENAME)
-        typed = st.text_input(
-            "Filename (relative to HARTSPEC_FITS_ARCHIVE_ROOT)",
-            value=current,
-            key="file_loader_manual_filename_input",
+    with st.expander("Dev override: choose files manually", expanded=False):
+        current = st.session_state.get("file_loader_target_filenames", [LOAD_FILENAME])
+        typed = st.text_area(
+            "Filenames, one per line (relative to HARTSPEC_FITS_ARCHIVE_ROOT)",
+            value="\n".join(current),
+            key="file_loader_manual_filenames_input",
+            height=100,
         )
-        if st.button("Load this file", key="file_loader_manual_load_btn"):
-            st.session_state["file_loader_target_filename"] = typed
-            # No explicit st.rerun() needed here -- Streamlit already
-            # reruns the script automatically after any widget interaction
-            # (including this button click), so the new target filename is
-            # already in session_state by the time _get_target_filename()
-            # runs on that natural rerun.
+        if st.button("Load these files", key="file_loader_manual_load_btn"):
+            filenames = [line.strip() for line in typed.splitlines() if line.strip()]
+            st.session_state["file_loader_target_filenames"] = filenames or [LOAD_FILENAME]
+            # No explicit st.rerun() needed -- Streamlit already reruns the
+            # script automatically after this button click, so the new
+            # target filenames are already in session_state by the time
+            # _get_target_filenames() runs on that natural rerun.
 
 
-def _get_target_filename() -> str:
-    """Which file this page loads.
+def _get_target_filenames() -> list[str]:
+    """Which files this page loads and validates.
 
     Prefers the real Page 01 handoff: st.session_state["pipeline_data"]
-    [SOURCE_BROWSER_STAGE_KEY]["selected_files"][0], set by
-    01_Source_Browser.py when the user clicks "Load into Pipeline". Falls
-    back to st.session_state["file_loader_target_filename"] /
-    LOAD_FILENAME so this page can still be run/tested standalone, without
-    going through page 01 first.
+    [SOURCE_BROWSER_STAGE_KEY]["selected_files"] -- ALL selected files,
+    set by 01_Source_Browser.py when the user clicks "Load into Pipeline".
+    Falls back to st.session_state["file_loader_target_filenames"] (a
+    list) / [LOAD_FILENAME] so this page can still be run/tested
+    standalone, without going through page 01 first.
 
-    TODO: page 01 supports selecting multiple files at once
-    (selected_files is a list) -- per explicit confirmation, this
-    deliberately loads only the FIRST selected file for now. Full
-    multi-file handling is deferred to the FR-03 validation-table redesign,
-    where the build spec's own sample data already shows multiple files
-    (a spectrum + a PSS file) validated together.
+    Supersedes the earlier single-file `_get_target_filename()` (which
+    deliberately only read `selected_files[0]`) -- per the FR-03 handoff's
+    CORE DESIGN CONSTRAINT, this was always meant to be a loop over every
+    selected file, not a later nice-to-have.
     """
     pipeline_selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
     selected = pipeline_selection.get("selected_files") or []
     if selected:
-        return selected[0]
-    return st.session_state.setdefault("file_loader_target_filename", LOAD_FILENAME)
+        return list(selected)
+    return st.session_state.setdefault("file_loader_target_filenames", [LOAD_FILENAME])
 
 
 def _run_real_load(filename: str) -> fits_ingest.IngestResult:
     """Call the real FR-02 ingestion wrapper once per filename, then cache.
 
-    Cached in session_state so clicking Quarantine (which triggers a
-    st.rerun()) doesn't silently re-open the FITS file on every rerun --
-    and so the FR-20 audit log entry below is written exactly once per
-    real load, not once per rerun.
+    Cached in session_state so reruns (e.g. clicking Quarantine, which
+    triggers st.rerun()) don't silently re-open the FITS file every time
+    -- and so the FR-20 audit log entry below is written exactly once per
+    real load, not once per rerun. Already per-file and loop-safe as-is
+    (per the FR-03 handoff note) -- unchanged from the single-file
+    revision, just now called once per filename instead of once total.
     """
     cache_key = f"file_loader_ingest_result::{filename}"
     if cache_key in st.session_state:
@@ -191,7 +214,7 @@ def _run_real_load(filename: str) -> fits_ingest.IngestResult:
     elapsed = time.perf_counter() - start
 
     st.session_state[cache_key] = result
-    st.session_state["file_loader_load_elapsed_s"] = elapsed
+    st.session_state[f"file_loader_load_elapsed_s::{filename}"] = elapsed
 
     if result.ok:
         session_store.log_event(
@@ -204,56 +227,111 @@ def _run_real_load(filename: str) -> fits_ingest.IngestResult:
     return result
 
 
-def _render_load_progress() -> None:
-    theme = styles.get_theme()
-    filename = _get_target_filename()
-    cache_key = f"file_loader_ingest_result::{filename}"
-
-    styles.render_panel_open("")
+def _run_real_verify(filename: str) -> fits_ingest.VerificationResult:
+    """Call the real FR-03 structural-verification wrapper once per
+    filename, then cache -- same pattern as `_run_real_load` above, kept
+    as a separate cache key since ingest and verify are independent
+    checks (see fits_ingest.verify_fits_file's docstring).
+    """
+    cache_key = f"file_loader_verify_result::{filename}"
     if cache_key in st.session_state:
-        result = _run_real_load(filename)  # cache hit, no spinner needed
-    else:
-        with st.spinner(f"Loading {filename}\u2026"):
-            result = _run_real_load(filename)
-    elapsed = st.session_state.get("file_loader_load_elapsed_s", 0.0)
+        return st.session_state[cache_key]
+
+    path = fits_ingest.get_archive_root() / filename
+    result = fits_ingest.verify_fits_file(path)
+    st.session_state[cache_key] = result
 
     if result.ok:
-        st.session_state["file_loader_load_done"] = True
-        convention_label = {"date": "DATE", "date-obs": "DATE-OBS"}.get(result.convention, "unknown")
-        badge = styles.render_badge(convention_label, "info")
-        st.markdown(
+        session_store.log_event(f"{filename} passed structural verification (FR-03)")
+    else:
+        session_store.log_event(
+            f"{filename} FAILED structural verification (FR-03) -- {result.issues}"
+        )
+    return result
+
+
+def _render_load_progress() -> None:
+    """Load every target file, showing 'Loading file X of N' + one
+    aggregate progress bar -- per the confirmed answer to the FR-03
+    multi-file UI question. Ordering is also confirmed: load ALL files
+    first here; validation (including FR-03 verify) happens afterward in
+    `_render_validation_table()`, not interleaved into this loop.
+    """
+    theme = styles.get_theme()
+    filenames = _get_target_filenames()
+    n = len(filenames)
+
+    styles.render_panel_open("")
+
+    label_slot = st.empty()
+    bar_slot = st.empty()
+    caption_slot = st.empty()
+
+    def _draw(label: str, frac: float, caption: str) -> None:
+        frac = max(0.0, min(1.0, frac))
+        fill_width = round(1140 * frac)
+        label_slot.markdown(
+            f'<div style="font-size:14px; color:{theme["text-body"]};">{label}</div>',
+            unsafe_allow_html=True,
+        )
+        bar_slot.markdown(
             f"""
-            <div>
-              <div style="font-size:14px; color:{theme['text-body']};">
-                  Loaded {filename} <span style="margin-left:8px;">{badge}</span>
-              </div>
-              <div style="width:100%; height:10px; border-radius:5px;
-                          background-color:{theme['border-subtle']}; margin:14px 0 8px;">
-                <div style="width:100%; height:100%; border-radius:5px;
-                            background-color:{theme['accent']};"></div>
-              </div>
-              <div style="font-size:11px; color:{theme['text-muted']};">
-                  {elapsed:.2f}s elapsed \u00b7 100%
-              </div>
+            <div style="width:100%; height:10px; border-radius:5px;
+                        background-color:{theme['border-subtle']}; margin:14px 0 8px;">
+              <div style="width:{fill_width}px; height:100%; border-radius:5px;
+                          background-color:{theme['accent']};"></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        spectrum = result.spectrum or {}
-        st.caption(
-            f"Object: {spectrum.get('object', '?')} \u00b7 Date: {spectrum.get('date', '?')} \u00b7 "
-            "No RA/Dec in header -- only telescope LONGITUD/LATITUDE (pointing, not source coords)."
+        caption_slot.markdown(
+            f'<div style="font-size:11px; color:{theme["text-muted"]};">{caption}</div>',
+            unsafe_allow_html=True,
         )
-    else:
-        st.session_state["file_loader_load_done"] = False
+
+    results: dict[str, fits_ingest.IngestResult] = {}
+    start_all = time.perf_counter()
+    for idx, filename in enumerate(filenames, start=1):
+        _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
+        results[filename] = _run_real_load(filename)
+    elapsed_total = time.perf_counter() - start_all
+
+    ok_count = sum(1 for r in results.values() if r.ok)
+    plural = "s" if n != 1 else ""
+    _draw(
+        f"Loaded {ok_count} of {n} file{plural}",
+        1.0,
+        f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
+    )
+
+    with st.expander("Load details", expanded=False):
+        for filename, result in results.items():
+            if result.ok:
+                convention_label = {"date": "DATE", "date-obs": "DATE-OBS"}.get(
+                    result.convention, "unknown"
+                )
+                badge = styles.render_badge(convention_label, "info")
+                spectrum = result.spectrum or {}
+                st.markdown(
+                    f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
+                    f'\u00b7 Date: {spectrum.get("date", "?")}',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"**{filename}** \u2014 failed to load:")
+                for attempt in result.attempts:
+                    st.caption(attempt)
+
+    if ok_count < n:
+        failed = [f for f, r in results.items() if not r.ok]
         st.error(
-            f"Could not load {filename} -- neither the DATE nor DATE-OBS convention loader "
-            "could read this file. See details below."
+            f"Could not load {n - ok_count} of {n} file(s) -- neither the DATE nor "
+            f"DATE-OBS convention loader could read: {', '.join(failed)}. "
+            "See the validation table below."
         )
-        with st.expander("Load attempt details"):
-            for attempt in result.attempts:
-                st.caption(attempt)
+
     styles.render_panel_close()
+    st.session_state["file_loader_load_done"] = ok_count > 0
 
 
 def _quarantine_file(filename: str) -> None:
@@ -262,28 +340,67 @@ def _quarantine_file(filename: str) -> None:
     TODO: confirm against design -- should call a real quarantine function
     (moving the file out of the read-only /data/fits/ archive into
     Flagged/) once that's built into utils/fits_ingest.py and confirmed;
-    right now this only updates UI-facing session state.
+    right now this only updates UI-facing session state. That's the next
+    step after this one, per the FR-03 handoff's step ordering.
     """
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
-    session_store.log_event(f"{filename} quarantined (header checksum mismatch)")
+    session_store.log_event(f"{filename} quarantined")
+
+
+def _build_validation_rows(filenames: list[str]) -> list[dict]:
+    """Real per-file validation rows, replacing the old static
+    VALIDATION_ROWS sample data (FR-03 handoff step 3).
+
+    Combines two independent checks per file, in priority order:
+    1. Did FR-02 ingestion succeed at all? (wrong/unrecognized convention,
+       or missing science keys the CLC loaders require)
+    2. If ingestion succeeded, does the file pass FR-03 structural
+       verification? (fits.verify / checksum / truncation -- see
+       fits_ingest.verify_fits_file's docstring for exactly what this
+       does and doesn't catch)
+
+    Assumes `_run_real_load` has already been called for every filename
+    (by `_render_load_progress`, which runs first) -- reads from that
+    cache rather than re-loading, per the confirmed "load all, then
+    validate all" ordering.
+    """
+    rows = []
+    for filename in filenames:
+        ingest_result = _run_real_load(filename)  # cache hit by this point
+
+        if not ingest_result.ok:
+            detail = "; ".join(f"{k}: {v}" for k, v in ingest_result.load_errors.items())
+            rows.append({"file": filename, "issue": detail or "Failed to load", "status": "error"})
+            continue
+
+        verify_result = _run_real_verify(filename)
+        if not verify_result.ok:
+            rows.append({"file": filename, "issue": "; ".join(verify_result.issues), "status": "error"})
+        else:
+            rows.append({"file": filename, "issue": "\u2014", "status": "ok"})
+    return rows
 
 
 def _render_validation_table() -> None:
+    filenames = _get_target_filenames()
+    rows = _build_validation_rows(filenames)
     quarantined = st.session_state.get("file_loader_quarantined", set())
 
     styles.render_panel_open("")
     _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
-    for idx, row in enumerate(VALIDATION_ROWS):
+    for idx, row in enumerate(rows):
         striped = idx % 2 == 1
         theme = styles.get_theme()
         bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
 
-        if row["file"] in {r["file"] for r in VALIDATION_ROWS if r["status"] == "error"}:
-            # The flagged row gets a real inline Quarantine button, so it's
+        if row["status"] == "error":
+            # Flagged rows get a real inline Quarantine button, so they're
             # laid out with st.columns (matching the header's proportions)
-            # instead of the static _render_table_row helper.
+            # instead of the static _render_table_row helper. Now scoped
+            # per-row across however many files are actually flagged, not
+            # hardcoded to a single known-bad sample row.
             is_quarantined = row["file"] in quarantined
             status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
 
@@ -327,6 +444,14 @@ def _render_validation_table() -> None:
 
 
 def _render_header_fields_table() -> None:
+    """UNCHANGED in this revision -- still static single-set sample data.
+
+    The confirmed answer to the open design question ("one row per file")
+    applies here, but building that is explicitly FR-03 handoff step 6
+    (after quarantine's real shutil.move() wiring in steps 4-5) -- not
+    this step. Don't mistake this function's static content for an
+    oversight; it's deliberately deferred.
+    """
     search = st.text_input(
         "Search fields",
         placeholder="Search 30+ fields\u2026",
