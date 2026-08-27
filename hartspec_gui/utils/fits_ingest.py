@@ -64,16 +64,28 @@ load_dotenv_if_present()
 
 # Default FITS archive root per the project's mandated folder layout
 # (/data/fits/, read-only, separate from the app directory). Overridable
-# via HARTSPEC_FITS_ARCHIVE_ROOT so tests/dev machines without a real
-# /data/fits mount can point at a fixtures directory instead -- read on
-# every call (not cached at import time) so a test can set the env var
-# right before calling, even if this module was already imported.
-DEFAULT_ARCHIVE_ROOT = Path("/data/fits")
+# via FITS_ARCHIVE_PATH -- the SAME env var pages/01_Source_Browser.py
+# reads (via source_browser_logic.DEFAULT_FITS_ARCHIVE_PATH), matching the
+# naming convention documented in HARTSPEC-Claude_Project_Prompt.md
+# ("FITS_ARCHIVE_PATH=./data/fits"). Read on every call (not cached at
+# import time) so a test can set the env var right before calling, even if
+# this module was already imported.
+#
+# CONFIRMED 2026-08-26: this module previously invented its own name,
+# HARTSPEC_FITS_ARCHIVE_ROOT, before Page 01's real archive-scanning code
+# existed to expose the conflict -- Page 01 would resolve one directory,
+# Page 02 a different one, and every file Page 01 handed off would 404 on
+# Page 02 even though the archive genuinely existed (just at the other
+# path). Standardized on FITS_ARCHIVE_PATH; HARTSPEC_FITS_ARCHIVE_ROOT is
+# retired outright, not kept as a silent fallback -- a stale .env should
+# fail loudly (empty archive / FileNotFoundError) rather than quietly keep
+# reading the wrong directory.
+DEFAULT_ARCHIVE_ROOT = Path("./data/fits")
 
 
 def get_archive_root() -> Path:
     """Return the active FITS archive root, honoring the env-var override."""
-    override = os.environ.get("HARTSPEC_FITS_ARCHIVE_ROOT")
+    override = os.environ.get("FITS_ARCHIVE_PATH")
     return Path(override) if override else DEFAULT_ARCHIVE_ROOT
 
 
@@ -82,27 +94,26 @@ def get_archive_root() -> Path:
 # Python package -- so we add it to sys.path rather than assuming
 # `from clc import load_file` works with a package-style import.
 #
-# CURRENT LAYOUT (confirmed 2026-08-23, may change): clc/ sits one level
-# ABOVE hartspec_gui/ -- i.e. a sibling of hartspec_gui/, not inside it.
-# This differs from the folder structure documented in the project's own
-# spec (clc/ as a symlink INSIDE hartspec_gui/, sibling of utils/) -- the
-# team is deciding whether to move it inside hartspec_gui/ to match the
-# spec. If/when that happens, this needs to go back to parents[1]:
-#   CLC_DIR = Path(__file__).resolve().parents[1] / "clc"   # inside hartspec_gui/
-# For now, parents[2] is correct for the real on-disk layout:
-CLC_DIR = Path(__file__).resolve().parents[2] / "clc"
+# LAYOUT (confirmed 2026-08-27): clc/ is a symlink INSIDE hartspec_gui/,
+# a sibling of utils/ and pages/ -- matching the project's mandated
+# folder structure exactly. This supersedes the earlier parents[2] lookup
+# (clc/ as a sibling of hartspec_gui/ itself), which was a real,
+# confirmed-different on-disk layout at the time, not a guess -- the
+# symlink has since been fixed to match the spec, so this now does too.
+CLC_DIR = Path(__file__).resolve().parents[1] / "clc"
 if str(CLC_DIR) not in sys.path:
     sys.path.insert(0, str(CLC_DIR))
 
+
 try:
-    import load_file as _lf_date  # DATE convention
+    import clc.load_file as _lf_date  # DATE convention
     _LF_DATE_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - environment-dependent
     _lf_date = None
     _LF_DATE_IMPORT_ERROR = str(exc)
 
 try:
-    import load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
+    import clc.load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
     _LF_DATEOBS_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - specutils missing
     _lf_dateobs = None

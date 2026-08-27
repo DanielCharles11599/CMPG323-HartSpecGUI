@@ -16,7 +16,7 @@ general-purpose parser.
 
 Existing environment variables are never overwritten by .env -- a real
 `$env:X = "..."` set in the shell always wins, matching standard dotenv
-semantics. This makes CI/teammate machines safe: if HARTSPEC_FITS_ARCHIVE_ROOT
+semantics. This makes CI/teammate machines safe: if FITS_ARCHIVE_PATH
 is already set in the environment, .env's copy of that key is ignored.
 """
 

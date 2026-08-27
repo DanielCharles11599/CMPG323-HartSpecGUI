@@ -10,7 +10,7 @@ It doesn't render its own UI -- it immediately hands off to Stage 01 so
 users always land on the start of the pipeline.
 
 Loads a local .env file (if present) before anything else, so env-var
-overrides like HARTSPEC_FITS_ARCHIVE_ROOT work without setting them in the
+overrides like FITS_ARCHIVE_PATH work without setting them in the
 shell every session. See .env.example. utils/fits_ingest.py also loads
 .env at its own import time, independently -- this call here is defense in
 depth for the `streamlit run Home.py` entry point specifically, not the
