@@ -94,17 +94,16 @@ def get_archive_root() -> Path:
 # Python package -- so we add it to sys.path rather than assuming
 # `from clc import load_file` works with a package-style import.
 #
-# CURRENT LAYOUT (confirmed 2026-08-23, may change): clc/ sits one level
-# ABOVE hartspec_gui/ -- i.e. a sibling of hartspec_gui/, not inside it.
-# This differs from the folder structure documented in the project's own
-# spec (clc/ as a symlink INSIDE hartspec_gui/, sibling of utils/) -- the
-# team is deciding whether to move it inside hartspec_gui/ to match the
-# spec. If/when that happens, this needs to go back to parents[1]:
-#   CLC_DIR = Path(__file__).resolve().parents[1] / "clc"   # inside hartspec_gui/
-# For now, parents[2] is correct for the real on-disk layout:
-CLC_DIR = Path(__file__).resolve().parents[2] / "clc"
+# LAYOUT (confirmed 2026-08-27): clc/ is a symlink INSIDE hartspec_gui/,
+# a sibling of utils/ and pages/ -- matching the project's mandated
+# folder structure exactly. This supersedes the earlier parents[2] lookup
+# (clc/ as a sibling of hartspec_gui/ itself), which was a real,
+# confirmed-different on-disk layout at the time, not a guess -- the
+# symlink has since been fixed to match the spec, so this now does too.
+CLC_DIR = Path(__file__).resolve().parents[1] / "clc"
 if str(CLC_DIR) not in sys.path:
     sys.path.insert(0, str(CLC_DIR))
+
 
 try:
     import load_file as _lf_date  # DATE convention
