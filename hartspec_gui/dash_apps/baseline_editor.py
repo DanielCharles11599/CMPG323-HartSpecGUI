@@ -430,9 +430,17 @@ def create_app() -> Dash:
         State("fit-result-store", "data"),
         prevent_initial_call=True,
     )
-    def invalidate_fit_when_blocks_change(_rows, fit_result):
-        """A fit belongs to one exact block set; edits/deletes require a fresh fit."""
-        return None if fit_result else no_update
+    def invalidate_fit_when_blocks_change(rows, fit_result):
+        """Invalidate a fit only when its baseline blocks actually change."""
+        # Temporary fix: only invalidate the fit when the baseline blocks actually change. - Faro
+        if not fit_result:
+            return no_update
+
+        fitted_rows = fit_result.get("blocks")
+        if fitted_rows is None:
+            return None
+
+        return no_update if rows_equal(rows or [], fitted_rows) else None
 
     @app.callback(
         Output("fit-result-store", "data", allow_duplicate=True),
@@ -450,6 +458,8 @@ def create_app() -> Dash:
         blocks = [{"start": row["start"], "end": row["end"]} for row in normalized]
         try:
             result = fit_polynomial_comparison(state.get("spectrum") or {}, blocks)
+            # Temporary fix: remember the fitted block set so rehydration does not clear a valid fit. - Faro
+            result["blocks"] = normalized
         except CLCBaselineIntegrationUnavailable as exc:
             session_id = state.get("session_id")
             if session_id:
