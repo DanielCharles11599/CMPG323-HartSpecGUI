@@ -111,7 +111,7 @@ THEMES: dict[ThemeName, dict[str, str]] = {
         # this overrides the style guide's original dark-mode-only sidebar
         # color (#16233D). Flagging the divergence here since it's a
         # deliberate deviation from that doc, not an oversight.
-        "bg-sidebar": "#395790",
+        "bg-sidebar": "#16233D",
         "bg-panel": "#1E293B",
         "bg-panel-alt": "#243044",
         "border-default": "#334155",
