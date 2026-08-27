@@ -1,47 +1,77 @@
-# bandpass_correction_logic.py — FR-04: pure/testable logic backing
-# pages/03_Bandpass_Correction.py. Kept separate from the Streamlit page script
-# (same rationale as utils/source_browser_logic.py's own module docstring):
-# importing a pages/*.py file directly executes st.set_page_config()/st.* calls
-# at import time and fails outside a running Streamlit app.
+# bandpass_correction_logic.py — FR-04 Bandpass Correction logic
 #
-# Numerical core (freq_switch_correct / pos_switch_correct) reproduces the same
-# array operations as clc/Baseline.py's freq_switch() / pos_switch() line-for-
-# line (elementwise subtract, then restrict to the np.in1d-derived common-
-# velocity channels for the frequency-switch case), so results match the
-# original CLI's bandpass-corrected output to the project's 6-significant-
-# figure regression bar (see HARTSPEC-Claude Project Prompt.md, "Coding
-# standards"). This module deliberately does NOT call clc.Baseline.freq_switch
-# / clc.Baseline.pos_switch directly, though:
+# This module contains the non-visual logic used by
+# pages/03_Bandpass_Correction.py.
 #
-# TODO: confirm against design — clc/Baseline.py's freq_switch() and
-# pos_switch() unconditionally call plt.plot(...) / plt.savefig(
-# "../plots/Bandpass_Example_*.pdf", ...) as a side effect of doing the
-# correction. That's a problem for GUI integration two ways: (a) it creates
-# orphaned matplotlib Figures inside the Streamlit process instead of the
-# mandated Plotly charts, and (b) it writes to a path relative to the
-# process's cwd rather than anywhere in the project's /data/ convention --
-# depending on how `streamlit run` is invoked this either raises (no
-# "../plots" directory) or silently writes a file to an unexpected location.
-# This wasn't listed among the Phase-0 GUI-integration fixes already applied
-# to clc/Point_cor.py / clc/load_file.py / clc/Option.py, so per the project
-# instructions ("never modify the underlying scientific algorithms" + "ask
-# before assuming it's still broken") it isn't safe to assume this is already
-# handled elsewhere, and this file doesn't patch clc/Baseline.py to work
-# around it. Instead, the same math is reimplemented independently below so
-# the GUI keeps working today -- flag this for the team to confirm whether
-# clc/Baseline.py should get a Phase-0-style GUI-integration fix (stripping
-# the plotting side effect) or whether re-deriving the math here is the
-# long-term intended pattern.
+# IMPORTANT PROJECT CONSTRAINT:
+# --------------------------------
+# The original scientific modules inside /clc MUST NOT be modified.
 #
-# TODO: confirm against design — separately, clc/Baseline.py's freq_switch()
-# calls np.in1d(), which NumPy removed in 2.0. requirements.txt pins
-# numpy>=1.24 with no upper bound, so clc/Baseline.py as currently written
-# will raise AttributeError under any NumPy >=2.0 environment -- this looks
-# like a real forward-compat bug in clc/, distinct from the plotting-side-
-# effect issue above, and is flagged rather than fixed in clc/ itself for the
-# same "never modify the underlying scientific algorithms" / "ask" reason.
-# This file uses np.isin() (the maintained, behavior-equivalent replacement)
-# in its own reimplementation below.
+# In particular:
+#
+#     clc/Baseline.py
+#
+# already contains:
+#
+#     freq_switch(spec1, spec2)
+#     pos_switch(spec1, spec2)
+#
+# The GUI does not modify those functions. Instead, this module reproduces
+# the same NumPy array operations in a GUI-safe form.
+#
+# Why not call clc/Baseline.py directly?
+# ---------------------------------------
+# The original Baseline functions contain matplotlib plotting / savefig
+# side effects. Those side effects are suitable for the original CLI program
+# but are undesirable inside Streamlit because:
+#
+#   1. Page 03 uses Plotly for its graph.
+#   2. Baseline.py may create matplotlib figures during Streamlit reruns.
+#   3. Baseline.py writes PDF plots using relative filesystem paths.
+#   4. The scientific clc modules are explicitly off-limits for modification.
+#
+# Therefore this module keeps the GUI integration separate while preserving
+# the original scientific subtraction behaviour.
+#
+# Data flow
+# ---------
+#
+# Page 01:
+#     user selects FITS files
+#
+# Page 02:
+#     loads the selected FITS files using fits_ingest.py
+#     and stores successfully loaded spectrum dictionaries in:
+#
+#         st.session_state["loaded_spectra"]
+#
+# Page 03:
+#     calls get_corrected_spectrum(mode)
+#
+# This module:
+#     retrieves and validates the two spectra,
+#     applies the selected correction,
+#     and returns the corrected spectrum to Page 03.
+#
+# Testing
+# -------
+# The public helpers accept an optional `spectra` argument.
+#
+# In the real Streamlit application:
+#
+#     get_corrected_spectrum("Frequency Switch")
+#
+# automatically reads st.session_state["loaded_spectra"].
+#
+# In pytest:
+#
+#     get_corrected_spectrum("Frequency Switch", [spec1, spec2])
+#
+# lets the tests inject spectra directly without requiring a running
+# Streamlit application.
+
+
+from __future__ import annotations
 
 from typing import Any
 
@@ -49,51 +79,207 @@ import numpy as np
 import streamlit as st
 
 
+# ---------------------------------------------------------------------------
+# Types / page constants
+# ---------------------------------------------------------------------------
+
+# The CLC loaders return dictionaries containing many metadata fields in
+# addition to Vlsr/LCP/RCP, so dict[str, Any] is intentionally used instead
+# of restricting every value to np.ndarray.
 SpectrumDict = dict[str, Any]
 
+
+# Key used by utils/session_store.py for Page 03's pipeline summary.
 THIS_STAGE_KEY = "03_bandpass_correction"
 
+
+# These names must match the two selector buttons displayed by Page 03.
 MODE_OPTIONS = [
     "Frequency Switch",
     "Position Switch",
 ]
 
-_REQUIRED_SPECTRUM_KEYS = ("Vlsr", "LCP", "RCP")
+
+# Minimum fields required by clc/Baseline.py's correction algorithms.
+_REQUIRED_SPECTRUM_KEYS = (
+    "Vlsr",
+    "LCP",
+    "RCP",
+)
 
 
-def _validate_spectrum(spec: SpectrumDict, number: int) -> None:
-    """Validate the fields required for bandpass correction."""
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
 
-    missing = [key for key in _REQUIRED_SPECTRUM_KEYS if key not in spec]
+def _validate_spectrum(
+    spec: SpectrumDict,
+    number: int,
+) -> None:
+    """Validate one spectrum before attempting bandpass correction.
+
+    Page 02 can load dictionaries containing many FITS/header fields.
+    Page 03 only requires Vlsr, LCP, and RCP for FR-04.
+
+    This helper checks:
+
+    1. The three required fields exist.
+    2. Each field can be converted into a NumPy array.
+    3. Vlsr, LCP, and RCP have equal lengths.
+
+    Parameters
+    ----------
+    spec:
+        Spectrum dictionary returned by the FITS loader.
+
+    number:
+        Human-readable spectrum number (1 or 2), used only in error
+        messages.
+
+    Raises
+    ------
+    ValueError
+        If required fields are missing or array lengths are inconsistent.
+    """
+
+    missing = [
+        key
+        for key in _REQUIRED_SPECTRUM_KEYS
+        if key not in spec
+    ]
 
     if missing:
         raise ValueError(
             f"Spectrum {number} is missing required field(s): "
-            f"{', '.join(missing)}"
+            f"{', '.join(missing)}."
         )
 
-    vlsr = np.asarray(spec["Vlsr"])
-    lcp = np.asarray(spec["LCP"])
-    rcp = np.asarray(spec["RCP"])
+    try:
+        vlsr = np.asarray(spec["Vlsr"])
+        lcp = np.asarray(spec["LCP"])
+        rcp = np.asarray(spec["RCP"])
+    except Exception as exc:
+        raise ValueError(
+            f"Spectrum {number} contains invalid spectrum arrays: {exc}"
+        ) from exc
 
-    if not (len(vlsr) == len(lcp) == len(rcp)):
+    if not (
+        len(vlsr)
+        == len(lcp)
+        == len(rcp)
+    ):
         raise ValueError(
             f"Spectrum {number} has inconsistent array lengths: "
-            f"Vlsr={len(vlsr)}, LCP={len(lcp)}, RCP={len(rcp)}."
+            f"Vlsr={len(vlsr)}, "
+            f"LCP={len(lcp)}, "
+            f"RCP={len(rcp)}."
         )
 
 
-def get_raw_pair() -> tuple[SpectrumDict, SpectrumDict]:
-    """Return the two spectra loaded by Page 02."""
+def _validate_pair_lengths(
+    spec1: SpectrumDict,
+    spec2: SpectrumDict,
+) -> None:
+    """Ensure the two spectra can be subtracted element-by-element.
 
-    spectra = st.session_state.get("loaded_spectra", [])
+    The original clc/Baseline.py performs direct element-wise subtraction:
+
+        spec1["LCP"] - spec2["LCP"]
+
+    and equivalent subtraction for RCP.
+
+    NumPy therefore requires the two polarization arrays to have compatible
+    lengths. For the GUI we reject mismatched channel counts explicitly so
+    the user receives a useful message instead of a low-level broadcasting
+    exception.
+
+    Parameters
+    ----------
+    spec1:
+        First loaded observation.
+
+    spec2:
+        Second loaded observation.
+
+    Raises
+    ------
+    ValueError
+        If the LCP or RCP channel counts differ.
+    """
+
+    for key in ("LCP", "RCP"):
+        length1 = len(np.asarray(spec1[key]))
+        length2 = len(np.asarray(spec2[key]))
+
+        if length1 != length2:
+            raise ValueError(
+                f"The two spectra have different {key} channel counts "
+                f"({length1} vs {length2}) and cannot be "
+                "bandpass corrected as a pair."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Page 02 -> Page 03 handoff
+# ---------------------------------------------------------------------------
+
+def get_raw_pair(
+    spectra: list[SpectrumDict] | None = None,
+) -> tuple[SpectrumDict, SpectrumDict]:
+    """Return the two spectra used for bandpass correction.
+
+    Normal application behaviour
+    ----------------------------
+    Page 02 stores successfully loaded observations in:
+
+        st.session_state["loaded_spectra"]
+
+    Therefore Page 03 normally calls this function without an argument.
+
+    Testing behaviour
+    -----------------
+    Unit tests may pass a list directly:
+
+        get_raw_pair([spec1, spec2])
+
+    This avoids requiring a Streamlit runtime during pytest.
+
+    Parameters
+    ----------
+    spectra:
+        Optional list containing loaded spectrum dictionaries. When None,
+        the list is read from Streamlit session state.
+
+    Returns
+    -------
+    tuple
+        (spec1, spec2)
+
+    Raises
+    ------
+    ValueError
+        If fewer than two spectra are available or either spectrum is
+        malformed.
+    """
+
+    if spectra is None:
+        spectra = st.session_state.get(
+            "loaded_spectra",
+            [],
+        )
 
     if len(spectra) < 2:
         raise ValueError(
-            "Bandpass correction requires two successfully loaded FITS spectra. "
-            "Select two compatible FITS files on Page 01 and load them on Page 02."
+            "Bandpass correction requires two successfully loaded FITS "
+            "spectra. Select two compatible FITS files on Page 01 and "
+            "load them on Page 02."
         )
 
+    # FR-04 currently operates on the first successfully loaded pair.
+    #
+    # Page 01/Page 02 may eventually support larger observation sets, but
+    # pairing/grouping those sets belongs to the ingestion workflow rather
+    # than being invented here.
     spec1 = spectra[0]
     spec2 = spectra[1]
 
@@ -103,61 +289,143 @@ def get_raw_pair() -> tuple[SpectrumDict, SpectrumDict]:
     return spec1, spec2
 
 
-def _validate_pair_lengths(
-    spec1: SpectrumDict,
-    spec2: SpectrumDict,
-) -> None:
-    """Ensure the two spectra can be subtracted element-by-element."""
-
-    for key in ("LCP", "RCP"):
-        if len(spec1[key]) != len(spec2[key]):
-            raise ValueError(
-                f"The two spectra have different {key} channel counts "
-                f"({len(spec1[key])} vs {len(spec2[key])}) and cannot "
-                "be bandpass corrected as a pair."
-            )
-
+# ---------------------------------------------------------------------------
+# Frequency-switch correction
+# ---------------------------------------------------------------------------
 
 def freq_switch_correct(
     spec1: SpectrumDict,
     spec2: SpectrumDict,
 ) -> tuple[SpectrumDict, SpectrumDict]:
-    """Apply the original HartSpec frequency-switch correction."""
+    """Apply the original HartSpec frequency-switch subtraction.
 
+    This reproduces the numerical behaviour in:
+
+        clc/Baseline.py -> freq_switch()
+
+    without modifying or directly invoking that CLC function.
+
+    Original behaviour
+    ------------------
+    1. Subtract the two observations in both directions.
+    2. Find Vlsr values appearing in both spectra.
+    3. Restrict each corrected spectrum to its common velocity channels.
+    4. Preserve the rest of the original spectrum dictionary by copying it.
+
+    Parameters
+    ----------
+    spec1:
+        First frequency-switched observation.
+
+    spec2:
+        Second frequency-switched observation.
+
+    Returns
+    -------
+    tuple
+        (new_spec1, new_spec2)
+
+    Notes
+    -----
+    clc/Baseline.py uses np.in1d().
+
+    np.isin() is the maintained NumPy equivalent and is used here because
+    newer NumPy versions removed np.in1d().
+    """
+
+    _validate_spectrum(spec1, 1)
+    _validate_spectrum(spec2, 2)
     _validate_pair_lengths(spec1, spec2)
-
-    lcp1 = np.asarray(spec1["LCP"]) - np.asarray(spec2["LCP"])
-    lcp2 = np.asarray(spec2["LCP"]) - np.asarray(spec1["LCP"])
-
-    rcp1 = np.asarray(spec1["RCP"]) - np.asarray(spec2["RCP"])
-    rcp2 = np.asarray(spec2["RCP"]) - np.asarray(spec1["RCP"])
 
     vlsr1 = np.asarray(spec1["Vlsr"])
     vlsr2 = np.asarray(spec2["Vlsr"])
 
-    spec1_common = np.isin(vlsr1, vlsr2)
-    spec2_common = np.isin(vlsr2, vlsr1)
+    lcp_spec1 = (
+        np.asarray(spec1["LCP"])
+        - np.asarray(spec2["LCP"])
+    )
 
+    lcp_spec2 = (
+        np.asarray(spec2["LCP"])
+        - np.asarray(spec1["LCP"])
+    )
+
+    rcp_spec1 = (
+        np.asarray(spec1["RCP"])
+        - np.asarray(spec2["RCP"])
+    )
+
+    rcp_spec2 = (
+        np.asarray(spec2["RCP"])
+        - np.asarray(spec1["RCP"])
+    )
+
+    # Boolean masks identifying velocity values that also occur in the
+    # partner spectrum.
+    spec1_common = np.isin(
+        vlsr1,
+        vlsr2,
+    )
+
+    spec2_common = np.isin(
+        vlsr2,
+        vlsr1,
+    )
+
+    # Shallow copies are intentional and match the original Baseline.py
+    # behaviour. Only Vlsr/LCP/RCP are replaced; metadata remains available
+    # to downstream processing.
     new_spec1 = spec1.copy()
     new_spec2 = spec2.copy()
 
     new_spec1["Vlsr"] = vlsr1[spec1_common]
-    new_spec1["LCP"] = lcp1[spec1_common]
-    new_spec1["RCP"] = rcp1[spec1_common]
+    new_spec1["LCP"] = lcp_spec1[spec1_common]
+    new_spec1["RCP"] = rcp_spec1[spec1_common]
 
     new_spec2["Vlsr"] = vlsr2[spec2_common]
-    new_spec2["LCP"] = lcp2[spec2_common]
-    new_spec2["RCP"] = rcp2[spec2_common]
+    new_spec2["LCP"] = lcp_spec2[spec2_common]
+    new_spec2["RCP"] = rcp_spec2[spec2_common]
 
     return new_spec1, new_spec2
 
+
+# ---------------------------------------------------------------------------
+# Position-switch correction
+# ---------------------------------------------------------------------------
 
 def pos_switch_correct(
     spec1: SpectrumDict,
     spec2: SpectrumDict,
 ) -> SpectrumDict:
-    """Apply the original HartSpec position-switch correction."""
+    """Apply the original HartSpec position-switch subtraction.
 
+    This reproduces:
+
+        clc/Baseline.py -> pos_switch()
+
+    The first spectrum represents the signal/on-source observation and the
+    second represents the reference/off-source observation.
+
+    Unlike frequency switching, position switching does not search for a
+    common Vlsr subset. The original algorithm directly subtracts LCP and
+    RCP while retaining spec1's velocity grid.
+
+    Parameters
+    ----------
+    spec1:
+        Signal/on-source observation.
+
+    spec2:
+        Reference/off-source observation.
+
+    Returns
+    -------
+    dict
+        Corrected spectrum based on a copy of spec1.
+    """
+
+    _validate_spectrum(spec1, 1)
+    _validate_spectrum(spec2, 2)
     _validate_pair_lengths(spec1, spec2)
 
     new_spec = spec1.copy()
@@ -175,35 +443,109 @@ def pos_switch_correct(
     return new_spec
 
 
-def get_corrected_spectrum(mode: str) -> SpectrumDict:
-    """Return the corrected spectrum displayed by Page 03."""
+# ---------------------------------------------------------------------------
+# Public correction entry point used by Page 03
+# ---------------------------------------------------------------------------
 
-    spec1, spec2 = get_raw_pair()
+def get_corrected_spectrum(
+    mode: str,
+    spectra: list[SpectrumDict] | None = None,
+) -> SpectrumDict:
+    """Return the corrected spectrum that Page 03 should display.
+
+    Parameters
+    ----------
+    mode:
+        Either "Frequency Switch" or "Position Switch".
+
+    spectra:
+        Optional spectra list. Normally omitted by Page 03 so the function
+        reads st.session_state["loaded_spectra"]. Tests can supply spectra
+        directly.
+
+    Returns
+    -------
+    dict
+        Corrected spectrum containing Vlsr/LCP/RCP plus any metadata copied
+        from the first input observation.
+
+    Raises
+    ------
+    ValueError
+        If the mode is unknown or the loaded pair is invalid.
+    """
+
+    # Validate the mode before touching session state. This keeps invalid
+    # mode errors deterministic and makes the function easier to test.
+    if mode not in MODE_OPTIONS:
+        raise ValueError(
+            f"Unknown bandpass mode: {mode!r}. "
+            f"Expected one of {MODE_OPTIONS}."
+        )
+
+    spec1, spec2 = get_raw_pair(spectra)
 
     if mode == "Frequency Switch":
-        corrected, _ = freq_switch_correct(spec1, spec2)
-        return corrected
+        new_spec1, _new_spec2 = freq_switch_correct(
+            spec1,
+            spec2,
+        )
 
-    if mode == "Position Switch":
-        return pos_switch_correct(spec1, spec2)
+        # The Page 03 specification displays one LCP/RCP pair rather than
+        # both sign-inverted frequency-switch outputs, so the first corrected
+        # spectrum is used for the graph.
+        return new_spec1
 
-    raise ValueError(f"Unknown bandpass mode: {mode!r}")
+    # The mode has already been validated above, so the only remaining
+    # possibility is Position Switch.
+    return pos_switch_correct(
+        spec1,
+        spec2,
+    )
 
+
+# ---------------------------------------------------------------------------
+# Pipeline/session summary
+# ---------------------------------------------------------------------------
 
 def stage_summary(
     mode: str,
     corrected: SpectrumDict,
 ) -> dict[str, object]:
-    """Return the serializable Page 03 pipeline summary."""
+    """Build Page 03's small JSON-serializable pipeline summary.
 
-    vlsr = np.asarray(corrected["Vlsr"])
+    The full NumPy arrays are deliberately NOT written into pipeline_data.
+    Session persistence should contain lightweight metadata rather than
+    duplicating large spectrum arrays.
+
+    Parameters
+    ----------
+    mode:
+        Correction mode used.
+
+    corrected:
+        Corrected spectrum returned by get_corrected_spectrum().
+
+    Returns
+    -------
+    dict
+        Serializable summary containing mode, channel count, and Vlsr range.
+    """
+
+    vlsr = np.asarray(
+        corrected["Vlsr"],
+    )
+
+    if vlsr.size:
+        vlsr_range = [
+            float(vlsr.min()),
+            float(vlsr.max()),
+        ]
+    else:
+        vlsr_range = []
 
     return {
         "mode": mode,
         "n_channels": int(vlsr.size),
-        "vlsr_range_kms": (
-            [float(vlsr.min()), float(vlsr.max())]
-            if vlsr.size
-            else []
-        ),
+        "vlsr_range_kms": vlsr_range,
     }
