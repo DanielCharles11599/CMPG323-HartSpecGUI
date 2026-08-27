@@ -80,7 +80,7 @@ load_dotenv_if_present()
 # retired outright, not kept as a silent fallback -- a stale .env should
 # fail loudly (empty archive / FileNotFoundError) rather than quietly keep
 # reading the wrong directory.
-DEFAULT_ARCHIVE_ROOT = Path("/data/fits")
+DEFAULT_ARCHIVE_ROOT = Path("./data/fits")
 
 
 def get_archive_root() -> Path:
