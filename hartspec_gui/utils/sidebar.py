@@ -31,7 +31,13 @@ def render_sidebar(current_stage: int) -> None:
 
     The active stage is shown as a filled, non-interactive pill (there's no
     need for it to be clickable -- the user is already on that page); the
-    other seven are rendered as buttons that navigate via ``st.switch_page``.
+    other seven are ``st.button`` + ``st.switch_page`` (NOT ``st.page_link``:
+    that command validates its target file at render time, so the sidebar
+    would break the moment it lists a stage whose page file doesn't exist
+    yet -- ``switch_page`` only checks the target when actually clicked).
+    Each of these buttons is preceded by a small ``.hs-nav-marker`` element
+    so ``styles.inject_base_css`` can strip its background/border via CSS
+    without touching the Save/Load/Reset or theme-toggle buttons below.
     """
     session_store.init_session_state()
     theme = styles.get_theme()
@@ -51,8 +57,10 @@ def render_sidebar(current_stage: int) -> None:
                     f'font-weight:600;">{label}</div>',
                     unsafe_allow_html=True,
                 )
-            elif st.button(label, key=f"nav_{idx}", use_container_width=True):
-                st.switch_page(page_path)
+            else:
+                st.markdown('<span class="hs-nav-marker"></span>', unsafe_allow_html=True)
+                if st.button(label, key=f"nav_{idx}", use_container_width=True):
+                    st.switch_page(page_path)
 
         st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
         st.caption("THEME")
