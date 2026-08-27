@@ -27,6 +27,7 @@ from typing import List
 import streamlit as st
 
 from utils import session_store, sidebar, styles
+
 from utils.source_browser_logic import (
     FREQUENCY_OPTIONS,
     THIS_STAGE_KEY,

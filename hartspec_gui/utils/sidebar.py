@@ -53,7 +53,7 @@ def render_sidebar(current_stage: int) -> None:
             if idx == current_stage:
                 st.markdown(
                     f'<div style="margin:2px 12px 2px; padding:8px 12px; border-radius:6px; '
-                    f'background-color:{theme["accent"]}; color:#FFFFFF; font-size:12px; '
+                    f'background-color:{theme["accent"]}; color:#FFFFFF; '#font-size:12px; '  Font size temporarily removed to standardizing the same size for selected vs not selected stages
                     f'font-weight:600;">{label}</div>',
                     unsafe_allow_html=True,
                 )
