@@ -46,6 +46,7 @@
 from typing import Dict, Tuple
 
 import numpy as np
+import streamlit as st
 
 # Vlsr/LCP/RCP arrays, matching the exact contract clc/Baseline.py's own
 # freq_switch()/pos_switch() expect (dict-like with these three keys).
@@ -64,11 +65,41 @@ _DEFAULT_N_CHANNELS = 256
 _DEFAULT_VLSR_STEP = 0.15  # km/s per channel -- arbitrary but realistic for HI-line work
 _DEFAULT_VLSR_START = -20.0
 _FREQ_SWITCH_SHIFT_CHANNELS = 24  # channel offset between the two LO throws
+    
 
+def get_raw_pair(mode: str) -> Tuple[SpectrumDict, SpectrumDict]:
+    """Return the two real FITS spectra loaded by Page 02."""
+
+    spectra = st.session_state.get("loaded_spectra", [])
+
+    if len(spectra) < 2:
+        raise ValueError(
+            "Bandpass correction requires two loaded FITS spectra. "
+            "Go back to Page 1, select two FITS files, and load them on Page 2."
+        )
+
+    spec1 = spectra[0]
+    spec2 = spectra[1]
+
+    required_keys = ("Vlsr", "LCP", "RCP")
+
+    for index, spec in enumerate((spec1, spec2), start=1):
+        missing = [key for key in required_keys if key not in spec]
+
+        if missing:
+            raise ValueError(
+                f"Spectrum {index} is missing required fields: "
+                f"{', '.join(missing)}"
+            )
+
+    return spec1, spec2
+
+    raise ValueError(f"Unknown bandpass mode: {mode!r}. Expected one of {MODE_OPTIONS}.")
 
 def _synthetic_line(vlsr: np.ndarray, seed: int, amplitude_scale: float) -> Tuple[np.ndarray, np.ndarray]:
     """Deterministic synthetic HI-like Gaussian bump + flat Tsys baseline, for LCP/RCP.
 
+    
     TODO: confirm against design — there's no live FITS-reading pipeline wired
     up yet (that's FR-02/clc/load_file.py, page 02's job); this stands in for
     a loaded+calibrated raw spectrum so page 03's chart isn't empty before
@@ -108,7 +139,27 @@ def get_placeholder_raw_pair(mode: str) -> Tuple[SpectrumDict, SpectrumDict]:
         mode: One of MODE_OPTIONS.
 
     Returns:
-        (spec1, spec2) SpectrumDicts.
+        (spec1, spec2) Spebase_len = _DEFAULT_N_CHANNELS
+    base_vlsr = _DEFAULT_VLSR_START + _DEFAULT_VLSR_STEP * np.arange(base_len + _FREQ_SWITCH_SHIFT_CHANNELS)
+
+    if mode == "Frequency Switch":
+        vlsr1 = base_vlsr[:base_len]
+        vlsr2 = base_vlsr[_FREQ_SWITCH_SHIFT_CHANNELS:_FREQ_SWITCH_SHIFT_CHANNELS + base_len]
+        lcp1, rcp1 = _synthetic_line(vlsr1, seed=1, amplitude_scale=1.0)
+        lcp2, rcp2 = _synthetic_line(vlsr2, seed=2, amplitude_scale=0.0)  # reference throw: baseline only
+        spec1: SpectrumDict = {"Vlsr": vlsr1, "LCP": lcp1, "RCP": rcp1}
+        spec2: SpectrumDict = {"Vlsr": vlsr2, "LCP": lcp2, "RCP": rcp2}
+        return spec1, spec2
+
+    if mode == "Position Switch":
+        vlsr = base_vlsr[:base_len]
+        lcp1, rcp1 = _synthetic_line(vlsr, seed=3, amplitude_scale=1.0)
+        lcp2, rcp2 = _synthetic_line(vlsr, seed=4, amplitude_scale=0.0)  # off-source: baseline only
+        spec1 = {"Vlsr": vlsr, "LCP": lcp1, "RCP": rcp1}
+        spec2 = {"Vlsr": vlsr, "LCP": lcp2, "RCP": rcp2}
+        return spec1, spec2
+
+    raise ValueError(f"Unknown bandpass mode: {mode!r}. Expected one of {MODE_OPTIONS}.")ctrumDicts.
 
     Raises:
         ValueError: If `mode` isn't a recognized value.
@@ -224,7 +275,7 @@ def get_corrected_spectrum(mode: str) -> SpectrumDict:
     Raises:
         ValueError: If `mode` isn't a recognized value.
     """
-    spec1, spec2 = get_placeholder_raw_pair(mode)
+    spec1, spec2 = get_raw_pair(mode)
 
     if mode == "Frequency Switch":
         new_spec1, _new_spec2 = freq_switch_correct(spec1, spec2)

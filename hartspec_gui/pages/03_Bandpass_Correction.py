@@ -188,7 +188,12 @@ st.write("")  # approximates the gap between the pill row and the chart panel be
 # build spec §7 p.03: x=244 y=174 w=1172 h=440
 # ---------------------------------------------------------------------------
 mode = st.session_state["bandpass_mode"]
-corrected = get_corrected_spectrum(mode)
+
+try:
+    corrected = get_corrected_spectrum(mode)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
 
 with st.container(border=True):
     st.markdown(f'<div class="hs-panel-title">{CHART_PANEL_TITLE}</div>', unsafe_allow_html=True)
