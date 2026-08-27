@@ -64,16 +64,28 @@ load_dotenv_if_present()
 
 # Default FITS archive root per the project's mandated folder layout
 # (/data/fits/, read-only, separate from the app directory). Overridable
-# via HARTSPEC_FITS_ARCHIVE_ROOT so tests/dev machines without a real
-# /data/fits mount can point at a fixtures directory instead -- read on
-# every call (not cached at import time) so a test can set the env var
-# right before calling, even if this module was already imported.
+# via FITS_ARCHIVE_PATH -- the SAME env var pages/01_Source_Browser.py
+# reads (via source_browser_logic.DEFAULT_FITS_ARCHIVE_PATH), matching the
+# naming convention documented in HARTSPEC-Claude_Project_Prompt.md
+# ("FITS_ARCHIVE_PATH=./data/fits"). Read on every call (not cached at
+# import time) so a test can set the env var right before calling, even if
+# this module was already imported.
+#
+# CONFIRMED 2026-08-26: this module previously invented its own name,
+# HARTSPEC_FITS_ARCHIVE_ROOT, before Page 01's real archive-scanning code
+# existed to expose the conflict -- Page 01 would resolve one directory,
+# Page 02 a different one, and every file Page 01 handed off would 404 on
+# Page 02 even though the archive genuinely existed (just at the other
+# path). Standardized on FITS_ARCHIVE_PATH; HARTSPEC_FITS_ARCHIVE_ROOT is
+# retired outright, not kept as a silent fallback -- a stale .env should
+# fail loudly (empty archive / FileNotFoundError) rather than quietly keep
+# reading the wrong directory.
 DEFAULT_ARCHIVE_ROOT = Path("/data/fits")
 
 
 def get_archive_root() -> Path:
     """Return the active FITS archive root, honoring the env-var override."""
-    override = os.environ.get("HARTSPEC_FITS_ARCHIVE_ROOT")
+    override = os.environ.get("FITS_ARCHIVE_PATH")
     return Path(override) if override else DEFAULT_ARCHIVE_ROOT
 
 

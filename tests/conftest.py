@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]  # repo root -- tests/ is a SIBLING of hartspec_gui/, not nested inside it
+REPO_ROOT = Path(__file__).resolve().parents[1]  # repo root -- tests/ is a SIBLING of hartspec_gui/, not nested
 HARTSPEC_GUI_DIR = REPO_ROOT / "hartspec_gui"
 if str(HARTSPEC_GUI_DIR) not in sys.path:
     sys.path.insert(0, str(HARTSPEC_GUI_DIR))
@@ -26,14 +26,6 @@ from utils.env import load_dotenv_if_present  # noqa: E402
 # Load .env once, at collection time -- before any fixture below reads
 # os.environ. Without this, real_fits_archive's env check only worked by
 # accident (whichever test happened to import utils.fits_ingest first).
-load_dotenv_if_present()
-
-from utils.env import load_dotenv_if_present  # noqa: E402
-
-# Load .env NOW, at collection time -- before any fixture runs. Without
-# this, real_fits_archive below reads os.environ before anything has ever
-# imported utils.fits_ingest (which is what normally triggers the .env
-# load), and would wrongly skip even with a real .env file present.
 load_dotenv_if_present()
 
 
@@ -50,8 +42,15 @@ def fits_archive(monkeypatch, fits_fixtures_dir) -> Path:
     """Point utils.fits_ingest.get_archive_root() at the synthetic fixtures
     for the duration of one test, via the same env var the app itself
     honors -- so no test-only code path exists inside fits_ingest.py.
+
+    FITS_ARCHIVE_PATH is the canonical name (matches
+    source_browser_logic.DEFAULT_FITS_ARCHIVE_PATH / the project prompt's
+    documented convention) -- confirmed 2026-08-26, replacing the earlier
+    HARTSPEC_FITS_ARCHIVE_ROOT name that only fits_ingest.py used, which
+    caused Page 01 and Page 02 to silently resolve two different
+    directories.
     """
-    monkeypatch.setenv("HARTSPEC_FITS_ARCHIVE_ROOT", str(fits_fixtures_dir))
+    monkeypatch.setenv("FITS_ARCHIVE_PATH", str(fits_fixtures_dir))
     return fits_fixtures_dir
 
 
@@ -75,5 +74,7 @@ def real_fits_archive(monkeypatch) -> Path:
     path = Path(real_dir)
     if not path.is_dir():
         pytest.skip(f"HARTSPEC_REAL_FITS_DIR={real_dir} is not a directory")
-    monkeypatch.setenv("HARTSPEC_FITS_ARCHIVE_ROOT", str(path))
+    # FITS_ARCHIVE_PATH is the canonical archive-root override (see
+    # fits_archive fixture above) -- HARTSPEC_FITS_ARCHIVE_ROOT is retired.
+    monkeypatch.setenv("FITS_ARCHIVE_PATH", str(path))
     return path

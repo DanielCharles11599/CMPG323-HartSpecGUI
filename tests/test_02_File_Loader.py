@@ -49,8 +49,8 @@ def _app_for(*filenames: str) -> AppTest:
     """Build an AppTest instance targeting one or more fixture filenames.
 
     Requires the `fits_archive` (or `real_fits_archive`) fixture to have
-    run first (sets HARTSPEC_FITS_ARCHIVE_ROOT) -- callers must request it
-    via a test argument even if they don't use the returned path directly.
+    run first (sets FITS_ARCHIVE_PATH) -- callers must request it via a
+    test argument even if they don't use the returned path directly.
     """
     at = AppTest.from_file(PAGE_PATH)
     at.session_state["file_loader_target_filenames"] = list(filenames)
