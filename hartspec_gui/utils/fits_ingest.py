@@ -106,14 +106,14 @@ if str(CLC_DIR) not in sys.path:
 
 
 try:
-    import load_file as _lf_date  # DATE convention
+    import clc.load_file as _lf_date  # DATE convention
     _LF_DATE_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - environment-dependent
     _lf_date = None
     _LF_DATE_IMPORT_ERROR = str(exc)
 
 try:
-    import load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
+    import clc.load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
     _LF_DATEOBS_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - specutils missing
     _lf_dateobs = None
