@@ -15,13 +15,19 @@ from __future__ import annotations
 
 import json
 import uuid
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-SESSIONS_DIR = Path("/data/sessions")
+from utils.env import load_dotenv_if_present
+
+load_dotenv_if_present()  # same defense-in-depth reason fits_ingest.py does this
+
+SESSIONS_DIR = Path(os.environ.get("HARTSPEC_SESSIONS_DIR", "hartspec_gui/data/sessions"))
+#SESSIONS_DIR = Path("/data/sessions")
 
 
 def _ensure_sessions_dir() -> None:

@@ -405,3 +405,4 @@ def render_page_header(title: str, subtitle: str, current_stage: int, completed_
         """,
         unsafe_allow_html=True,
     )
+

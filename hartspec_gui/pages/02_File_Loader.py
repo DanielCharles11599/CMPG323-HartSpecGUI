@@ -158,7 +158,7 @@ def _render_target_file_override() -> None:
     with st.expander("Dev override: choose files manually", expanded=False):
         current = st.session_state.get("file_loader_target_filenames", [LOAD_FILENAME])
         typed = st.text_area(
-            "Filenames, one per line (relative to FITS_ARCHIVE_PATH)",
+            "Filenames, one per line (relative to HARTSPEC_FITS_ARCHIVE_ROOT)",
             value="\n".join(current),
             key="file_loader_manual_filenames_input",
             height=100,
@@ -294,6 +294,23 @@ def _render_load_progress() -> None:
     for idx, filename in enumerate(filenames, start=1):
         _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
         results[filename] = _run_real_load(filename)
+        
+######addition for page 3########
+    loaded_spectra = [
+    result.spectrum
+    for result in results.values()
+    if result.ok and result.spectrum is not None
+    ]
+
+    st.session_state["loaded_spectra"] = loaded_spectra
+
+    # Backward compatibility for anything still expecting one spectrum
+    if loaded_spectra:
+        st.session_state["loaded_spectrum"] = loaded_spectra[0]
+    else:
+        st.session_state.pop("loaded_spectrum", None)
+######addition for page 3########
+
     elapsed_total = time.perf_counter() - start_all
 
     ok_count = sum(1 for r in results.values() if r.ok)

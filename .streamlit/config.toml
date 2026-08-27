@@ -1,6 +1,6 @@
 [server]
 port = 8501
-address = '192.168.x.x'     # Observatory intranet IP
+address = '127.1.0.0'     # Observatory intranet IP
 enableCORS = false
 enableXsrfProtection = true
 
