@@ -3,13 +3,13 @@
 # Calibration Dashboard for atmospheric calibration and Point Source
 # Sensitivity (PSS) visualisation.
 #
-# Scientific calculations are handled by the existing CLC calibration
-# module and will be connected to this page separately.
+# Atmospheric calculations use the existing CLC calibration module.
+# Page 05 only handles the GUI and integration around those calculations.
 
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import session_store, sidebar, styles
+from utils import calibration_logic, session_store, sidebar, styles
 
 
 CURRENT_STAGE = 5
@@ -29,6 +29,18 @@ styles.inject_base_css()
 
 _theme = styles.get_theme()
 
+loaded_spectrum = st.session_state.get("loaded_spectrum")
+atmospheric_result = None
+atmospheric_error = None
+
+if loaded_spectrum is not None:
+    try:
+        atmospheric_result = calibration_logic.get_atmospheric_calibration(
+            loaded_spectrum
+        )
+    except Exception as exc:
+        atmospheric_error = str(exc)
+
 styles.render_page_header(
     title=PAGE_TITLE,
     subtitle=PAGE_SUBTITLE,
@@ -47,17 +59,31 @@ with st.container(border=True):
 
     metric_cols = st.columns(4)
 
+    if atmospheric_result is not None:
+        pwv_value = f"{atmospheric_result['pwv']:.3f} mm"
+        elevation_value = f"{atmospheric_result['elevation']:.3f}°"
+        atcor_value = f"{atmospheric_result['atcor']:.4f}"
+    else:
+        pwv_value = "Not calculated"
+        elevation_value = "Not calculated"
+        atcor_value = "Not calculated"
+
     with metric_cols[0]:
-        st.metric("PWV", "Not calculated")
+        st.metric("PWV", pwv_value)
 
     with metric_cols[1]:
-        st.metric("Elevation", "Not calculated")
+        st.metric("Elevation", elevation_value)
 
     with metric_cols[2]:
-        st.metric("Zenith optical depth", "Not calculated")
+        st.metric("Zenith optical depth", "Not available")
 
     with metric_cols[3]:
-        st.metric("ATcor", "Not calculated")
+        st.metric("ATcor", atcor_value)
+
+    if loaded_spectrum is None:
+        st.info("Load a spectrum before running atmospheric calibration.")
+    elif atmospheric_error is not None:
+        st.error(f"Atmospheric calibration could not be completed: {atmospheric_error}")
 
     atmospheric_fig = go.Figure()
 
