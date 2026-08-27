@@ -107,7 +107,11 @@ THEMES: dict[ThemeName, dict[str, str]] = {
         # and border-subtle outline -- without it a table header blends
         # into the page background.
         "bg-primary": "#395790",
-        "bg-sidebar": "#16233D",
+        # Sidebar uses the same #395790 as light mode per explicit request --
+        # this overrides the style guide's original dark-mode-only sidebar
+        # color (#16233D). Flagging the divergence here since it's a
+        # deliberate deviation from that doc, not an oversight.
+        "bg-sidebar": "#395790",
         "bg-panel": "#1E293B",
         "bg-panel-alt": "#243044",
         "border-default": "#334155",
@@ -219,6 +223,33 @@ def inject_base_css() -> None:
 
         [data-testid="stSidebar"] * {{
             color: {theme['sidebar-text-inactive']};
+        }}
+
+        /* Inactive nav items -- text only, no background, no border, no
+           hover fill. Scoped via the .hs-nav-marker span sidebar.py emits
+           immediately before each nav st.button, using the long-stable
+           .element-container wrapper class + :has() -- this deliberately
+           avoids the newer `st-key-` widget CSS class, which only shipped
+           in Streamlit 1.39 and isn't available in this project's pinned
+           1.32.0. The active stage is its own filled pill <div>, rendered
+           separately in utils/sidebar.py, and is unaffected by this rule. */
+        [data-testid="stSidebar"] .element-container:has(.hs-nav-marker) + .element-container button {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: {theme['sidebar-text-inactive']} !important;
+            font-size: 12px !important;
+            font-weight: 400 !important;
+            text-align: left !important;
+            justify-content: flex-start !important;
+            padding: 8px 12px !important;
+        }}
+        [data-testid="stSidebar"] .element-container:has(.hs-nav-marker) + .element-container button:hover,
+        [data-testid="stSidebar"] .element-container:has(.hs-nav-marker) + .element-container button:focus {{
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: {theme['sidebar-text-inactive']} !important;
         }}
 
         .block-container {{
