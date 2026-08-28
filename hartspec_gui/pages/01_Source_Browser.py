@@ -16,6 +16,12 @@
 # placeholder) File_check.py-driven observation-block files in the session's
 # workspace folder.
 #
+# 2026-08-28 fix: "Load into Pipeline" used to write the selected files only
+# under the "fits_file_paths" key. 02_File_Loader.py reads a "selected_files"
+# key that this page never wrote, so it always fell back to its own dev
+# default regardless of what was picked here. Now writes both keys -- see
+# utils/source_browser_logic.py's build_selected_files() for the details.
+#
 # Shared chrome/session logic comes from the project's real utils modules:
 #   - utils/styles.py         -> inject_base_css(), get_theme(), render_badge(),
 #                                 render_page_header()
@@ -31,6 +37,7 @@ import streamlit as st
 from utils import session_store, sidebar, styles
 from utils.source_browser_logic import (
     THIS_STAGE_KEY,
+    build_selected_files,
     build_summary_text,
     default_fits_directory,
     distinct_frequencies_mhz,
@@ -182,6 +189,12 @@ with filter_cols[0]:
     )
 with filter_cols[1]:
     st.markdown('<div class="hs-eyebrow">Frequency</div>', unsafe_allow_html=True)
+    # TODO: confirm against design — build spec §7 shows this dropdown as
+    # "1420.405 MHz — HI line" (frequency plus a human-readable line name).
+    # No frequency -> line-name mapping is confirmed anywhere in utils/ yet
+    # (only 1420.405 MHz = HI is stated in the spec; other maser lines
+    # HARTSPEC monitors aren't), so this shows bare MHz values rather than
+    # guessing a mapping table.
     selected_frequency = st.selectbox(
         "Frequency",
         options=frequency_options,
@@ -227,6 +240,19 @@ earliest_date = earliest_observation_date(filtered_files)
 with st.container(border=True):
     summary_text = build_summary_text(filtered_files, selected_source, selected_frequency, earliest_date)
     st.markdown(f'<div class="hs-summary-text">{summary_text}</div>', unsafe_allow_html=True)
+
+    # Non-blocking: bandpass_correction_logic.get_raw_pair() (Stage 3) raises
+    # if fewer than two spectra were loaded, since freq/pos-switch correction
+    # needs a pair. Warning here, where the user can still change filters,
+    # is more useful than letting them find out three pages later.
+    if len(filtered_files) == 1:
+        st.markdown(
+            '<div class="hs-file-caption">Bandpass correction (Stage 3) needs at least two '
+            'matching FITS files (e.g. a signal/reference pair) — only one currently matches '
+            'these filters.</div>',
+            unsafe_allow_html=True,
+        )
+
     st.write("")
 
     load_clicked = st.button(
@@ -244,7 +270,16 @@ if load_clicked:
     run_file_check_placeholder([f.path for f in filtered_files], workspace_dir)
 
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
+        # Kept for anything else that may already read it (pages 04/06/07/08
+        # weren't available to check against when this was fixed).
         "fits_file_paths": [str(f.path) for f in filtered_files],
+        # "selected_files" is the key 02_File_Loader.py actually reads
+        # (`pipeline_data[SOURCE_BROWSER_STAGE_KEY]["selected_files"]`).
+        # This page used to only write "fits_file_paths" above, which
+        # nothing downstream ever read — so every file picked here was
+        # silently ignored, and Page 02 always fell back to loading its
+        # single-file dev default instead. This is the fix for that.
+        "selected_files": build_selected_files(filtered_files),
         "source_name": selected_source,
         "frequency_mhz": selected_frequency,
         "earliest_observation_date": earliest_date,
