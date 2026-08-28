@@ -140,37 +140,80 @@ with st.container(border=True):
 
     atmospheric_fig = go.Figure()
 
-    atmospheric_fig.add_annotation(
-        text="Atmospheric calibration data will appear here",
-        x=0.5,
-        y=0.5,
-        xref="paper",
-        yref="paper",
-        showarrow=False,
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=13,
-            color=_theme["text-muted"],
-        ),
-    )
+    if atmospheric_result is not None:
+        atmospheric_fig.add_trace(
+            go.Bar(
+                x=["PWV"],
+                y=[atmospheric_result["pwv"]],
+                name="PWV",
+                hovertemplate="PWV %{y:.3f} mm<extra></extra>",
+            )
+        )
 
-    atmospheric_fig.update_layout(
-        paper_bgcolor=_theme["bg-panel"],
-        plot_bgcolor=_theme["bg-panel"],
-        margin=dict(l=48, r=16, t=20, b=40),
-        height=300,
-        xaxis=dict(
-            visible=False,
-        ),
-        yaxis=dict(
-            visible=False,
-        ),
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=11,
-            color=_theme["text-body"],
-        ),
-    )
+        atmospheric_fig.add_trace(
+            go.Bar(
+                x=["ATcor"],
+                y=[atmospheric_result["atcor"]],
+                name="ATcor",
+                yaxis="y2",
+                hovertemplate="ATcor %{y:.4f}<extra></extra>",
+            )
+        )
+
+        atmospheric_fig.update_layout(
+            paper_bgcolor=_theme["bg-panel"],
+            plot_bgcolor=_theme["bg-panel"],
+            margin=dict(l=48, r=48, t=28, b=40),
+            height=300,
+            bargap=0.5,
+            showlegend=False,
+            xaxis=dict(
+                title="Current observation",
+            ),
+            yaxis=dict(
+                title="PWV (mm)",
+                rangemode="tozero",
+            ),
+            yaxis2=dict(
+                title="ATcor",
+                overlaying="y",
+                side="right",
+                rangemode="tozero",
+            ),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=_theme["text-body"],
+            ),
+        )
+    else:
+        atmospheric_fig.add_annotation(
+            text="Atmospheric calibration data will appear here",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=13,
+                color=_theme["text-muted"],
+            ),
+        )
+
+        atmospheric_fig.update_layout(
+            paper_bgcolor=_theme["bg-panel"],
+            plot_bgcolor=_theme["bg-panel"],
+            margin=dict(l=48, r=16, t=20, b=40),
+            height=300,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=_theme["text-body"],
+            ),
+        )
 
     st.plotly_chart(
         atmospheric_fig,
