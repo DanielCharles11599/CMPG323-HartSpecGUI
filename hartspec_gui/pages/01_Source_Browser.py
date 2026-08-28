@@ -210,20 +210,43 @@ with filter_cols[1]:
 # ---------------------------------------------------------------------------
 def _render_tree(node, source_filter, frequency_filter, depth: int = 0) -> None:
     if node is None or not matching_files(node, source_filter, frequency_filter):
-        return  # prune branches with nothing matching, at any depth
+        return
 
-    with st.expander(node.name or "/", expanded=(depth == 0)):
-        for source_file in node.files:
-            if source_file.source_name != source_filter or source_file.frequency_mhz != frequency_filter:
-                continue
-            badge_html = styles.render_badge(source_file.status, status_css_class(source_file.status))
-            st.markdown(
-                f'<div class="hs-file-name">{source_file.filename}</div>'
-                f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB · {badge_html}</div>',
-                unsafe_allow_html=True,
-            )
-        for child in node.subdirectories:
-            _render_tree(child, source_filter, frequency_filter, depth + 1)
+    indent = "&nbsp;" * (depth * 4)
+
+    st.markdown(
+        f"{indent}**{node.name or '/'}**",
+        unsafe_allow_html=True,
+    )
+
+    for source_file in node.files:
+        if (
+            source_file.source_name != source_filter
+            or source_file.frequency_mhz != frequency_filter
+        ):
+            continue
+
+        badge_html = styles.render_badge(
+            source_file.status,
+            status_css_class(source_file.status),
+        )
+
+        st.markdown(
+            f'{indent}&nbsp;&nbsp;&nbsp;&nbsp;'
+            f'<div class="hs-file-name">{source_file.filename}</div>'
+            f'<div class="hs-file-caption">'
+            f'{source_file.size_mb:.1f}MB · {badge_html}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    for child in node.subdirectories:
+        _render_tree(
+            child,
+            source_filter,
+            frequency_filter,
+            depth + 1,
+        )
 
 
 with st.container(border=True):
