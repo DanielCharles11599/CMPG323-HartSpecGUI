@@ -14,8 +14,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
+from utils import fits_ingest
 from utils import source_browser_logic as sbl  # noqa: E402
 from utils.source_browser_logic import (  # noqa: E402
+    build_selected_files,
     build_summary_text,
     default_fits_directory,
     distinct_frequencies_mhz,
@@ -74,14 +76,50 @@ def _write_fits(path: Path, date_obs=None, obj=None, restfreq_hz=None, corrupt=F
 
 
 class TestDefaultFitsDirectory:
+    """default_fits_directory() no longer has its own independent
+    FITS_ARCHIVE_PATH-reading/fallback logic -- it delegates entirely to
+    fits_ingest.get_archive_root() (see source_browser_logic.py's own
+    docstring on default_fits_directory for why: Page 01's browse default
+    and Page 02's file-loading root used to be two separately-maintained
+    copies of the same logic, and drifted, which is what originally broke
+    the Page 01 -> Page 02 handoff). These tests were written against the
+    old, independent implementation and need to reflect that.
+    """
+
     def test_uses_env_var_when_set(self, monkeypatch):
         monkeypatch.setenv("FITS_ARCHIVE_PATH", "/custom/path")
-        assert default_fits_directory() == "/custom/path"
+        # Compared as Path objects, not raw strings: default_fits_directory()
+        # returns str(fits_ingest.get_archive_root()), and str(Path(...))
+        # renders with the host OS's separator (backslashes on Windows) --
+        # a literal POSIX-style string comparison isn't portable.
+        assert Path(default_fits_directory()) == Path("/custom/path")
 
-    def test_falls_back_to_local_relative_path_when_nothing_available(self, monkeypatch):
+    def test_falls_back_to_fits_ingest_default_when_no_env_var(self, monkeypatch):
         monkeypatch.delenv("FITS_ARCHIVE_PATH", raising=False)
-        monkeypatch.setattr(sbl.Path, "is_dir", lambda self: False)
-        assert default_fits_directory() == "./data/fits"
+        # The old implementation had its own extra fallback branch here
+        # (checking whether /data/fits/ exists on this machine via
+        # Path.is_dir()) that fits_ingest.get_archive_root() doesn't have --
+        # that's exactly the divergent-fallback-logic this was fixed to
+        # remove, so there's no is_dir() behavior left to monkeypatch or
+        # assert on. The expected value is read from
+        # fits_ingest.DEFAULT_ARCHIVE_ROOT directly rather than duplicated
+        # here as a literal, so this test can't silently drift out of sync
+        # with it either -- comparing Path("./data/fits") == Path("data/fits")
+        # is also intentional: pathlib strips a leading "./" when parsing,
+        # so str(fits_ingest.DEFAULT_ARCHIVE_ROOT) is "data/fits", not
+        # "./data/fits", even though the two refer to the same directory.
+        assert Path(default_fits_directory()) == fits_ingest.DEFAULT_ARCHIVE_ROOT
+
+    def test_delegates_to_fits_ingest_get_archive_root(self, monkeypatch):
+        """Pins down the actual bug fix, not just today's return value:
+        default_fits_directory() must call fits_ingest.get_archive_root()
+        (the same function 02_File_Loader.py uses to resolve where to load
+        files from) rather than re-deriving its own copy of the same
+        env-var logic -- that reimplementation is exactly what let the two
+        pages disagree before.
+        """
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", "/some/other/archive")
+        assert default_fits_directory() == str(fits_ingest.get_archive_root())
 
 
 class TestScanFitsDirectoryTree:
@@ -222,6 +260,52 @@ class TestBuildSummaryText:
         files = flatten_files(tree)
         text = build_summary_text(files, "W3(OH)", 1420.406, None)
         assert "date pending" in text
+
+
+class TestBuildSelectedFiles:
+    """build_selected_files() is what actually fixes the critical pipeline
+    bug: it produces the "selected_files" list 02_File_Loader.py reads,
+    in the exact form Page 02 resolves it (`fits_ingest.get_archive_root()
+    / filename`). This was previously untested, even though it's the one
+    function this whole fix hinges on.
+    """
+
+    def test_returns_paths_relative_to_archive_root(self, tmp_path, monkeypatch):
+        archive_root = tmp_path / "archive"
+        (archive_root / "2026-08").mkdir(parents=True)
+        file_path = archive_root / "2026-08" / "spectrum_002.fits"
+        file_path.write_text("")
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", str(archive_root))
+
+        entry = sbl.SourceFileEntry(path=file_path, filename=file_path.name, size_mb=0.0, status="OK")
+        selected = build_selected_files([entry])
+
+        assert selected == [str(Path("2026-08") / "spectrum_002.fits")]
+        # The real contract: Page 02 must be able to find the file this way.
+        assert (fits_ingest.get_archive_root() / selected[0]).resolve() == file_path.resolve()
+
+    def test_falls_back_to_absolute_path_outside_archive_root(self, tmp_path, monkeypatch):
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", str(archive_root))
+
+        outside_dir = tmp_path / "elsewhere"
+        outside_dir.mkdir()
+        file_path = outside_dir / "test.fits"
+        file_path.write_text("")
+
+        entry = sbl.SourceFileEntry(path=file_path, filename=file_path.name, size_mb=0.0, status="OK")
+        selected = build_selected_files([entry])
+
+        assert Path(selected[0]).is_absolute()
+        # pathlib's `/` operator discards the left-hand side entirely when
+        # the right-hand side is already absolute, so Page 02 still
+        # resolves this correctly with no change needed on that side.
+        assert (fits_ingest.get_archive_root() / selected[0]) == file_path.resolve()
+
+    def test_empty_list_returns_empty_list(self, monkeypatch):
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", "/whatever")
+        assert build_selected_files([]) == []
 
 
 class TestRunFileCheckPlaceholder:
