@@ -20,12 +20,13 @@
 #     session_state["pipeline_data"] gets the filtered FITS paths, chosen
 #     source name, chosen frequency, and earliest observation date.
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from astropy.io import fits
+
+from utils import fits_ingest
 
 # ---------------------------------------------------------------------------
 # Pipeline-wide constants
@@ -33,9 +34,12 @@ from astropy.io import fits
 
 # This page's own key in utils/session_store.py's `pipeline_data` dict and
 # `completed_stages` set (passed to session_store.mark_stage_complete()).
-# TODO: confirm against design. session_store.py doesn't enforce or enumerate
-# a canonical key format (mark_stage_complete accepts any string), so this
-# must match whatever convention the other 7 already-built pages use.
+# CONFIRMED: 02_File_Loader.py imports this exact constant
+# (`from utils.source_browser_logic import THIS_STAGE_KEY as
+# SOURCE_BROWSER_STAGE_KEY`) rather than hardcoding its own copy of the
+# string, so the *outer* dict key can't drift between the two pages. The
+# *inner* dict's field names could, and did -- see build_selected_files()
+# below.
 THIS_STAGE_KEY = "01_source_browser"
 
 FITS_EXTENSIONS = (".fits", ".fit")
@@ -59,19 +63,20 @@ def status_css_class(status: str) -> str:
 def default_fits_directory() -> str:
     """Default value for the FR-01 directory path text input.
 
-    Per the FR-01 spec: "defaults to /data/fits/ with a fallback for local
-    testing." FITS_ARCHIVE_PATH (this project's existing .env convention)
-    wins if set; otherwise falls back to the production path if it actually
-    exists on this machine, or a relative local-testing path if it doesn't —
-    so a developer without /data/fits/ mounted isn't stuck with a dead default.
+    Delegates to fits_ingest.get_archive_root() instead of independently
+    re-reading FITS_ARCHIVE_PATH and re-deriving its own fallback. This
+    used to have its own separate fallback branch (checking whether
+    `/data/fits/` exists on this machine) that fits_ingest.get_archive_root()
+    doesn't have -- meaning the two pages could resolve two different
+    directories whenever FITS_ARCHIVE_PATH wasn't set. fits_ingest.py's own
+    2026-08-26 note describes this exact failure mode already happening once
+    before (under a different env-var name) -- Page 01 resolving one
+    directory, Page 02 a different one, so every handoff 404'd. Calling the
+    same function Page 02 uses is what actually prevents that class of bug,
+    rather than just carefully keeping two copies of the same logic in sync
+    by hand.
     """
-    env_value = os.environ.get("FITS_ARCHIVE_PATH")
-    if env_value:
-        return env_value
-    production_path = Path("/data/fits/")
-    if production_path.is_dir():
-        return str(production_path)
-    return "./data/fits"
+    return str(fits_ingest.get_archive_root())
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +243,18 @@ def build_summary_text(
     frequency_mhz: Optional[float],
     earliest_date: Optional[str],
 ) -> str:
-    """Text for the selection-summary panel."""
+    """Text for the selection-summary panel.
+
+    TODO: confirm against design. Build spec §7's example summary includes a
+    declination ("Dec +12°34'"), which this deliberately does not add.
+    fits_ingest.py's module docstring is explicit that neither clc loader it
+    wraps returns RA/Dec source coordinates -- only telescope LONGITUD/
+    LATITUDE -- and that anything downstream wanting RA/Dec "must say so
+    explicitly rather than silently substituting telescope pointing for
+    source coordinates." Reading some other header keyword directly here
+    and hoping it's the source Dec would be exactly that silent
+    substitution, so it's left out and flagged instead of guessed.
+    """
     if not filtered_files:
         return "No matching FITS files for the current filters."
     freq_label = f"{frequency_mhz:.3f} MHz" if frequency_mhz is not None else "unknown frequency"
@@ -248,6 +264,56 @@ def build_summary_text(
         f"{len(filtered_files)} file{plural} matched — {source_name} · {freq_label} · "
         f"earliest observation {date_label}"
     )
+
+
+def _relative_to_archive(path: Path, archive_root: Path) -> str:
+    """Express a scanned file's path the way Page 02 needs it.
+
+    02_File_Loader.py resolves each handed-off entry as
+    `fits_ingest.get_archive_root() / filename`, and reuses that same string
+    as the display name in its validation table, its progress text, and its
+    audit-log lines. So this returns a path relative to the archive root
+    when the scanned file is actually under it (the normal case, now that
+    default_fits_directory() always points at the archive root too) --
+    giving Page 02 a short, readable name like "2026-08/spectrum_002.fits"
+    instead of a full filesystem path.
+
+    Falls back to the absolute resolved path if the scanned file isn't
+    under the archive root at all (e.g. someone typed a different,
+    non-archive directory into the FITS Directory field for local testing).
+    This still resolves correctly on Page 02 with no change needed there:
+    pathlib's `/` operator discards the left-hand operand entirely when the
+    right-hand operand is already absolute, so
+    `fits_ingest.get_archive_root() / "/some/other/dir/file.fits"` evaluates
+    to `/some/other/dir/file.fits`, not an error -- it just won't display as
+    a short filename in that fallback case.
+    """
+    resolved_path = path.resolve()
+    resolved_root = archive_root.resolve()
+    try:
+        return str(resolved_path.relative_to(resolved_root))
+    except ValueError:
+        return str(resolved_path)
+
+
+def build_selected_files(filtered_files: List[SourceFileEntry]) -> List[str]:
+    """Filenames for the Page 01 -> Page 02 handoff.
+
+    THIS IS THE FIX for the critical pipeline bug: 02_File_Loader.py reads
+    `pipeline_data[THIS_STAGE_KEY]["selected_files"]`, a key this module
+    never wrote -- 01_Source_Browser.py only wrote "fits_file_paths", which
+    nothing downstream ever reads. As a result, Page 02's
+    `pipeline_selection.get("selected_files")` was always empty, so Page 02
+    always silently fell back to its single-file dev default ("good.fits")
+    regardless of what was actually selected here, and every page after it
+    (Page 03's bandpass correction included) operated on the wrong file(s).
+
+    Returns filenames in the exact form Page 02 already expects
+    (resolvable via `fits_ingest.get_archive_root() / filename`), so no
+    change is needed on that side.
+    """
+    archive_root = fits_ingest.get_archive_root()
+    return [_relative_to_archive(f.path, archive_root) for f in filtered_files]
 
 
 def run_file_check_placeholder(fits_paths: List[Path], workspace_dir: Path) -> Path:
