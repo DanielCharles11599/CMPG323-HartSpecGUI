@@ -13,6 +13,7 @@ from utils import calibration_logic, session_store, sidebar, styles
 
 
 CURRENT_STAGE = 5
+PAGE_STAGE_KEY = "05_calibration_dashboard"
 
 PAGE_TITLE = "Calibration Dashboard"
 PAGE_SUBTITLE = "FR-10 / FR-11 — atmospheric and PSS calibration"
@@ -55,6 +56,43 @@ if loaded_spectrum is not None:
         )
     except Exception as exc:
         pss_error = str(exc)
+
+if loaded_spectrum is not None:
+    page_payload = {
+        "complete": False,
+        "atmospheric": None,
+        "pss": None,
+    }
+
+    if atmospheric_result is not None:
+        page_payload["atmospheric"] = {
+            "frequency": atmospheric_result["frequency"],
+            "pwv": float(atmospheric_result["pwv"]),
+            "elevation": float(atmospheric_result["elevation"]),
+            "azimuth": float(atmospheric_result["azimuth"]),
+            "atcor": float(atmospheric_result["atcor"]),
+            "optical_depth": atmospheric_result["optical_depth"],
+        }
+
+    if pss_history is not None and pss_window is not None:
+        page_payload["pss"] = {
+            "frequency": pss_history["frequency"],
+            "observation_mjd": float(pss_window["observation_mjd"]),
+            "start_mjd": float(pss_window["start_mjd"]),
+            "end_mjd": float(pss_window["end_mjd"]),
+            "window_days": int(pss_window["days"]),
+            "source_files": dict(pss_history["source_files"]),
+        }
+
+    if atmospheric_error is not None:
+        page_payload["atmospheric_error"] = atmospheric_error
+
+    if pss_error is not None:
+        page_payload["pss_error"] = pss_error
+
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = page_payload
+else:
+    st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
 
 styles.render_page_header(
     title=PAGE_TITLE,
