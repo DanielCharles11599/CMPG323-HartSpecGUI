@@ -33,6 +33,10 @@ loaded_spectrum = st.session_state.get("loaded_spectrum")
 atmospheric_result = None
 atmospheric_error = None
 
+pss_history = None
+pss_window = None
+pss_error = None
+
 if loaded_spectrum is not None:
     try:
         atmospheric_result = calibration_logic.get_atmospheric_calibration(
@@ -40,6 +44,17 @@ if loaded_spectrum is not None:
         )
     except Exception as exc:
         atmospheric_error = str(exc)
+
+if loaded_spectrum is not None:
+    try:
+        pss_history = calibration_logic.get_pss_history(
+            loaded_spectrum["restfreq"]
+        )
+        pss_window = calibration_logic.get_pss_window(
+            loaded_spectrum["date"]
+        )
+    except Exception as exc:
+        pss_error = str(exc)
 
 styles.render_page_header(
     title=PAGE_TITLE,
@@ -142,39 +157,103 @@ with st.container(border=True):
     with pss_metric_cols[1]:
         st.metric("RCP monthly mean", "Not calculated")
 
+    if loaded_spectrum is None:
+        st.info("Load a spectrum to view PSS calibration history.")
+    elif pss_error is not None:
+        st.error(f"PSS calibration history could not be loaded: {pss_error}")
+
     pss_fig = go.Figure()
 
-    pss_fig.add_annotation(
-        text="PSS time-series data will appear here",
-        x=0.5,
-        y=0.5,
-        xref="paper",
-        yref="paper",
-        showarrow=False,
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=13,
-            color=_theme["text-muted"],
-        ),
-    )
+    if pss_history is not None and pss_window is not None:
+        pss_fig.add_trace(
+            go.Scatter(
+                x=pss_history["lcp"]["mjd"],
+                y=pss_history["lcp"]["pss"],
+                mode="lines",
+                name="LCP",
+                hovertemplate="MJD %{x:.3f}<br>LCP %{y:.4f}<extra></extra>",
+            )
+        )
 
-    pss_fig.update_layout(
-        paper_bgcolor=_theme["bg-panel"],
-        plot_bgcolor=_theme["bg-panel"],
-        margin=dict(l=48, r=16, t=20, b=40),
-        height=300,
-        xaxis=dict(
-            visible=False,
-        ),
-        yaxis=dict(
-            visible=False,
-        ),
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=11,
-            color=_theme["text-body"],
-        ),
-    )
+        pss_fig.add_trace(
+            go.Scatter(
+                x=pss_history["rcp"]["mjd"],
+                y=pss_history["rcp"]["pss"],
+                mode="lines",
+                name="RCP",
+                hovertemplate="MJD %{x:.3f}<br>RCP %{y:.4f}<extra></extra>",
+            )
+        )
+
+        pss_fig.add_vrect(
+            x0=pss_window["start_mjd"],
+            x1=pss_window["end_mjd"],
+            opacity=0.12,
+            line_width=0,
+            layer="below",
+            annotation_text="±15 day window",
+            annotation_position="top left",
+        )
+
+        pss_fig.add_vline(
+            x=pss_window["observation_mjd"],
+            line_dash="dash",
+            annotation_text="Observation",
+            annotation_position="top",
+        )
+
+        pss_fig.update_layout(
+            paper_bgcolor=_theme["bg-panel"],
+            plot_bgcolor=_theme["bg-panel"],
+            margin=dict(l=48, r=16, t=28, b=48),
+            height=340,
+            xaxis=dict(
+                title="Modified Julian Date",
+            ),
+            yaxis=dict(
+                title="PSS",
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=_theme["text-body"],
+            ),
+        )
+    else:
+        pss_fig.add_annotation(
+            text="PSS time-series data will appear here",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=13,
+                color=_theme["text-muted"],
+            ),
+        )
+
+        pss_fig.update_layout(
+            paper_bgcolor=_theme["bg-panel"],
+            plot_bgcolor=_theme["bg-panel"],
+            margin=dict(l=48, r=16, t=20, b=40),
+            height=300,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=_theme["text-body"],
+            ),
+        )
 
     st.plotly_chart(
         pss_fig,
