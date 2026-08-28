@@ -1,5 +1,11 @@
 """Calibration helpers for the Page 05 dashboard."""
 
+import os
+from pathlib import Path
+
+import numpy as np
+from astropy.time import Time
+
 from clc.Calibrate_PSS_PWR import PWR
 
 
@@ -11,6 +17,112 @@ REQUIRED_METADATA = (
     "Humid",
     "restfreq",
 )
+
+
+PSS_HISTORY_FILES = {
+    "22235": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "20970": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "20346": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "23121": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "23694": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "23722": ("PSS_22235_Jupiter_LCP.txt", "PSS_22235_Jupiter_RCP.txt"),
+    "12178": ("PSS_12178_3C123_LCP.txt", "PSS_12178_3C123_RCP.txt"),
+    "12229": ("PSS_12178_3C123_LCP.txt", "PSS_12178_3C123_RCP.txt"),
+    "66685": ("PSS_6668_Hydra_LCP.txt", "PSS_6668_Hydra_RCP.txt"),
+    "61811": ("PSS_6668_Hydra_LCP.txt", "PSS_6668_Hydra_RCP.txt"),
+    "61810": ("PSS_6668_Hydra_LCP.txt", "PSS_6668_Hydra_RCP.txt"),
+    "6708.": ("PSS_6668_Hydra_LCP.txt", "PSS_6668_Hydra_RCP.txt"),
+}
+
+
+def _resolve_pss_file(filename):
+    """Locate one PSS file using the project's configured data path."""
+    configured_path = os.environ.get("PSS_DATA_PATH")
+
+    if configured_path:
+        candidate = Path(configured_path).expanduser() / filename
+        if candidate.is_file():
+            return candidate
+        raise FileNotFoundError(
+            f"PSS file {filename} was not found in configured PSS_DATA_PATH "
+            f"({configured_path})."
+        )
+
+    default_candidate = Path("./data/pss") / filename
+    if default_candidate.is_file():
+        return default_candidate
+
+    bundled_candidate = Path(__file__).resolve().parents[2] / "clc" / filename
+    if bundled_candidate.is_file():
+        return bundled_candidate
+
+    raise FileNotFoundError(
+        f"PSS file {filename} was not found in data/pss or the bundled CLC data."
+    )
+
+
+def _load_pss_series(path):
+    """Read the historical MJD, PSS and uncertainty columns from one PSS file."""
+    data = np.loadtxt(path, dtype="str")
+
+    if data.ndim != 2 or data.shape[0] < 2 or data.shape[1] < 4:
+        raise ValueError(f"PSS file {path.name} does not have the expected four-column format.")
+
+    return {
+        "mjd": data[1:, 0].astype(float).tolist(),
+        "pss": data[1:, 2].astype(float).tolist(),
+        "error": data[1:, 3].astype(float).tolist(),
+    }
+
+
+
+def get_observation_mjd(observation_date):
+    """Convert a loaded FITS observation date to Modified Julian Date."""
+    if observation_date is None:
+        raise ValueError("No observation date is available for PSS calibration.")
+
+    try:
+        return float(Time(observation_date, format="isot").mjd)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Observation date {observation_date!r} could not be converted to MJD."
+        ) from exc
+
+
+def get_pss_window(observation_date, days=15):
+    """Return the observation MJD and the requested PSS time window."""
+    observation_mjd = get_observation_mjd(observation_date)
+
+    return {
+        "observation_mjd": observation_mjd,
+        "start_mjd": observation_mjd - days,
+        "end_mjd": observation_mjd + days,
+        "days": days,
+    }
+
+
+def get_pss_history(frequency):
+    """Load the historical LCP and RCP PSS series for a supported frequency."""
+    frequency = str(frequency)[:5]
+    filenames = PSS_HISTORY_FILES.get(frequency)
+
+    if filenames is None:
+        raise ValueError(
+            f"No historical PSS dataset is configured for frequency {frequency}."
+        )
+
+    lcp_path = _resolve_pss_file(filenames[0])
+    rcp_path = _resolve_pss_file(filenames[1])
+
+    return {
+        "frequency": frequency,
+        "lcp": _load_pss_series(lcp_path),
+        "rcp": _load_pss_series(rcp_path),
+        "source_files": {
+            "lcp": lcp_path.name,
+            "rcp": rcp_path.name,
+        },
+    }
 
 
 def get_atmospheric_calibration(spectrum):
