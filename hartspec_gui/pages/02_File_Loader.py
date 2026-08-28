@@ -330,14 +330,23 @@ def _render_load_progress() -> None:
                 badge = styles.render_badge(convention_label, "info")
                 spectrum = result.spectrum or {}
                 st.markdown(
+                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
                     f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
-                    f'\u00b7 Date: {spectrum.get("date", "?")}',
+                    f'\u00b7 Date: {spectrum.get("date", "?")}</div>',
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(f"**{filename}** \u2014 failed to load:")
+                st.markdown(
+                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
+                    f'<strong>{filename}</strong> \u2014 failed to load:</div>',
+                    unsafe_allow_html=True,
+                )
                 for attempt in result.attempts:
-                    st.caption(attempt)
+                    st.markdown(
+                        f'<div style="color:{theme["text-muted"]}; font-size:11px; '
+                        f'margin-left:4px;">{attempt}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     if ok_count < n:
         failed = [f for f, r in results.items() if not r.ok]
@@ -483,10 +492,14 @@ def _render_header_fields_table() -> None:
 
     styles.render_panel_open("")
     if not visible_columns:
-        st.caption(
+        theme = styles.get_theme()
+        st.markdown(
+            f'<div style="color:{theme["text-muted"]}; font-size:11px;">'
             "No matching fields among the 9 priority columns shown here. "
             "The full 30+ field list isn't specified yet in the build spec -- "
             "ask before adding more columns rather than inventing field names."
+            "</div>",
+            unsafe_allow_html=True,
         )
     else:
         col_width = f"{100 / len(visible_columns):.4f}%"
