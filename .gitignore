@@ -16,3 +16,6 @@ __pycache__/
 # Ignore temporary system files
 .DS_Store
 Thumbs.db
+
+#Ignore Session files
+hartspec_gui/data/sessions/*.json
