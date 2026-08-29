@@ -36,9 +36,17 @@ this was built (not guessed):
 
 FR-03 corruption detection now runs for real (`fits_ingest.verify_fits_file`,
 built in the prior step and confirmed against real good.fits/faulty.fits).
-Quarantine is still NOT wired to a real `shutil.move()` -- the Quarantine
-button still only touches session state. That's the next step, not this
-one.
+
+FR-03 handoff step 4 (this revision): quarantine now requires explicit
+confirmation before it takes effect -- clicking a row's Quarantine button
+stages ONE pending file (`st.session_state["file_loader_pending_quarantine"]`)
+rather than quarantining immediately, and an inline confirm/cancel banner
+above the table is what actually calls `_quarantine_file()`. This project's
+pinned `streamlit==1.32.0` predates `st.dialog` (added 1.37+), so this is a
+plain inline banner, not a real modal -- flagged rather than silently
+worked around. Quarantine is STILL NOT wired to a real `shutil.move()` --
+confirming still only touches session state + the audit log, same as the
+old immediate-quarantine button did. That's step 5, not this one.
 --------------------------------------------------------------------------
 
 Two design choices carried over from the original single-file revision,
@@ -259,7 +267,16 @@ def _render_load_progress() -> None:
     """
     theme = styles.get_theme()
     filenames = _get_target_filenames()
-    n = len(filenames)
+    quarantined = st.session_state.get("file_loader_quarantined", set())
+    # Quarantined files no longer exist at their original path (the whole
+    # point of moving them to Flagged/) -- reloading them here would just
+    # produce a confusing "file not found" failure that looks like a new
+    # bug rather than the intended result of a deliberate user action.
+    # They're excluded from the active load loop and its counts entirely;
+    # the validation table below still shows them, with a QUARANTINED
+    # badge and no reload attempt (see _build_validation_rows).
+    active_filenames = [f for f in filenames if f not in quarantined]
+    n = len(active_filenames)
 
     styles.render_panel_open("")
 
@@ -289,27 +306,30 @@ def _render_load_progress() -> None:
             unsafe_allow_html=True,
         )
 
+    if n == 0:
+        _draw("No active files to load", 1.0, "All selected files have been quarantined.")
+        styles.render_panel_close()
+        st.session_state["file_loader_load_done"] = False
+        st.session_state["loaded_spectra"] = []
+        st.session_state.pop("loaded_spectrum", None)
+        return
+
     results: dict[str, fits_ingest.IngestResult] = {}
     start_all = time.perf_counter()
-    for idx, filename in enumerate(filenames, start=1):
+    for idx, filename in enumerate(active_filenames, start=1):
         _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
         results[filename] = _run_real_load(filename)
-        
-######addition for page 3########
+
     loaded_spectra = [
-    result.spectrum
-    for result in results.values()
-    if result.ok and result.spectrum is not None
+        result.spectrum
+        for result in results.values()
+        if result.ok and result.spectrum is not None
     ]
-
     st.session_state["loaded_spectra"] = loaded_spectra
-
-    # Backward compatibility for anything still expecting one spectrum
     if loaded_spectra:
         st.session_state["loaded_spectrum"] = loaded_spectra[0]
     else:
         st.session_state.pop("loaded_spectrum", None)
-######addition for page 3########
 
     elapsed_total = time.perf_counter() - start_all
 
@@ -330,23 +350,14 @@ def _render_load_progress() -> None:
                 badge = styles.render_badge(convention_label, "info")
                 spectrum = result.spectrum or {}
                 st.markdown(
-                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
                     f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
-                    f'\u00b7 Date: {spectrum.get("date", "?")}</div>',
+                    f'\u00b7 Date: {spectrum.get("date", "?")}',
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(
-                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
-                    f'<strong>{filename}</strong> \u2014 failed to load:</div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"**{filename}** \u2014 failed to load:")
                 for attempt in result.attempts:
-                    st.markdown(
-                        f'<div style="color:{theme["text-muted"]}; font-size:11px; '
-                        f'margin-left:4px;">{attempt}</div>',
-                        unsafe_allow_html=True,
-                    )
+                    st.caption(attempt)
 
     if ok_count < n:
         failed = [f for f, r in results.items() if not r.ok]
@@ -360,14 +371,30 @@ def _render_load_progress() -> None:
     st.session_state["file_loader_load_done"] = ok_count > 0
 
 
+def _request_quarantine(filename: str) -> None:
+    """Clicking a row's Quarantine button no longer quarantines
+    immediately -- it stages ONE file for confirmation (FR-03 handoff
+    step 4). Re-targets the pending confirmation if a different row's
+    button is clicked while one is already pending, rather than stacking
+    multiple pending requests -- matches the handoff's explicit "scoped to
+    quarantining one flagged file at a time even if several are flagged".
+    """
+    st.session_state["file_loader_pending_quarantine"] = filename
+
+
 def _quarantine_file(filename: str) -> None:
     """Mark a file quarantined in session state and log the action.
+
+    Only ever called after explicit confirmation now (see
+    `_render_validation_table`'s confirm/cancel banner) -- this function
+    itself still doesn't know or care about that; it just performs the
+    actual quarantine once called, same as before.
 
     TODO: confirm against design -- should call a real quarantine function
     (moving the file out of the read-only /data/fits/ archive into
     Flagged/) once that's built into utils/fits_ingest.py and confirmed;
     right now this only updates UI-facing session state. That's the next
-    step after this one, per the FR-03 handoff's step ordering.
+    step after this one, per the FR-03 handoff's step ordering (step 5).
     """
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
@@ -379,20 +406,34 @@ def _build_validation_rows(filenames: list[str]) -> list[dict]:
     VALIDATION_ROWS sample data (FR-03 handoff step 3).
 
     Combines two independent checks per file, in priority order:
-    1. Did FR-02 ingestion succeed at all? (wrong/unrecognized convention,
+    1. Is the file already quarantined? If so, show it as such WITHOUT
+       calling `_run_real_load`/`_run_real_verify` -- per
+       `_render_load_progress`'s own comment, a quarantined file is
+       deliberately excluded from the active load loop (it no longer
+       exists at its original path once step 5 wires a real
+       `shutil.move()`), so attempting to load/verify it here would be
+       either wasted work (pre-move) or a spurious "file not found"
+       failure that looks like a new bug (post-move). This branch is
+       what actually keeps that promise -- it wasn't honored before.
+    2. Did FR-02 ingestion succeed at all? (wrong/unrecognized convention,
        or missing science keys the CLC loaders require)
-    2. If ingestion succeeded, does the file pass FR-03 structural
+    3. If ingestion succeeded, does the file pass FR-03 structural
        verification? (fits.verify / checksum / truncation -- see
        fits_ingest.verify_fits_file's docstring for exactly what this
        does and doesn't catch)
 
-    Assumes `_run_real_load` has already been called for every filename
-    (by `_render_load_progress`, which runs first) -- reads from that
-    cache rather than re-loading, per the confirmed "load all, then
-    validate all" ordering.
+    Assumes `_run_real_load` has already been called for every
+    NOT-YET-quarantined filename (by `_render_load_progress`, which runs
+    first) -- reads from that cache rather than re-loading, per the
+    confirmed "load all, then validate all" ordering.
     """
+    quarantined = st.session_state.get("file_loader_quarantined", set())
     rows = []
     for filename in filenames:
+        if filename in quarantined:
+            rows.append({"file": filename, "issue": "Quarantined by user action", "status": "error"})
+            continue
+
         ingest_result = _run_real_load(filename)  # cache hit by this point
 
         if not ingest_result.ok:
@@ -412,6 +453,7 @@ def _render_validation_table() -> None:
     filenames = _get_target_filenames()
     rows = _build_validation_rows(filenames)
     quarantined = st.session_state.get("file_loader_quarantined", set())
+    pending = st.session_state.get("file_loader_pending_quarantine")
 
     styles.render_panel_open("")
     _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
@@ -428,6 +470,7 @@ def _render_validation_table() -> None:
             # per-row across however many files are actually flagged, not
             # hardcoded to a single known-bad sample row.
             is_quarantined = row["file"] in quarantined
+            is_pending = row["file"] == pending
             status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
 
             st.markdown(
@@ -455,10 +498,49 @@ def _render_validation_table() -> None:
                 )
             with col_action:
                 if not is_quarantined:
-                    if st.button("Quarantine", key=f"quarantine_{row['file']}", use_container_width=True):
-                        _quarantine_file(row["file"])
-                        st.rerun()
+                    if is_pending:
+                        # FR-03 handoff step 4: confirmation before
+                        # quarantine, inline where the Quarantine button
+                        # was rather than a page-top banner -- keeps the
+                        # confirmation visually attached to the specific
+                        # row it applies to, especially once several rows
+                        # can be flagged at once. "Continue" / "Cancel"
+                        # per explicit naming request (not "Confirm").
+                        if st.button(
+                            "Continue", key=f"confirm_quarantine_{row['file']}",
+                            type="primary", use_container_width=True,
+                        ):
+                            _quarantine_file(row["file"])
+                            st.session_state["file_loader_pending_quarantine"] = None
+                            st.rerun()
+                        if st.button(
+                            "Cancel", key=f"cancel_quarantine_{row['file']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["file_loader_pending_quarantine"] = None
+                            st.rerun()
+                    else:
+                        if st.button("Quarantine", key=f"quarantine_{row['file']}", use_container_width=True):
+                            _request_quarantine(row["file"])
+                            st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
+
+            if is_pending:
+                # DEV NOTE, temporary -- streamlit==1.32.0 (this project's
+                # pin) predates st.dialog (1.37+), so there's no real modal
+                # to put this in; and step 5 (real shutil.move()) isn't
+                # wired yet, so this line exists specifically to keep that
+                # visible to other devs reading the running app, not just
+                # the code -- remove once step 5 lands and this button
+                # actually moves the file.
+                st.markdown(
+                    f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
+                    f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
+                    f'{theme["border-subtle"]};">Quarantine {row["file"]}? This currently only '
+                    f"updates session state and the audit log \u2014 it does NOT yet move the "
+                    f"file out of the archive (that's step 5, not built yet).</div>",
+                    unsafe_allow_html=True,
+                )
         else:
             badge = styles.render_badge("OK", "ok")
             _render_table_row(
@@ -492,14 +574,10 @@ def _render_header_fields_table() -> None:
 
     styles.render_panel_open("")
     if not visible_columns:
-        theme = styles.get_theme()
-        st.markdown(
-            f'<div style="color:{theme["text-muted"]}; font-size:11px;">'
+        st.caption(
             "No matching fields among the 9 priority columns shown here. "
             "The full 30+ field list isn't specified yet in the build spec -- "
             "ask before adding more columns rather than inventing field names."
-            "</div>",
-            unsafe_allow_html=True,
         )
     else:
         col_width = f"{100 / len(visible_columns):.4f}%"
@@ -558,7 +636,6 @@ def main() -> None:
         current_stage=STAGE_NUMBER,
         completed_stages=session_store.completed_count(),
     )
-
     _render_target_file_override()
     _render_load_progress()
     _render_validation_table()

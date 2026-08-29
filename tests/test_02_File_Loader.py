@@ -273,14 +273,98 @@ def test_validation_table_shows_flagged_for_bad_file(fits_archive):
     assert "FLAGGED" in markdown_html
 
 
-def test_quarantine_button_updates_status(fits_archive):
+def test_quarantine_button_stages_pending_confirmation_not_immediate(fits_archive):
+    """FR-03 handoff step 4: clicking Quarantine must NOT quarantine
+    immediately -- it stages a pending confirmation instead."""
     at = _app_for("good_date.fits", "unrecognized.fits")
     at.run(timeout=30)
     at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
     assert not at.exception
+    assert at.session_state["file_loader_pending_quarantine"] == "unrecognized.fits"
+    try:
+        quarantined_now = at.session_state["file_loader_quarantined"]
+    except KeyError:
+        quarantined_now = set()
+    assert "unrecognized.fits" not in quarantined_now
+    markdown_html = _markdown_html(at)
+    assert "does NOT yet move the file" in markdown_html
+    assert at.button(key="confirm_quarantine_unrecognized.fits").label == "Continue"
+    assert at.button(key="cancel_quarantine_unrecognized.fits").label == "Cancel"
+
+
+def test_confirming_quarantine_updates_status(fits_archive):
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
+    assert not at.exception
     assert "unrecognized.fits" in at.session_state["file_loader_quarantined"]
+    assert at.session_state["file_loader_pending_quarantine"] is None
     markdown_html = _markdown_html(at)
     assert "QUARANTINED" in markdown_html
+    audit = at.session_state["audit_log"]
+    assert any("unrecognized.fits quarantined" in e["message"] for e in audit)
+
+
+def test_cancelling_quarantine_leaves_file_flagged_not_quarantined(fits_archive):
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    at.button(key="cancel_quarantine_unrecognized.fits").click().run(timeout=30)
+    assert not at.exception
+    try:
+        quarantined_now = at.session_state["file_loader_quarantined"]
+    except KeyError:
+        quarantined_now = set()
+    assert "unrecognized.fits" not in quarantined_now
+    assert at.session_state["file_loader_pending_quarantine"] is None
+    markdown_html = _markdown_html(at)
+    assert "FLAGGED" in markdown_html
+    assert "QUARANTINED" not in markdown_html
+
+
+def test_quarantine_confirmation_scoped_to_one_file_at_a_time(fits_archive):
+    """Clicking Quarantine on a second flagged row while one is already
+    pending re-targets the single pending confirmation rather than
+    stacking two -- per the handoff's explicit "one file at a time" scope.
+    """
+    at = _app_for("good_date.fits", "unrecognized.fits", "truncated.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    assert at.session_state["file_loader_pending_quarantine"] == "unrecognized.fits"
+
+    at.button(key="quarantine_truncated.fits").click().run(timeout=30)
+    assert at.session_state["file_loader_pending_quarantine"] == "truncated.fits"
+
+    # Confirming now only affects the currently-pending file, not the
+    # earlier one that was staged and then re-targeted away from.
+    at.button(key="confirm_quarantine_truncated.fits").click().run(timeout=30)
+    assert not at.exception
+    assert "truncated.fits" in at.session_state["file_loader_quarantined"]
+    assert "unrecognized.fits" not in at.session_state["file_loader_quarantined"]
+
+
+def test_quarantined_file_is_not_reloaded_on_rerun(fits_archive):
+    """Once quarantined, a file must be excluded from the active load loop
+    (per _render_load_progress's own design) and shown via its cached
+    validation row rather than triggering a fresh _run_real_load call --
+    this is the forward-compatibility guarantee for step 5's real
+    shutil.move(), where the file won't exist at its original path anymore.
+    """
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
+    at.run(timeout=30)  # a further, unrelated rerun
+    assert not at.exception
+    markdown_html = _markdown_html(at)
+    assert "Quarantined by user action" in markdown_html
+    audit = at.session_state["audit_log"]
+    load_attempts = [e for e in audit if "unrecognized.fits" in e["message"] and "loaded in" in e["message"]]
+    # unrecognized.fits genuinely fails ingestion regardless -- the real
+    # assertion is that quarantining it doesn't cause additional load
+    # attempts beyond the one from before it was quarantined.
+    assert len(load_attempts) <= 1
 
 
 def test_verify_failure_flags_a_file_that_loaded_fine(fits_archive, monkeypatch):
