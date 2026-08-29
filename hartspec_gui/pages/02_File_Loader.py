@@ -37,16 +37,28 @@ this was built (not guessed):
 FR-03 corruption detection now runs for real (`fits_ingest.verify_fits_file`,
 built in the prior step and confirmed against real good.fits/faulty.fits).
 
-FR-03 handoff step 4 (this revision): quarantine now requires explicit
-confirmation before it takes effect -- clicking a row's Quarantine button
-stages ONE pending file (`st.session_state["file_loader_pending_quarantine"]`)
-rather than quarantining immediately, and an inline confirm/cancel banner
-above the table is what actually calls `_quarantine_file()`. This project's
-pinned `streamlit==1.32.0` predates `st.dialog` (added 1.37+), so this is a
-plain inline banner, not a real modal -- flagged rather than silently
-worked around. Quarantine is STILL NOT wired to a real `shutil.move()` --
-confirming still only touches session state + the audit log, same as the
-old immediate-quarantine button did. That's step 5, not this one.
+FR-03 handoff step 4: quarantine requires explicit confirmation before it
+takes effect -- clicking a row's Quarantine button stages ONE pending file
+(`st.session_state["file_loader_pending_quarantine"]`) rather than
+quarantining immediately. Confirm/Cancel render inline in that row's own
+action column (not a page-top banner -- keeps the confirmation visually
+attached to the specific row, especially with several flagged rows at
+once). This project's pinned `streamlit==1.32.0` predates `st.dialog`
+(added 1.37+), so this is a plain inline element, not a real modal --
+flagged rather than silently worked around.
+
+FR-03 handoff step 5 (this revision): confirming now calls
+`fits_ingest.move_to_quarantine()`, a REAL `shutil.move()` into
+`<archive_root>/Flagged/` -- no longer session-state-only. A failed move
+(missing file, permissions, Flagged/ uncreatable) surfaces as
+`st.error()` via `st.session_state["file_loader_quarantine_error"]` and
+leaves the row FLAGGED rather than silently marking it QUARANTINED when
+nothing actually moved. This is a genuinely destructive, irreversible-
+from-the-UI action now -- test coverage for it uses a dedicated
+function-scoped fixture (`isolated_fits_archive`, see conftest.py) rather
+than the shared session-scoped `fits_archive` fixture, specifically so a
+test confirming quarantine doesn't delete fixture files out from under
+every other test in the same pytest run.
 --------------------------------------------------------------------------
 
 Two design choices carried over from the original single-file revision,
@@ -383,22 +395,29 @@ def _request_quarantine(filename: str) -> None:
 
 
 def _quarantine_file(filename: str) -> None:
-    """Mark a file quarantined in session state and log the action.
+    """Move the file to Flagged/ for real (FR-03 handoff step 5), via
+    `fits_ingest.move_to_quarantine()`, then record it in session state
+    and the audit log. Only ever called after explicit confirmation (see
+    `_render_validation_table`'s inline Continue/Cancel).
 
-    Only ever called after explicit confirmation now (see
-    `_render_validation_table`'s confirm/cancel banner) -- this function
-    itself still doesn't know or care about that; it just performs the
-    actual quarantine once called, same as before.
-
-    TODO: confirm against design -- should call a real quarantine function
-    (moving the file out of the read-only /data/fits/ archive into
-    Flagged/) once that's built into utils/fits_ingest.py and confirmed;
-    right now this only updates UI-facing session state. That's the next
-    step after this one, per the FR-03 handoff's step ordering (step 5).
+    `move_to_quarantine` raises `QuarantineError` (never a raw
+    OSError/shutil.Error) for anything that goes wrong -- missing file,
+    permissions, a Flagged/ dir that can't be created, etc. Caught here
+    so a failed quarantine attempt shows an error and leaves the file
+    FLAGGED (not silently marked QUARANTINED when it never actually
+    moved) rather than crashing the page.
     """
+    try:
+        dest_path = fits_ingest.move_to_quarantine(filename)
+    except fits_ingest.QuarantineError as exc:
+        st.session_state["file_loader_quarantine_error"] = str(exc)
+        session_store.log_event(f"{filename} quarantine FAILED -- {exc}")
+        return
+
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
-    session_store.log_event(f"{filename} quarantined")
+    st.session_state.pop("file_loader_quarantine_error", None)
+    session_store.log_event(f"{filename} quarantined -- moved to {dest_path}")
 
 
 def _build_validation_rows(filenames: list[str]) -> list[dict]:
@@ -454,6 +473,15 @@ def _render_validation_table() -> None:
     rows = _build_validation_rows(filenames)
     quarantined = st.session_state.get("file_loader_quarantined", set())
     pending = st.session_state.get("file_loader_pending_quarantine")
+
+    quarantine_error = st.session_state.pop("file_loader_quarantine_error", None)
+    if quarantine_error:
+        # Shown once, immediately after a failed real move (e.g. the file
+        # vanished from the archive between page load and confirming, or
+        # Flagged/ couldn't be created/written to) -- popped rather than
+        # left in session_state, so it doesn't keep reappearing on every
+        # unrelated rerun after the one that actually failed.
+        st.error(f"Could not quarantine: {quarantine_error}")
 
     styles.render_panel_open("")
     _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
@@ -526,19 +554,18 @@ def _render_validation_table() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
 
             if is_pending:
-                # DEV NOTE, temporary -- streamlit==1.32.0 (this project's
-                # pin) predates st.dialog (1.37+), so there's no real modal
-                # to put this in; and step 5 (real shutil.move()) isn't
-                # wired yet, so this line exists specifically to keep that
-                # visible to other devs reading the running app, not just
-                # the code -- remove once step 5 lands and this button
-                # actually moves the file.
+                # Confirmation copy updated for step 5: this now describes
+                # a real, irreversible-from-the-UI action (a real
+                # shutil.move(), not just session state) -- the earlier
+                # "this doesn't do anything yet" dev note is gone now that
+                # it's no longer true; don't reintroduce it without also
+                # reverting the move_to_quarantine() call above.
                 st.markdown(
                     f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
                     f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
-                    f'{theme["border-subtle"]};">Quarantine {row["file"]}? This currently only '
-                    f"updates session state and the audit log \u2014 it does NOT yet move the "
-                    f"file out of the archive (that's step 5, not built yet).</div>",
+                    f'{theme["border-subtle"]};">Quarantine {row["file"]}? This moves the file '
+                    f"out of the active archive into <code>Flagged/</code> immediately -- "
+                    f"undoing it means manually moving the file back on disk.</div>",
                     unsafe_allow_html=True,
                 )
         else:

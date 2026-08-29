@@ -34,6 +34,7 @@ silently substituting telescope pointing for source coordinates.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -106,14 +107,14 @@ if str(CLC_DIR) not in sys.path:
 
 
 try:
-    import clc.load_file as _lf_date  # DATE convention
+    import load_file as _lf_date  # DATE convention
     _LF_DATE_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - environment-dependent
     _lf_date = None
     _LF_DATE_IMPORT_ERROR = str(exc)
 
 try:
-    import clc.load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
+    import load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
     _LF_DATEOBS_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - specutils missing
     _lf_dateobs = None
@@ -302,3 +303,70 @@ def verify_fits_file(path: str | Path) -> VerificationResult:
         issues=issues,
         checksum_checked=checksum_checked,
     )
+
+
+# ---------------------------------------------------------------------------
+# FR-03: real quarantine move. Per the project's mandated architecture, the
+# FITS archive is read-only everywhere EXCEPT this one action -- and even
+# this is only ever triggered from a confirmed user action in the UI (see
+# pages/02_File_Loader.py's confirm/cancel flow), never automatically.
+# ---------------------------------------------------------------------------
+
+class QuarantineError(Exception):
+    """Raised when a file can't be moved to Flagged/ -- caught by the page,
+    never allowed to crash the app. A distinct exception type (rather than
+    letting OSError/shutil.Error propagate raw) so the page can show one
+    consistent error message regardless of the underlying cause (missing
+    file, permissions, cross-device move, etc.)."""
+
+
+def move_to_quarantine(filename: str) -> Path:
+    """Move one file from the archive root into `<archive_root>/Flagged/`,
+    per the project's mandated folder structure (`/data/fits/Flagged/`,
+    not a relative path like the original CLI scripts used).
+
+    `filename` may include a subdirectory prefix (e.g.
+    "2026-08/spectrum_002.fits", per Page 01's directory-tree scan) -- the
+    destination inside Flagged/ deliberately uses only the basename, not a
+    mirrored subdirectory structure, since the build spec's FR-03 section
+    describes a single flat Flagged/ directory, not a parallel tree.
+
+    Collision handling: if a file with the same basename already exists in
+    Flagged/ (two different subdirectories both containing e.g.
+    "spectrum_002.fits", or the same file quarantined twice), this does
+    NOT silently overwrite it -- that would be silent data loss on a
+    read-only-except-quarantine archive, which is exactly the failure mode
+    the read-only design is meant to prevent. Instead the destination gets
+    a numeric suffix (spectrum_002.fits -> spectrum_002__2.fits). This
+    wasn't specified anywhere in the source docs; flagging it here as a
+    real (if judgment-call) decision rather than a silent default.
+
+    Raises QuarantineError (never a raw OSError/shutil.Error) if the move
+    can't complete, so the caller can show one consistent message.
+    """
+    archive_root = get_archive_root()
+    source_path = archive_root / filename
+
+    if not source_path.is_file():
+        raise QuarantineError(f"{filename} was not found under the archive root ({source_path}).")
+
+    flagged_dir = archive_root / "Flagged"
+    try:
+        flagged_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise QuarantineError(f"could not create/access {flagged_dir}: {exc}") from exc
+
+    dest_path = flagged_dir / source_path.name
+    if dest_path.exists():
+        stem, suffix = source_path.stem, source_path.suffix
+        counter = 2
+        while dest_path.exists():
+            dest_path = flagged_dir / f"{stem}__{counter}{suffix}"
+            counter += 1
+
+    try:
+        shutil.move(str(source_path), str(dest_path))
+    except (OSError, shutil.Error) as exc:
+        raise QuarantineError(f"could not move {filename} to {dest_path}: {exc}") from exc
+
+    return dest_path

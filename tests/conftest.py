@@ -78,3 +78,25 @@ def real_fits_archive(monkeypatch) -> Path:
     # fits_archive fixture above) -- HARTSPEC_FITS_ARCHIVE_ROOT is retired.
     monkeypatch.setenv("FITS_ARCHIVE_PATH", str(path))
     return path
+
+
+@pytest.fixture()
+def isolated_fits_archive(tmp_path, monkeypatch) -> Path:
+    """A FRESH, function-scoped copy of the synthetic FITS fixtures --
+    unlike `fits_archive` above (built ONCE per pytest session and shared
+    by every test that requests it), this fixture builds a brand new,
+    throwaway directory for the single test using it.
+
+    Required for any test that performs a REAL destructive filesystem
+    action -- specifically FR-03's quarantine step 5, which calls a real
+    `shutil.move()`. A test that clicks "Continue" against the shared
+    `fits_archive` fixture would permanently move a fixture file out of
+    the directory every other test in the same pytest run also depends
+    on, causing order-dependent failures in whichever tests happen to run
+    afterward. Using this fixture instead means each quarantine-confirming
+    test can move/delete files freely without affecting anything else.
+    """
+    out_dir = tmp_path / "fits_archive"
+    make_fixtures.build_all(out_dir)
+    monkeypatch.setenv("FITS_ARCHIVE_PATH", str(out_dir))
+    return out_dir

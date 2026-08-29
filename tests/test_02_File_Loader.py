@@ -287,12 +287,12 @@ def test_quarantine_button_stages_pending_confirmation_not_immediate(fits_archiv
         quarantined_now = set()
     assert "unrecognized.fits" not in quarantined_now
     markdown_html = _markdown_html(at)
-    assert "does NOT yet move the file" in markdown_html
+    assert "moves the file out of the active archive" in markdown_html
     assert at.button(key="confirm_quarantine_unrecognized.fits").label == "Continue"
     assert at.button(key="cancel_quarantine_unrecognized.fits").label == "Cancel"
 
 
-def test_confirming_quarantine_updates_status(fits_archive):
+def test_confirming_quarantine_updates_status(isolated_fits_archive):
     at = _app_for("good_date.fits", "unrecognized.fits")
     at.run(timeout=30)
     at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
@@ -304,6 +304,51 @@ def test_confirming_quarantine_updates_status(fits_archive):
     assert "QUARANTINED" in markdown_html
     audit = at.session_state["audit_log"]
     assert any("unrecognized.fits quarantined" in e["message"] for e in audit)
+
+
+def test_confirming_quarantine_actually_moves_the_file(isolated_fits_archive):
+    """FR-03 handoff step 5: this is no longer session-state only --
+    confirming must produce a REAL shutil.move() into Flagged/ on disk."""
+    original_path = isolated_fits_archive / "unrecognized.fits"
+    assert original_path.is_file()  # sanity check on the fixture itself
+
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
+    assert not at.exception
+
+    assert not original_path.exists(), "file should no longer be at its original path"
+    moved_path = isolated_fits_archive / "Flagged" / "unrecognized.fits"
+    assert moved_path.is_file(), "file should now exist under Flagged/"
+    audit = at.session_state["audit_log"]
+    assert any("moved to" in e["message"] and "unrecognized.fits" in e["message"] for e in audit)
+
+
+def test_quarantine_move_failure_shows_error_and_stays_flagged(isolated_fits_archive):
+    """If the real move fails (simulated here by deleting the file out
+    from under the app between staging and confirming -- e.g. someone/
+    something else already moved or deleted it), the page must show an
+    error and NOT mark the row QUARANTINED, since nothing actually moved.
+    """
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+
+    # Simulate the file disappearing before confirmation completes.
+    (isolated_fits_archive / "unrecognized.fits").unlink()
+
+    at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
+    assert not at.exception
+    try:
+        quarantined_now = at.session_state["file_loader_quarantined"]
+    except KeyError:
+        quarantined_now = set()
+    assert "unrecognized.fits" not in quarantined_now
+    error_texts = "\n".join(e.value for e in at.error)
+    assert "Could not quarantine" in error_texts
+    audit = at.session_state["audit_log"]
+    assert any("quarantine FAILED" in e["message"] for e in audit)
 
 
 def test_cancelling_quarantine_leaves_file_flagged_not_quarantined(fits_archive):
@@ -323,7 +368,7 @@ def test_cancelling_quarantine_leaves_file_flagged_not_quarantined(fits_archive)
     assert "QUARANTINED" not in markdown_html
 
 
-def test_quarantine_confirmation_scoped_to_one_file_at_a_time(fits_archive):
+def test_quarantine_confirmation_scoped_to_one_file_at_a_time(isolated_fits_archive):
     """Clicking Quarantine on a second flagged row while one is already
     pending re-targets the single pending confirmation rather than
     stacking two -- per the handoff's explicit "one file at a time" scope.
@@ -342,14 +387,17 @@ def test_quarantine_confirmation_scoped_to_one_file_at_a_time(fits_archive):
     assert not at.exception
     assert "truncated.fits" in at.session_state["file_loader_quarantined"]
     assert "unrecognized.fits" not in at.session_state["file_loader_quarantined"]
+    # And the un-confirmed file must genuinely still be at its original
+    # path -- re-targeting shouldn't have moved it too.
+    assert (isolated_fits_archive / "unrecognized.fits").is_file()
 
 
-def test_quarantined_file_is_not_reloaded_on_rerun(fits_archive):
+def test_quarantined_file_is_not_reloaded_on_rerun(isolated_fits_archive):
     """Once quarantined, a file must be excluded from the active load loop
     (per _render_load_progress's own design) and shown via its cached
     validation row rather than triggering a fresh _run_real_load call --
-    this is the forward-compatibility guarantee for step 5's real
-    shutil.move(), where the file won't exist at its original path anymore.
+    this is the real-world case now that step 5's shutil.move() means the
+    file genuinely no longer exists at its original path.
     """
     at = _app_for("good_date.fits", "unrecognized.fits")
     at.run(timeout=30)
