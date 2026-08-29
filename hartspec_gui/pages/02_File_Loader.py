@@ -517,6 +517,41 @@ def main() -> None:
     sidebar.render_sidebar(current_stage=STAGE_NUMBER)
     styles.inject_base_css()
 
+    # Streamlit's own st.expander header ("Dev override: choose files
+    # manually" / "Load details") and widget labels (e.g. the "Dev
+    # override" text area's own label) are rendered as native chrome, not
+    # through unsafe_allow_html markdown -- there's no HTML string here we
+    # can wrap in a themed <div>, unlike the custom "Load details" content
+    # rows below. That native text falls back to Streamlit's own base theme
+    # from .streamlit/config.toml, which is static per server instance and
+    # doesn't react to st.session_state["theme"] (see the Style Guide's
+    # §5 note). inject_base_css() apparently doesn't already override this
+    # -- unlike .stButton, which does work correctly (see
+    # 03_Bandpass_Correction.py's own comment on that) -- so it's forced
+    # here instead. !important is needed because Streamlit's own expander
+    # CSS carries its own specificity that a plain `color:` rule isn't
+    # reliably guaranteed to beat.
+    _theme = styles.get_theme()
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary p,
+        [data-testid="stExpander"] summary span,
+        .streamlit-expanderHeader,
+        .streamlit-expanderHeader p {{
+            color: {_theme['text-body']} !important;
+        }}
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextInput"] input {{
+            color: {_theme['text-body']} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     styles.render_page_header(
         title="File Loader",
         subtitle="FR-02 FITS load & FR-03 validation / quarantine",

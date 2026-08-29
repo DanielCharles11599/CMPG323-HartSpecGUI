@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+
+from astropy.io import fits as pyfits
+import os
+
+
+
+file = os.system("2020d004_05h50m37s_Spec_sharmila_G328.24-0.55.fits")
+#print(file)
+hdulist = pyfits.open('2020d004_05h50m37s_Spec_sharmila_G328.24-0.55.fits')
+#hdul1 = pyfits.open(file_list[j])
+#hdu1  = list(hdul[3].header.keys())
+#hdu2  = list(hdul[3].header.keys())
+#posi    = str(hdul[2].header['POSITION'])
+#point   = str(hdul[0].header['SPPOINT'])
+#print(hdu1)
+#print(hdulist[0].header['position'])
+print(hdulist[2].header)
+#print(hdul.header[0])
+
