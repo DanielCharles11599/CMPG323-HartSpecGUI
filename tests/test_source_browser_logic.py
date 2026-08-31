@@ -1,11 +1,11 @@
 # test_source_browser_logic.py — unit tests for utils/source_browser_logic.py
-# (FR-01 Source Browser). Pure-Python logic only, so these run without a
-# Streamlit runtime, per pytest>=7.4 (see requirements.txt).
+# (FR-01 Source & Frequency Browser). Pure-Python logic only, so these run
+# without a Streamlit runtime, per pytest>=7.4 (see requirements.txt).
 #
 # astropy.io.fits.getheader is monkeypatched rather than given real FITS
-# files to parse — these tests are about scan_source_groups()'s own logic
-# (grouping, status handling, missing directories), not about astropy's FITS
-# parsing, which is already astropy's own well-tested responsibility.
+# files to parse — these tests are about scan_fits_directory_tree()'s own
+# logic (tree structure, filtering, status handling), not astropy's FITS
+# parsing itself.
 
 import sys
 from pathlib import Path
@@ -14,15 +14,19 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
+from utils import fits_ingest
 from utils import source_browser_logic as sbl  # noqa: E402
 from utils.source_browser_logic import (  # noqa: E402
-    SourceFileEntry,
-    all_filenames,
+    build_selected_files,
     build_summary_text,
-    files_by_name,
-    frequency_display_name,
-    get_source_groups,
-    scan_source_groups,
+    default_fits_directory,
+    distinct_frequencies_mhz,
+    distinct_source_names,
+    earliest_observation_date,
+    flatten_files,
+    matching_files,
+    run_file_check_placeholder,
+    scan_fits_directory_tree,
     status_css_class,
 )
 
@@ -31,10 +35,8 @@ from utils.source_browser_logic import (  # noqa: E402
 def fake_fits_header(monkeypatch):
     """Replace astropy.io.fits.getheader with a tiny in-memory stand-in.
 
-    Test fixture files just contain "KEY=value" lines; a file containing the
-    literal string "CORRUPT" simulates an unreadable header (astropy would
-    raise for real malformed FITS, which _scan_fits_file catches broadly via
-    `except Exception`).
+    Fixture files contain "KEY=value" lines; a file containing the literal
+    string "CORRUPT" simulates an unreadable header.
     """
 
     def _parse_value(raw: str):
@@ -58,108 +60,176 @@ def fake_fits_header(monkeypatch):
     monkeypatch.setattr(sbl.fits, "getheader", _fake_getheader)
 
 
-class TestFormatDeclination:
-    def test_numeric_degrees_positive(self):
-        assert sbl._format_declination(12.5667) == "+12°34'"
+def _write_fits(path: Path, date_obs=None, obj=None, restfreq_hz=None, corrupt=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if corrupt:
+        path.write_text("CORRUPT GARBAGE, NOT A REAL HEADER")
+        return
+    lines = []
+    if date_obs:
+        lines.append(f"DATE-OBS={date_obs}")
+    if obj:
+        lines.append(f"OBJECT={obj}")
+    if restfreq_hz is not None:
+        lines.append(f"RESTFREQ={restfreq_hz}")
+    path.write_text("\n".join(lines) + "\n")
 
-    def test_numeric_degrees_negative(self):
-        assert sbl._format_declination(-4.5) == "-4°30'"
 
-    def test_preformatted_string_passthrough(self):
-        assert sbl._format_declination("+12:34:00") == "+12:34:00"
+class TestDefaultFitsDirectory:
+    """default_fits_directory() no longer has its own independent
+    FITS_ARCHIVE_PATH-reading/fallback logic -- it delegates entirely to
+    fits_ingest.get_archive_root() (see source_browser_logic.py's own
+    docstring on default_fits_directory for why: Page 01's browse default
+    and Page 02's file-loading root used to be two separately-maintained
+    copies of the same logic, and drifted, which is what originally broke
+    the Page 01 -> Page 02 handoff). These tests were written against the
+    old, independent implementation and need to reflect that.
+    """
 
-    def test_none_and_unparsable_return_none(self):
-        assert sbl._format_declination(None) is None
-        assert sbl._format_declination(object()) is None
+    def test_uses_env_var_when_set(self, monkeypatch):
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", "/custom/path")
+        # Compared as Path objects, not raw strings: default_fits_directory()
+        # returns str(fits_ingest.get_archive_root()), and str(Path(...))
+        # renders with the host OS's separator (backslashes on Windows) --
+        # a literal POSIX-style string comparison isn't portable.
+        assert Path(default_fits_directory()) == Path("/custom/path")
+
+    def test_falls_back_to_fits_ingest_default_when_no_env_var(self, monkeypatch):
+        monkeypatch.delenv("FITS_ARCHIVE_PATH", raising=False)
+        # The old implementation had its own extra fallback branch here
+        # (checking whether /data/fits/ exists on this machine via
+        # Path.is_dir()) that fits_ingest.get_archive_root() doesn't have --
+        # that's exactly the divergent-fallback-logic this was fixed to
+        # remove, so there's no is_dir() behavior left to monkeypatch or
+        # assert on. The expected value is read from
+        # fits_ingest.DEFAULT_ARCHIVE_ROOT directly rather than duplicated
+        # here as a literal, so this test can't silently drift out of sync
+        # with it either -- comparing Path("./data/fits") == Path("data/fits")
+        # is also intentional: pathlib strips a leading "./" when parsing,
+        # so str(fits_ingest.DEFAULT_ARCHIVE_ROOT) is "data/fits", not
+        # "./data/fits", even though the two refer to the same directory.
+        assert Path(default_fits_directory()) == fits_ingest.DEFAULT_ARCHIVE_ROOT
+
+    def test_delegates_to_fits_ingest_get_archive_root(self, monkeypatch):
+        """Pins down the actual bug fix, not just today's return value:
+        default_fits_directory() must call fits_ingest.get_archive_root()
+        (the same function 02_File_Loader.py uses to resolve where to load
+        files from) rather than re-deriving its own copy of the same
+        env-var logic -- that reimplementation is exactly what let the two
+        pages disagree before.
+        """
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", "/some/other/archive")
+        assert default_fits_directory() == str(fits_ingest.get_archive_root())
 
 
-class TestScanSourceGroups:
-    def test_scans_real_fits_and_pss_files(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        pss_dir = tmp_path / "pss"
-        fits_dir.mkdir()
-        pss_dir.mkdir()
+class TestScanFitsDirectoryTree:
+    def test_missing_directory_returns_none(self, tmp_path):
+        assert scan_fits_directory_tree(tmp_path / "does-not-exist") is None
 
-        (fits_dir / "spectrum_002.fits").write_text("DATE-OBS=2026-08-12T10:00:00\nDEC=12.5667\n")
-        (pss_dir / "pss_survey_014.txt").write_text("some pss calibration data\n")
+    def test_finds_fits_and_fit_extensions(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", date_obs="2026-08-01T00:00:00", obj="W3(OH)", restfreq_hz=1420405751.786)
+        _write_fits(tmp_path / "b.fit", date_obs="2026-08-02T00:00:00", obj="W3(OH)", restfreq_hz=1420405751.786)
+        (tmp_path / "notes.txt").write_text("not a fits file")
 
-        groups = scan_source_groups(fits_dir, pss_dir)
-        index = {f.filename: f for g in groups for f in g.files}
+        tree = scan_fits_directory_tree(tmp_path)
+        filenames = {f.filename for f in flatten_files(tree)}
+        assert filenames == {"a.fits", "b.fit"}
 
-        assert index["spectrum_002.fits"].status == "OK"
-        assert index["spectrum_002.fits"].observation_date == "2026-08-12"
-        assert index["spectrum_002.fits"].declination == "+12°34'"
-        assert index["spectrum_002.fits"].file_type == "FITS"
+    def test_builds_nested_structure_for_subdirectories(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "2026-08" / "a.fits", date_obs="2026-08-01T00:00:00", obj="W3(OH)")
+        _write_fits(tmp_path / "2026-07" / "b.fits", date_obs="2026-07-01T00:00:00", obj="W49N")
 
-        assert index["pss_survey_014.txt"].status == "OK"
-        assert index["pss_survey_014.txt"].file_type == "PSS"
-        assert index["pss_survey_014.txt"].observation_date is None
+        tree = scan_fits_directory_tree(tmp_path)
+        subdir_names = {child.name for child in tree.subdirectories}
+        assert subdir_names == {"2026-08", "2026-07"}
 
-    def test_corrupt_fits_header_is_flagged_not_crashed(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        fits_dir.mkdir()
-        (fits_dir / "bad.fits").write_text("CORRUPT GARBAGE, NOT A REAL HEADER")
-
-        groups = scan_source_groups(fits_dir, tmp_path / "pss")
-        entry = next(f for g in groups for f in g.files if f.filename == "bad.fits")
+    def test_corrupt_header_is_flagged_not_crashed(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "bad.fits", corrupt=True)
+        tree = scan_fits_directory_tree(tmp_path)
+        entry = flatten_files(tree)[0]
         assert entry.status == "FLAGGED"
-        assert entry.observation_date is None
+        assert entry.source_name is None
+        assert entry.frequency_mhz is None
 
-    def test_groups_by_header_observation_month(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        fits_dir.mkdir()
-        (fits_dir / "a.fits").write_text("DATE-OBS=2026-08-10T00:00:00\n")
-        (fits_dir / "b.fits").write_text("DATE-OBS=2026-07-15T00:00:00\n")
+    def test_restfreq_hz_converted_to_mhz(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W3(OH)", restfreq_hz=1420405751.786)
+        tree = scan_fits_directory_tree(tmp_path)
+        entry = flatten_files(tree)[0]
+        assert entry.frequency_mhz == pytest.approx(1420.406, abs=0.001)
 
-        groups = scan_source_groups(fits_dir, tmp_path / "pss")
-        labels = [g.label for g in groups]
-        assert labels == ["2026-08 Observations", "2026-07 Observations"]  # most recent first
+    def test_max_depth_stops_descending(self, tmp_path, fake_fits_header):
+        deep_path = tmp_path
+        for i in range(6):
+            deep_path = deep_path / f"level{i}"
+        _write_fits(deep_path / "deep.fits", obj="X")
 
-    def test_missing_directories_return_empty_list_not_an_error(self, tmp_path):
-        groups = scan_source_groups(tmp_path / "no-such-fits-dir", tmp_path / "no-such-pss-dir")
-        assert groups == []
-
-    def test_files_within_a_group_are_sorted_by_filename(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        fits_dir.mkdir()
-        (fits_dir / "z_spectrum.fits").write_text("DATE-OBS=2026-08-01T00:00:00\n")
-        (fits_dir / "a_spectrum.fits").write_text("DATE-OBS=2026-08-02T00:00:00\n")
-
-        groups = scan_source_groups(fits_dir, tmp_path / "pss")
-        filenames = [f.filename for f in groups[0].files]
-        assert filenames == ["a_spectrum.fits", "z_spectrum.fits"]
+        tree = scan_fits_directory_tree(tmp_path, max_depth=2)
+        # Should not find the file 6 levels down when capped at depth 2.
+        assert flatten_files(tree) == []
 
 
-class TestGetSourceGroupsWrapper:
-    def test_delegates_to_scan_source_groups_with_explicit_paths(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        fits_dir.mkdir()
-        (fits_dir / "only.fits").write_text("DATE-OBS=2026-01-01T00:00:00\n")
+class TestDropdownOptions:
+    def test_distinct_source_names_sorted_and_deduplicated(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W49N")
+        _write_fits(tmp_path / "b.fits", obj="W3(OH)")
+        _write_fits(tmp_path / "c.fits", obj="W49N")
 
-        wrapped = get_source_groups(fits_dir=fits_dir, pss_dir=tmp_path / "pss")
-        direct = scan_source_groups(fits_dir, tmp_path / "pss")
-        assert [f.filename for g in wrapped for f in g.files] == [f.filename for g in direct for f in g.files]
+        tree = scan_fits_directory_tree(tmp_path)
+        assert distinct_source_names(tree) == ["W3(OH)", "W49N"]
+
+    def test_distinct_frequencies_sorted_and_deduplicated(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="X", restfreq_hz=1420405751.786)
+        _write_fits(tmp_path / "b.fits", obj="X", restfreq_hz=1612231000.0)
+        _write_fits(tmp_path / "c.fits", obj="X", restfreq_hz=1420405751.786)
+
+        tree = scan_fits_directory_tree(tmp_path)
+        freqs = distinct_frequencies_mhz(tree)
+        assert freqs == sorted(freqs)
+        assert len(freqs) == 2
+
+    def test_files_without_headers_are_excluded_from_options(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "bad.fits", corrupt=True)
+        tree = scan_fits_directory_tree(tmp_path)
+        assert distinct_source_names(tree) == []
+        assert distinct_frequencies_mhz(tree) == []
 
 
-class TestFlattenHelpers:
-    def test_all_filenames_and_files_by_name(self, tmp_path, fake_fits_header):
-        fits_dir = tmp_path / "fits"
-        fits_dir.mkdir()
-        (fits_dir / "spectrum_002.fits").write_text("DATE-OBS=2026-08-12T00:00:00\nDEC=12.5667\n")
-        groups = scan_source_groups(fits_dir, tmp_path / "pss")
+class TestMatchingFiles:
+    def test_filters_by_both_source_and_frequency(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W3(OH)", restfreq_hz=1420405751.786)
+        _write_fits(tmp_path / "b.fits", obj="W3(OH)", restfreq_hz=1612231000.0)
+        _write_fits(tmp_path / "c.fits", obj="W49N", restfreq_hz=1420405751.786)
 
-        names = all_filenames(groups)
-        assert names == ["spectrum_002.fits"]
-        index = files_by_name(groups)
-        assert index["spectrum_002.fits"].observation_date == "2026-08-12"
+        tree = scan_fits_directory_tree(tmp_path)
+        matched = matching_files(tree, "W3(OH)", 1420.406)
+        assert [f.filename for f in matched] == ["a.fits"]
+
+    def test_none_filters_match_everything(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W3(OH)")
+        _write_fits(tmp_path / "b.fits", obj="W49N")
+        tree = scan_fits_directory_tree(tmp_path)
+        assert len(matching_files(tree, None, None)) == 2
+
+    def test_none_tree_returns_empty(self):
+        assert matching_files(None, "X", 1.0) == []
 
 
-class TestFrequencyDisplayName:
-    def test_splits_on_em_dash(self):
-        assert frequency_display_name("1420.405 MHz — HI line") == "HI line"
+class TestEarliestObservationDate:
+    def test_returns_minimum_date(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="X", date_obs="2026-08-12T00:00:00")
+        _write_fits(tmp_path / "b.fits", obj="X", date_obs="2026-07-01T00:00:00")
+        tree = scan_fits_directory_tree(tmp_path)
+        files = flatten_files(tree)
+        assert earliest_observation_date(files) == "2026-07-01"
 
-    def test_falls_back_to_full_string_without_separator(self):
-        assert frequency_display_name("22235 MHz") == "22235 MHz"
+    def test_none_when_no_dates_available(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "bad.fits", corrupt=True)
+        tree = scan_fits_directory_tree(tmp_path)
+        files = flatten_files(tree)
+        assert earliest_observation_date(files) is None
+
+    def test_empty_list_returns_none(self):
+        assert earliest_observation_date([]) is None
 
 
 class TestStatusCssClass:
@@ -173,32 +243,83 @@ class TestStatusCssClass:
 
 
 class TestBuildSummaryText:
-    def setup_method(self):
-        self.index = {
-            "spectrum_002.fits": SourceFileEntry(
-                "spectrum_002.fits", "FITS", 38, "OK",
-                observation_date="2026-08-12", declination="+12°34'",
-            ),
-            "spectrum_001.fits": SourceFileEntry("spectrum_001.fits", "FITS", 42, "OK"),
-            "pss_survey_015.txt": SourceFileEntry("pss_survey_015.txt", "PSS", 3, "OK"),
-        }
-
     def test_empty_selection(self):
-        text = build_summary_text([], self.index, "1420.405 MHz — HI line")
-        assert text == "No files selected — choose one or more from the list above."
+        assert build_summary_text([], "W3(OH)", 1420.406, None) == "No matching FITS files for the current filters."
 
-    def test_matches_build_spec_sample_text_exactly(self):
-        text = build_summary_text(["spectrum_002.fits"], self.index, "1420.405 MHz — HI line")
-        assert text == "Selected: spectrum_002.fits · 2026-08-12 · HI line · Dec +12°34'"
+    def test_singular_vs_plural_and_all_fields_present(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W3(OH)", restfreq_hz=1420405751.786, date_obs="2026-08-12T00:00:00")
+        tree = scan_fits_directory_tree(tmp_path)
+        files = flatten_files(tree)
 
-    def test_multiple_selection_appends_more_count(self):
-        text = build_summary_text(
-            ["spectrum_002.fits", "pss_survey_015.txt"], self.index, "1420.405 MHz — HI line"
-        )
-        assert text.startswith("Selected: spectrum_002.fits")
-        assert text.endswith("(+1 more)")
+        text = build_summary_text(files, "W3(OH)", 1420.406, "2026-08-12")
+        assert text == "1 file matched — W3(OH) · 1420.406 MHz · earliest observation 2026-08-12"
 
-    def test_missing_metadata_degrades_gracefully(self):
-        text = build_summary_text(["spectrum_001.fits"], self.index, "1420.405 MHz — HI line")
+    def test_missing_earliest_date_degrades_gracefully(self, tmp_path, fake_fits_header):
+        _write_fits(tmp_path / "a.fits", obj="W3(OH)", restfreq_hz=1420405751.786)
+        tree = scan_fits_directory_tree(tmp_path)
+        files = flatten_files(tree)
+        text = build_summary_text(files, "W3(OH)", 1420.406, None)
         assert "date pending" in text
-        assert "pending" in text
+
+
+class TestBuildSelectedFiles:
+    """build_selected_files() is what actually fixes the critical pipeline
+    bug: it produces the "selected_files" list 02_File_Loader.py reads,
+    in the exact form Page 02 resolves it (`fits_ingest.get_archive_root()
+    / filename`). This was previously untested, even though it's the one
+    function this whole fix hinges on.
+    """
+
+    def test_returns_paths_relative_to_archive_root(self, tmp_path, monkeypatch):
+        archive_root = tmp_path / "archive"
+        (archive_root / "2026-08").mkdir(parents=True)
+        file_path = archive_root / "2026-08" / "spectrum_002.fits"
+        file_path.write_text("")
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", str(archive_root))
+
+        entry = sbl.SourceFileEntry(path=file_path, filename=file_path.name, size_mb=0.0, status="OK")
+        selected = build_selected_files([entry])
+
+        assert selected == [str(Path("2026-08") / "spectrum_002.fits")]
+        # The real contract: Page 02 must be able to find the file this way.
+        assert (fits_ingest.get_archive_root() / selected[0]).resolve() == file_path.resolve()
+
+    def test_falls_back_to_absolute_path_outside_archive_root(self, tmp_path, monkeypatch):
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", str(archive_root))
+
+        outside_dir = tmp_path / "elsewhere"
+        outside_dir.mkdir()
+        file_path = outside_dir / "test.fits"
+        file_path.write_text("")
+
+        entry = sbl.SourceFileEntry(path=file_path, filename=file_path.name, size_mb=0.0, status="OK")
+        selected = build_selected_files([entry])
+
+        assert Path(selected[0]).is_absolute()
+        # pathlib's `/` operator discards the left-hand side entirely when
+        # the right-hand side is already absolute, so Page 02 still
+        # resolves this correctly with no change needed on that side.
+        assert (fits_ingest.get_archive_root() / selected[0]) == file_path.resolve()
+
+    def test_empty_list_returns_empty_list(self, monkeypatch):
+        monkeypatch.setenv("FITS_ARCHIVE_PATH", "/whatever")
+        assert build_selected_files([]) == []
+
+
+class TestRunFileCheckPlaceholder:
+    def test_writes_a_block_file_listing_the_given_paths(self, tmp_path):
+        workspace_dir = tmp_path / "workspace"
+        fits_paths = [tmp_path / "a.fits", tmp_path / "b.fits"]
+
+        block_file = run_file_check_placeholder(fits_paths, workspace_dir)
+
+        assert block_file.exists()
+        content = block_file.read_text().splitlines()
+        assert content == [str(p) for p in fits_paths]
+
+    def test_creates_workspace_directory_if_missing(self, tmp_path):
+        workspace_dir = tmp_path / "nested" / "workspace"
+        run_file_check_placeholder([], workspace_dir)
+        assert workspace_dir.is_dir()

@@ -330,14 +330,23 @@ def _render_load_progress() -> None:
                 badge = styles.render_badge(convention_label, "info")
                 spectrum = result.spectrum or {}
                 st.markdown(
+                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
                     f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
-                    f'\u00b7 Date: {spectrum.get("date", "?")}',
+                    f'\u00b7 Date: {spectrum.get("date", "?")}</div>',
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(f"**{filename}** \u2014 failed to load:")
+                st.markdown(
+                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
+                    f'<strong>{filename}</strong> \u2014 failed to load:</div>',
+                    unsafe_allow_html=True,
+                )
                 for attempt in result.attempts:
-                    st.caption(attempt)
+                    st.markdown(
+                        f'<div style="color:{theme["text-muted"]}; font-size:11px; '
+                        f'margin-left:4px;">{attempt}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     if ok_count < n:
         failed = [f for f, r in results.items() if not r.ok]
@@ -483,10 +492,14 @@ def _render_header_fields_table() -> None:
 
     styles.render_panel_open("")
     if not visible_columns:
-        st.caption(
+        theme = styles.get_theme()
+        st.markdown(
+            f'<div style="color:{theme["text-muted"]}; font-size:11px;">'
             "No matching fields among the 9 priority columns shown here. "
             "The full 30+ field list isn't specified yet in the build spec -- "
             "ask before adding more columns rather than inventing field names."
+            "</div>",
+            unsafe_allow_html=True,
         )
     else:
         col_width = f"{100 / len(visible_columns):.4f}%"
@@ -503,6 +516,41 @@ def main() -> None:
     session_store.init_session_state()
     sidebar.render_sidebar(current_stage=STAGE_NUMBER)
     styles.inject_base_css()
+
+    # Streamlit's own st.expander header ("Dev override: choose files
+    # manually" / "Load details") and widget labels (e.g. the "Dev
+    # override" text area's own label) are rendered as native chrome, not
+    # through unsafe_allow_html markdown -- there's no HTML string here we
+    # can wrap in a themed <div>, unlike the custom "Load details" content
+    # rows below. That native text falls back to Streamlit's own base theme
+    # from .streamlit/config.toml, which is static per server instance and
+    # doesn't react to st.session_state["theme"] (see the Style Guide's
+    # §5 note). inject_base_css() apparently doesn't already override this
+    # -- unlike .stButton, which does work correctly (see
+    # 03_Bandpass_Correction.py's own comment on that) -- so it's forced
+    # here instead. !important is needed because Streamlit's own expander
+    # CSS carries its own specificity that a plain `color:` rule isn't
+    # reliably guaranteed to beat.
+    _theme = styles.get_theme()
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary p,
+        [data-testid="stExpander"] summary span,
+        .streamlit-expanderHeader,
+        .streamlit-expanderHeader p {{
+            color: {_theme['text-body']} !important;
+        }}
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextInput"] input {{
+            color: {_theme['text-body']} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     styles.render_page_header(
         title="File Loader",

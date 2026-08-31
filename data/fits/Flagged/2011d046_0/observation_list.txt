@@ -1,0 +1,10 @@
+2011d046_02h57m47s_Spec_sharmila_G328.24-0.55.fits ON 0
+2011d046_03h01m27s_Spec_sharmila_G328.24-0.55.fits ON 0
+2011d046_03h05m32s_Spec_sharmila_G328.24-0.55.fits ON 0
+2011d046_03h09m12s_Spec_sharmila_G328.24-0.55.fits ON 0
+2011d046_03h23m02s_Spec_sharmila_G328.24-0.55.fits HPN 1
+2011d046_03h24m12s_Spec_sharmila_G328.24-0.55.fits HPS 1
+2011d046_03h25m22s_Spec_sharmila_G328.24-0.55.fits HPE 1
+2011d046_03h26m37s_Spec_sharmila_G328.24-0.55.fits HPW 1
+2011d046_03h27m47s_Spec_sharmila_G328.24-0.55.fits ON 1
+2011d046_03h28m42s_Spec_sharmila_G328.24-0.55.fits ON 1
