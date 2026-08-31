@@ -1,112 +1,90 @@
-# 03_Bandpass_Correction.py — FR-04: mode selector + bandpass-corrected spectrum overlay.
-#
-# This page consumes the real spectra loaded by Page 02 through
-# utils.bandpass_correction_logic, validates the corrected result, stores an
-# explicit in-memory Page 3 -> Page 4 spectrum handoff, and only then marks
-# FR-04 complete. The compact session JSON still stores summary metadata only.
+# 03_Bandpass_Correction.py — FR-04: explicit bandpass correction workflow.
 
+# Postpone evaluation of type annotations so type hints do not interfere with runtime imports.
 from __future__ import annotations
 
+# These typing helpers describe the spectrum dictionaries passed between pipeline stages.
 from typing import Any, Mapping
 
+# NumPy is used to validate and compare spectrum arrays.
 import numpy as np
+# Plotly renders the interactive before/after spectrum chart required by FR-04.
 import plotly.graph_objects as go
+# Streamlit provides the page widgets, session state, navigation, and messages.
 import streamlit as st
 
+# Shared project utilities keep session persistence, sidebar state, and styling consistent with the other pages.
 from utils import session_store, sidebar, styles
 from utils.bandpass_correction_logic import (
     MODE_OPTIONS,
     THIS_STAGE_KEY,
-    get_corrected_spectrum,
+    build_bandpass_result,
     stage_summary,
 )
 
+# These constants identify this page inside the eight-stage pipeline and keep stage keys consistent across pages.
 PAGE_STAGE_KEY = THIS_STAGE_KEY
 CURRENT_STAGE = 3
 PAGE_TITLE = "Bandpass Correction"
-PAGE_SUBTITLE = "FR-04 — mode selector + spectrum overlay"
-CHART_PANEL_TITLE = "Bandpass-corrected spectrum"
-
-# Exact stage keys already used by Pages 01/02 in the supplied project.
+PAGE_SUBTITLE = "FR-04 — mode selector + before/after spectrum overlay"
 UPSTREAM_STAGE_KEYS = ("01_source_browser", "file_loader")
-DOWNSTREAM_BASELINE_STAGE_KEY = "04_baseline_editor"
-
-_FREQ_SWITCH_PILL_WIDTH_PX = 180
-_POS_SWITCH_PILL_WIDTH_PX = 180
+DOWNSTREAM_STAGE_KEYS = ("04_baseline_editor",)
 _REQUIRED_ARRAY_KEYS = ("Vlsr", "LCP", "RCP")
 
-
+# Configure the Streamlit page before rendering any other Streamlit components.
 st.set_page_config(
     page_title="HARTSPEC — Bandpass Correction",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# Initialize the shared session schema, draw the common sidebar, and apply the project-wide visual styling.
 session_store.init_session_state()
 sidebar.render_sidebar(current_stage=CURRENT_STAGE)
 styles.inject_base_css()
 
 
-def _init_page_state() -> None:
-    """Initialize Page 3 working state without overwriting an existing selection."""
-    st.session_state.setdefault("bandpass_mode", MODE_OPTIONS[0])
-    st.session_state.setdefault("bandpass_last_logged_mode", None)
-
-
-_init_page_state()
-
-
-def _on_mode_select(mode: str) -> None:
-    """Store the selected FR-04 switching mode for the next Streamlit rerun."""
-    st.session_state["bandpass_mode"] = mode
-
-
+# Count completed stages before Page 03 so the shared progress header does not count the current stage prematurely.
 def _completed_upstream_count() -> int:
-    """Count only stages strictly before Page 3 for the shared progress bar."""
     completed = st.session_state["completed_stages"]
-    return sum(stage_key in completed for stage_key in UPSTREAM_STAGE_KEYS)
+    return sum(key in completed for key in UPSTREAM_STAGE_KEYS)
 
 
-def _normalise_corrected_spectrum(corrected: Mapping[str, Any]) -> dict[str, np.ndarray]:
-    """Validate and copy the three arrays Page 4 requires.
+# Check that Source Browser and File Loader are complete before allowing any bandpass work.
+def _upstream_complete() -> bool:
+    completed = st.session_state["completed_stages"]
+    return all(key in completed for key in UPSTREAM_STAGE_KEYS)
 
-    Raises:
-        ValueError: If Vlsr/LCP/RCP is missing, empty, non-numeric, or the
-            three arrays have inconsistent lengths.
-    """
+
+# Convert a spectrum handoff into validated one-dimensional numeric arrays that downstream code can safely use.
+def _normalise_spectrum(spectrum: Mapping[str, Any], label: str) -> dict[str, np.ndarray]:
     arrays: dict[str, np.ndarray] = {}
-
     for key in _REQUIRED_ARRAY_KEYS:
-        if key not in corrected:
-            raise ValueError(f"Bandpass output is missing required field: {key}.")
+        if key not in spectrum:
+            raise ValueError(f"{label} is missing required field: {key}.")
         try:
-            array = np.asarray(corrected[key], dtype=float).reshape(-1)
+            arr = np.asarray(spectrum[key], dtype=float).reshape(-1)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Bandpass output field {key} is not a numeric array.") from exc
+            raise ValueError(f"{label} field {key} is not numeric.") from exc
+        if arr.size == 0:
+            raise ValueError(f"{label} contains no {key} channels.")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{label} field {key} contains NaN or infinite values.")
+        arrays[key] = arr.copy()
 
-        if array.size == 0:
-            raise ValueError(
-                "Bandpass correction produced zero output channels. "
-                "Check that the two Page 2 spectra form the correct switching pair and share the velocity channels "
-                "required by the selected mode."
-            )
-        arrays[key] = array.copy()
-
-    lengths = {key: arrays[key].size for key in _REQUIRED_ARRAY_KEYS}
-    if len(set(lengths.values())) != 1:
+    sizes = {key: arr.size for key, arr in arrays.items()}
+    if len(set(sizes.values())) != 1:
         raise ValueError(
-            "Bandpass output arrays have inconsistent lengths: "
-            + ", ".join(f"{key}={size}" for key, size in lengths.items())
+            f"{label} arrays have inconsistent lengths: "
+            + ", ".join(f"{key}={size}" for key, size in sizes.items())
         )
-
     return arrays
 
 
+# Compare only the scientific Vlsr/LCP/RCP arrays to determine whether the Page 03 output actually changed.
 def _spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any]) -> bool:
-    """Return True when two Page 3 handoff spectra contain identical arrays."""
     if not left:
         return False
-
     try:
         return all(
             np.array_equal(
@@ -120,52 +98,151 @@ def _spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any]) -> 
         return False
 
 
-def _invalidate_page4_if_upstream_changed(new_handoff: Mapping[str, Any]) -> None:
-    """Invalidate a stale baseline fit when Page 3's scientific input changes."""
-    previous = st.session_state.get("bandpass_corrected_spectrum")
-    if previous is None or _spectra_equal(previous, new_handoff):
-        return
-
-    st.session_state["completed_stages"].discard(DOWNSTREAM_BASELINE_STAGE_KEY)
-    st.session_state["pipeline_data"].pop(DOWNSTREAM_BASELINE_STAGE_KEY, None)
+# Clear Page 03 and Page 04 results when the current bandpass state is no longer valid.
+def _clear_stage3_and_downstream() -> None:
+    st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+    st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+    st.session_state.pop("bandpass_corrected_spectrum", None)
+    st.session_state.pop("bandpass_display_result", None)
+    for key in DOWNSTREAM_STAGE_KEYS:
+        st.session_state["completed_stages"].discard(key)
+        st.session_state["pipeline_data"].pop(key, None)
     st.session_state.pop("baseline_corrected_spectrum", None)
-    session_store.log_event("Bandpass output changed — Baseline Block Editor state invalidated")
 
 
-_theme = styles.get_theme()
-
-st.markdown(
-    f"""
-    <style>
-    .hs-legend-row {{
-        display: flex;
-        align-items: center;
-        gap: 24px;
-        margin-top: 10px;
-    }}
-    .hs-legend-item {{
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }}
-    .hs-legend-swatch {{
-        width: 10px;
-        height: 10px;
-        border-radius: 2px;
-        display: inline-block;
-    }}
-    .hs-legend-label {{
-        font-size: 9px;
-        color: {_theme['text-muted']};
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Invalidate an already-applied result when the user switches mode and has not applied the new choice yet.
+def _on_mode_change() -> None:
+    """A mode choice is only a pending parameter until Apply is clicked."""
+    previously_applied = st.session_state.get("bandpass_applied_mode")
+    selected = st.session_state.get("bandpass_mode")
+    if previously_applied and selected != previously_applied:
+        _clear_stage3_and_downstream()
 
 
-# The current stage is in progress, so only Pages 1 and 2 may contribute to
-# the Page 3 header progress value.
+# Save a successful correction into session state, update the JSON-safe stage summary, and invalidate stale downstream output.
+def _commit_result(mode: str, result: Mapping[str, Any]) -> None:
+    corrected = _normalise_spectrum(result["corrected"], "Bandpass-corrected spectrum")
+    previous = st.session_state.get("bandpass_corrected_spectrum")
+
+    if previous is not None and not _spectra_equal(previous, corrected):
+        for key in DOWNSTREAM_STAGE_KEYS:
+            st.session_state["completed_stages"].discard(key)
+            st.session_state["pipeline_data"].pop(key, None)
+        st.session_state.pop("baseline_corrected_spectrum", None)
+        session_store.log_event(
+            "Bandpass output changed — Baseline Block Editor state invalidated"
+        )
+
+    # Full arrays remain in memory for Page 04; only lightweight metadata is
+    # placed in pipeline_data so session JSON remains serializable.
+    st.session_state["bandpass_corrected_spectrum"] = corrected
+    st.session_state["bandpass_display_result"] = {
+        "mode": mode,
+        "raw_spec1": _normalise_spectrum(result["raw_spec1"], "Input spectrum 1"),
+        "raw_spec2": _normalise_spectrum(result["raw_spec2"], "Input spectrum 2"),
+        "corrected": corrected,
+        "common_velocity_range_kms": list(result.get("common_velocity_range_kms") or []),
+    }
+    st.session_state["bandpass_applied_mode"] = mode
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = stage_summary(mode, corrected)
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY]["common_velocity_range_kms"] = list(
+        result.get("common_velocity_range_kms") or []
+    )
+    session_store.mark_stage_complete(PAGE_STAGE_KEY)
+    session_store.log_event(
+        f"Bandpass correction applied — {mode} ({corrected['Vlsr'].size} channels)"
+    )
+
+
+# Add one consistently formatted spectrum line to the Plotly figure.
+def _add_trace(fig: go.Figure, x, y, name: str, color: str, dash: str, opacity: float) -> None:
+    fig.add_scatter(
+        x=x,
+        y=y,
+        mode="lines",
+        name=name,
+        line=dict(color=color, width=1.5, dash=dash),
+        opacity=opacity,
+        hovertemplate=f"{name}<br>Vlsr=%{{x:.2f}} km/s<br>T=%{{y:.3f}} K<extra></extra>",
+    )
+
+
+# Render the FR-04 before/after overlay and visually mark the common velocity range shared by the pair.
+def _render_before_after(result: Mapping[str, Any]) -> None:
+    theme = styles.get_theme()
+    raw1 = result["raw_spec1"]
+    corrected = result["corrected"]
+    common_range = result.get("common_velocity_range_kms") or []
+
+    with st.container(border=True):
+        st.markdown(
+            '<div class="hs-panel-title">Before / after bandpass correction</div>',
+            unsafe_allow_html=True,
+        )
+        fig = go.Figure()
+
+        # "Before" is the first member of the selected switching pair. The
+        # second raw spectrum is the reference used by the correction and is
+        # available in state, while the chart remains readable with four traces.
+        _add_trace(fig, raw1["Vlsr"], raw1["LCP"], "Before LCP", styles.LCP_COLOR, "dot", 0.48)
+        _add_trace(fig, raw1["Vlsr"], raw1["RCP"], "Before RCP", styles.RCP_COLOR, "dot", 0.48)
+        _add_trace(fig, corrected["Vlsr"], corrected["LCP"], "After LCP", styles.LCP_COLOR, "solid", 1.0)
+        _add_trace(fig, corrected["Vlsr"], corrected["RCP"], "After RCP", styles.RCP_COLOR, "solid", 1.0)
+
+        if len(common_range) == 2:
+            fig.add_vrect(
+                x0=common_range[0],
+                x1=common_range[1],
+                fillcolor=theme["accent"],
+                opacity=0.08,
+                line_width=0,
+                annotation_text="Common velocity range",
+                annotation_position="top left",
+            )
+
+        fig.update_layout(
+            paper_bgcolor=theme["bg-panel"],
+            plot_bgcolor=theme["bg-panel"],
+            height=430,
+            margin=dict(l=52, r=18, t=24, b=44),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis=dict(
+                title="Vlsr (km/s)",
+                showgrid=False,
+                zeroline=False,
+                showline=True,
+                linecolor=theme["border-subtle"],
+                color=theme["text-muted"],
+            ),
+            yaxis=dict(
+                title="Temperature (K)",
+                showgrid=False,
+                zeroline=False,
+                showline=True,
+                linecolor=theme["border-subtle"],
+                color=theme["text-muted"],
+            ),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=theme["text-body"],
+            ),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
+
+        if len(common_range) == 2:
+            st.caption(
+                f"Common velocity range: {common_range[0]:.3f} to {common_range[1]:.3f} km/s"
+            )
+
+
+# Render the Streamlit page after all helper functions have been defined.
+
+# Keep the selected mode stable across Streamlit reruns, defaulting to frequency switching for a new session.
+st.session_state.setdefault("bandpass_mode", MODE_OPTIONS[0])
+
+# Draw the common page heading and show progress based only on the two required upstream stages.
 styles.render_page_header(
     title=PAGE_TITLE,
     subtitle=PAGE_SUBTITLE,
@@ -173,144 +250,76 @@ styles.render_page_header(
     completed_stages=_completed_upstream_count(),
 )
 
-
-st.markdown('<div class="hs-eyebrow">Mode</div>', unsafe_allow_html=True)
-
-_remaining_width = (
-    styles.CONTENT_WIDTH
-    - _FREQ_SWITCH_PILL_WIDTH_PX
-    - _POS_SWITCH_PILL_WIDTH_PX
-)
-mode_cols = st.columns(
-    [
-        _FREQ_SWITCH_PILL_WIDTH_PX,
-        _POS_SWITCH_PILL_WIDTH_PX,
-        _remaining_width,
-    ]
-)
-
-active_mode = st.session_state["bandpass_mode"]
-
-with mode_cols[0]:
-    st.button(
-        "Frequency Switch",
-        key="mode_freq_switch",
-        type="primary" if active_mode == "Frequency Switch" else "secondary",
-        use_container_width=True,
-        on_click=_on_mode_select,
-        args=("Frequency Switch",),
+# Stop early if the user reached Page 03 before completing the required ingestion stages.
+if not _upstream_complete():
+    missing = [key for key in UPSTREAM_STAGE_KEYS if key not in st.session_state["completed_stages"]]
+    _clear_stage3_and_downstream()
+    st.error(
+        "Bandpass correction requires Source Browser and File Loader to be completed first. "
+        f"Missing stage keys: {', '.join(missing)}."
     )
-
-with mode_cols[1]:
-    st.button(
-        "Position Switch",
-        key="mode_pos_switch",
-        type="primary" if active_mode == "Position Switch" else "secondary",
-        use_container_width=True,
-        on_click=_on_mode_select,
-        args=("Position Switch",),
-    )
-
-st.write("")
-
-
-mode = st.session_state["bandpass_mode"]
-
-try:
-    corrected = get_corrected_spectrum(mode)
-    handoff_spectrum = _normalise_corrected_spectrum(corrected)
-except (ValueError, TypeError, KeyError) as exc:
-    # Do not leave stale success state behind if the current correction fails.
-    st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-    st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
-    st.session_state.pop("bandpass_corrected_spectrum", None)
-    st.error(str(exc))
+    if st.button("Return to File Loader", key="bandpass_return_loader"):
+        st.switch_page("pages/02_File_Loader.py")
     st.stop()
 
-# Page 4 must consume exactly the spectrum the user sees here. Keep the arrays
-# out of pipeline_data because session_store serializes that dict to JSON.
-_invalidate_page4_if_upstream_changed(handoff_spectrum)
-st.session_state["bandpass_corrected_spectrum"] = handoff_spectrum
-
-
-with st.container(border=True):
-    st.markdown(
-        f'<div class="hs-panel-title">{CHART_PANEL_TITLE}</div>',
-        unsafe_allow_html=True,
+# Page 02 stores every successfully ingested spectrum here; FR-04 needs at least one valid switching pair.
+loaded_spectra = st.session_state.get("loaded_spectra") or []
+if len(loaded_spectra) < 2:
+    _clear_stage3_and_downstream()
+    st.error(
+        "Bandpass correction requires at least two successfully loaded FITS spectra. "
+        "Return to Page 02 and load a compatible switching pair."
     )
+    if st.button("Return to File Loader", key="bandpass_return_loader_pair"):
+        st.switch_page("pages/02_File_Loader.py")
+    st.stop()
 
-    fig = go.Figure()
-    fig.add_scatter(
-        x=handoff_spectrum["Vlsr"],
-        y=handoff_spectrum["LCP"],
-        mode="lines",
-        line=dict(color=styles.LCP_COLOR, width=1.6),
-        name="LCP",
-        hovertemplate="Vlsr=%{x:.2f} km/s<br>LCP=%{y:.3f} K<extra></extra>",
-    )
-    fig.add_scatter(
-        x=handoff_spectrum["Vlsr"],
-        y=handoff_spectrum["RCP"],
-        mode="lines",
-        line=dict(color=styles.RCP_COLOR, width=1.6),
-        name="RCP",
-        hovertemplate="Vlsr=%{x:.2f} km/s<br>RCP=%{y:.3f} K<extra></extra>",
-    )
-    fig.update_layout(
-        showlegend=False,
-        paper_bgcolor=_theme["bg-panel"],
-        plot_bgcolor=_theme["bg-panel"],
-        margin=dict(l=48, r=16, t=8, b=40),
-        height=384,
-        xaxis=dict(
-            title="Vlsr (km/s)",
-            showgrid=False,
-            zeroline=False,
-            showline=True,
-            linecolor=_theme["border-subtle"],
-            color=_theme["text-muted"],
-        ),
-        yaxis=dict(
-            title="Tsys (K)",
-            showgrid=False,
-            zeroline=False,
-            showline=True,
-            linecolor=_theme["border-subtle"],
-            color=_theme["text-muted"],
-        ),
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=11,
-            color=_theme["text-body"],
-        ),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+# Let the user explicitly choose the scientific switching mode required by FR-04.
+st.markdown('<div class="hs-eyebrow">Bandpass mode</div>', unsafe_allow_html=True)
+st.radio(
+    "Bandpass mode",
+    options=MODE_OPTIONS,
+    horizontal=True,
+    key="bandpass_mode",
+    label_visibility="collapsed",
+    on_change=_on_mode_change,
+)
 
-    st.markdown(
-        f"""
-        <div class="hs-legend-row">
-          <div class="hs-legend-item">
-            <span class="hs-legend-swatch" style="background-color:{styles.LCP_COLOR};"></span>
-            <span class="hs-legend-label">LCP</span>
-          </div>
-          <div class="hs-legend-item">
-            <span class="hs-legend-swatch" style="background-color:{styles.RCP_COLOR};"></span>
-            <span class="hs-legend-label">RCP</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+# The correction is deliberately run only after this explicit action, rather than automatically on every rerun.
+apply_clicked = st.button(
+    "Apply Bandpass Correction",
+    type="primary",
+    key="apply_bandpass_correction",
+)
+
+# Run the correction, commit it only if successful, and leave the stage incomplete if validation fails.
+if apply_clicked:
+    try:
+        result = build_bandpass_result(st.session_state["bandpass_mode"])
+        _commit_result(st.session_state["bandpass_mode"], result)
+        st.success("Bandpass correction applied successfully.")
+    except (ValueError, TypeError, KeyError) as exc:
+        _clear_stage3_and_downstream()
+        st.error(f"Bandpass correction failed: {exc}")
+
+# Reuse the last successfully applied result for display without recomputing it during unrelated Streamlit reruns.
+stored_result = st.session_state.get("bandpass_display_result")
+applied_mode = st.session_state.get("bandpass_applied_mode")
+
+# Show a committed result only when it belongs to the mode currently selected in the UI.
+if stored_result and applied_mode == st.session_state["bandpass_mode"]:
+    _render_before_after(stored_result)
+
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = stage_summary(
+        applied_mode,
+        stored_result["corrected"],
     )
-
-
-# FR-04 is complete only after a real, non-empty corrected spectrum has been
-# produced and handed to the next stage.
-st.session_state["pipeline_data"][PAGE_STAGE_KEY] = stage_summary(mode, corrected)
-session_store.mark_stage_complete(PAGE_STAGE_KEY)
-
-if st.session_state["bandpass_last_logged_mode"] != mode:
-    session_store.log_event(
-        f"Bandpass correction applied — {mode} "
-        f"({handoff_spectrum['Vlsr'].size} channels)"
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY]["common_velocity_range_kms"] = list(
+        stored_result.get("common_velocity_range_kms") or []
     )
-    st.session_state["bandpass_last_logged_mode"] = mode
+    session_store.mark_stage_complete(PAGE_STAGE_KEY)
+
+    if st.button("Continue to Baseline Block Editor →", key="continue_to_baseline"):
+        st.switch_page("pages/04_Baseline_Editor.py")
+else:
+    st.info("Choose the switching mode, then click Apply Bandpass Correction to run FR-04.")

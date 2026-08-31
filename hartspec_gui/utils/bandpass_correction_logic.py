@@ -4,7 +4,6 @@
 # pages/03_Bandpass_Correction.py.
 #
 # IMPORTANT PROJECT CONSTRAINT:
-# --------------------------------
 # The original scientific modules inside /clc MUST NOT be modified.
 #
 # In particular:
@@ -20,7 +19,6 @@
 # the same NumPy array operations in a GUI-safe form.
 #
 # Why not call clc/Baseline.py directly?
-# ---------------------------------------
 # The original Baseline functions contain matplotlib plotting / savefig
 # side effects. Those side effects are suitable for the original CLI program
 # but are undesirable inside Streamlit because:
@@ -33,8 +31,7 @@
 # Therefore this module keeps the GUI integration separate while preserving
 # the original scientific subtraction behaviour.
 #
-# Data flow
-# ---------
+# The data flow is Page 01 selection -> Page 02 loading -> this module -> Page 03 display and Page 04 handoff.
 #
 # Page 01:
 #     user selects FITS files
@@ -53,8 +50,7 @@
 #     applies the selected correction,
 #     and returns the corrected spectrum to Page 03.
 #
-# Testing
-# -------
+# Public helpers accept an optional spectra list so unit tests can run without relying on Streamlit session state.
 # The public helpers accept an optional `spectra` argument.
 #
 # In the real Streamlit application:
@@ -79,9 +75,7 @@ import numpy as np
 import streamlit as st
 
 
-# ---------------------------------------------------------------------------
-# Types / page constants
-# ---------------------------------------------------------------------------
+# Define the shared spectrum type and the constants Page 03 uses for stage identity and mode selection.
 
 # The CLC loaders return dictionaries containing many metadata fields in
 # addition to Vlsr/LCP/RCP, so dict[str, Any] is intentionally used instead
@@ -108,10 +102,9 @@ _REQUIRED_SPECTRUM_KEYS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Validation helpers
-# ---------------------------------------------------------------------------
+# These helpers validate the loaded spectra before any scientific subtraction is attempted.
 
+# Validate that one loaded spectrum contains usable Vlsr, LCP, and RCP arrays with matching channel counts.
 def _validate_spectrum(
     spec: SpectrumDict,
     number: int,
@@ -176,6 +169,7 @@ def _validate_spectrum(
         )
 
 
+# Confirm that both spectra have compatible polarization array lengths before element-by-element subtraction.
 def _validate_pair_lengths(
     spec1: SpectrumDict,
     spec2: SpectrumDict,
@@ -219,10 +213,9 @@ def _validate_pair_lengths(
             )
 
 
-# ---------------------------------------------------------------------------
-# Page 02 -> Page 03 handoff
-# ---------------------------------------------------------------------------
+# Read the spectra that Page 02 placed in session state and choose the pair used by FR-04.
 
+# Retrieve the first two successfully loaded spectra and validate them as the active switching pair.
 def get_raw_pair(
     spectra: list[SpectrumDict] | None = None,
 ) -> tuple[SpectrumDict, SpectrumDict]:
@@ -289,10 +282,9 @@ def get_raw_pair(
     return spec1, spec2
 
 
-# ---------------------------------------------------------------------------
-# Frequency-switch correction
-# ---------------------------------------------------------------------------
+# Apply the frequency-switch numerical behavior while keeping Streamlit free of the CLC plotting side effects.
 
+# Reproduce the CLC frequency-switch subtraction and keep only velocity channels shared by both spectra.
 def freq_switch_correct(
     spec1: SpectrumDict,
     spec2: SpectrumDict,
@@ -360,8 +352,7 @@ def freq_switch_correct(
         - np.asarray(spec1["RCP"])
     )
 
-    # Boolean masks identifying velocity values that also occur in the
-    # partner spectrum.
+    # Build one Boolean mask per spectrum so only channels whose Vlsr value also exists in the partner spectrum survive.
     spec1_common = np.isin(
         vlsr1,
         vlsr2,
@@ -372,9 +363,7 @@ def freq_switch_correct(
         vlsr1,
     )
 
-    # Shallow copies are intentional and match the original Baseline.py
-    # behaviour. Only Vlsr/LCP/RCP are replaced; metadata remains available
-    # to downstream processing.
+    # Copy each input dictionary before replacing the three science arrays so all FITS metadata remains available downstream.
     new_spec1 = spec1.copy()
     new_spec2 = spec2.copy()
 
@@ -389,10 +378,9 @@ def freq_switch_correct(
     return new_spec1, new_spec2
 
 
-# ---------------------------------------------------------------------------
-# Position-switch correction
-# ---------------------------------------------------------------------------
+# Apply the position-switch numerical behavior using the first spectrum as signal and the second as reference.
 
+# Reproduce the CLC position-switch subtraction while retaining the first spectrum's velocity grid and metadata.
 def pos_switch_correct(
     spec1: SpectrumDict,
     spec2: SpectrumDict,
@@ -443,10 +431,9 @@ def pos_switch_correct(
     return new_spec
 
 
-# ---------------------------------------------------------------------------
-# Public correction entry point used by Page 03
-# ---------------------------------------------------------------------------
+# Expose one mode-based correction function so the Streamlit page does not need to know the algorithm details.
 
+# Dispatch to the correct bandpass algorithm based on the explicit mode selected on Page 03.
 def get_corrected_spectrum(
     mode: str,
     spectra: list[SpectrumDict] | None = None,
@@ -504,10 +491,67 @@ def get_corrected_spectrum(
     )
 
 
-# ---------------------------------------------------------------------------
-# Pipeline/session summary
-# ---------------------------------------------------------------------------
+# Build the extra information Page 03 needs for the before/after graph and common-range highlight.
 
+# Calculate the shared velocity extent so Page 03 can highlight it without altering the corrected data.
+def common_velocity_range(
+    spec1: SpectrumDict,
+    spec2: SpectrumDict,
+) -> list[float]:
+    """Return the shared velocity extent used for the FR-04 highlight.
+
+    Frequency-switch correction ultimately retains velocity values present in
+    both observations.  The GUI highlights the extent of those shared values
+    without changing the CLC numerical result.  Position-switch pairs are
+    expected to share a grid, but the same helper still gives a safe overlap.
+    """
+    _validate_spectrum(spec1, 1)
+    _validate_spectrum(spec2, 2)
+    v1 = np.asarray(spec1["Vlsr"], dtype=float).reshape(-1)
+    v2 = np.asarray(spec2["Vlsr"], dtype=float).reshape(-1)
+    if v1.size == 0 or v2.size == 0:
+        return []
+
+    shared = v1[np.isin(v1, v2)]
+    if shared.size:
+        return [float(np.min(shared)), float(np.max(shared))]
+
+    # No exactly-equal channels.  This is useful diagnostic information for
+    # position switching; frequency switching will subsequently yield zero
+    # channels and Page 03 will reject the correction.
+    lo = max(float(np.min(v1)), float(np.min(v2)))
+    hi = min(float(np.max(v1)), float(np.max(v2)))
+    return [lo, hi] if lo <= hi else []
+
+
+# Run one complete FR-04 operation and package the raw inputs, corrected output, and display metadata together.
+def build_bandpass_result(
+    mode: str,
+    spectra: list[SpectrumDict] | None = None,
+) -> dict[str, Any]:
+    """Run FR-04 once and return everything Page 03 needs to render it.
+
+    This keeps the page from independently re-fetching the pair for its
+    before/after plot, ensuring the displayed raw spectra and corrected
+    spectrum come from the exact same Page-02 handoff.
+    """
+    if mode not in MODE_OPTIONS:
+        raise ValueError(
+            f"Unknown bandpass mode: {mode!r}. Expected one of {MODE_OPTIONS}."
+        )
+    spec1, spec2 = get_raw_pair(spectra)
+    corrected = get_corrected_spectrum(mode, [spec1, spec2])
+    return {
+        "mode": mode,
+        "raw_spec1": spec1,
+        "raw_spec2": spec2,
+        "corrected": corrected,
+        "common_velocity_range_kms": common_velocity_range(spec1, spec2),
+    }
+
+# Convert the successful correction into lightweight metadata that can safely be written to the session JSON.
+
+# Produce the compact JSON-safe summary stored under the Page 03 pipeline stage key.
 def stage_summary(
     mode: str,
     corrected: SpectrumDict,
