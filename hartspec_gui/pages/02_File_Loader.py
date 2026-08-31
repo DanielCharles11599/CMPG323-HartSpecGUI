@@ -28,11 +28,10 @@ this was built (not guessed):
    `_render_validation_table()` then runs verification per file afterward.
 2. Multi-file progress UI -> **"Loading file X of N" text + a single
    aggregate bar** (not per-file spinners, not a bare aggregate-only bar).
-3. Header-fields table -> **confirmed it will be one row per file** once
-   built -- but that build is explicitly deferred to a later step in the
-   handoff's own sequencing (step 6, after quarantine is wired in step 5).
-   `_render_header_fields_table()` below is UNCHANGED / still static
-   sample data in this revision -- don't mistake that for an oversight.
+3. Header-fields table -> **confirmed one row per file**, now built (FR-03
+   handoff step 6) -- see `_read_display_header_fields`'s docstring for
+   which of the 9 columns are confirmed-real vs. best-effort/flagged
+   (Tsys, Focus units) vs. genuinely unavailable (RA/Dec).
 
 FR-03 corruption detection now runs for real (`fits_ingest.verify_fits_file`,
 built in the prior step and confirmed against real good.fits/faulty.fits).
@@ -81,7 +80,9 @@ from __future__ import annotations
 
 import time
 
+import pandas as pd
 import streamlit as st
+from astropy.io import fits
 
 from utils import fits_ingest, session_store, sidebar, styles
 from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
@@ -99,12 +100,6 @@ LOAD_FILENAME = "good.fits"  # fallback target until page 01 selection is wired
 # --------------------------------------------------------------------------
 HEADER_FIELDS_COLUMNS = [
     "Vlsr", "LCP/RCP", "HPBW", "Tsys", "Date", "Object", "RA/Dec", "Focus", "Humidity",
-]
-
-HEADER_FIELDS_ROWS = [
-    ["-4.2 km/s", "12.3/11.8K", "0.23\u00b0", "48.1K", "08-12", "W3(OH)", "02:27+61\u00b0", "3.1mm", "38%"],
-    ["-3.8 km/s", "11.9/11.5K", "0.23\u00b0", "47.6K", "08-12", "W49N", "19:10+09\u00b0", "3.0mm", "37%"],
-    ["-5.1 km/s", "13.0/12.4K", "0.23\u00b0", "48.9K", "08-11", "G34.3", "18:53+01\u00b0", "3.2mm", "41%"],
 ]
 
 
@@ -578,15 +573,110 @@ def _render_validation_table() -> None:
     styles.render_panel_close()
 
 
-def _render_header_fields_table() -> None:
-    """UNCHANGED in this revision -- still static single-set sample data.
+def _read_display_header_fields(path) -> dict[str, str]:
+    """Best-effort, direct-from-FITS-header values for the header-fields
+    table's 9 priority columns (build spec §7, page 02).
 
-    The confirmed answer to the open design question ("one row per file")
-    applies here, but building that is explicitly FR-03 handoff step 6
-    (after quarantine's real shutil.move() wiring in steps 4-5) -- not
-    this step. Don't mistake this function's static content for an
-    oversight; it's deliberately deferred.
+    Deliberately reads the file's own HDU headers via astropy directly,
+    INDEPENDENT of fits_ingest.ingest_fits_file()'s clc/load_file.py
+    wrapper. Why bypass the loader: this project doesn't have
+    clc/load_file.py's real source -- utils/fits_ingest.py's own
+    docstring documents that loader's *behavior* (which KeyError fires
+    when), not its *output* dict's actual field names. Building this
+    display table on top of the loader's dict would mean building on a
+    guess layered on a guess. Reading headers directly and verifying the
+    mapping below against real good.fits/faulty.fits (done directly, not
+    assumed) is the more defensible source for a display-only table --
+    matches the same independent-header-read pattern
+    utils/source_browser_logic.py already uses for its own
+    OBJECT/RESTFREQ/DATE-OBS reads.
+
+    Field mapping, CONFIRMED against real good.fits/faulty.fits headers
+    (both files inspected directly, not just one):
+      Vlsr      <- HDU0 SPVLSR
+      LCP/RCP   <- HDU3 ("Chart") TSYS1 / TSYS2 -- varies per scan/weather
+                   in both real files (e.g. 62.2/84.4K vs 157.0/107.1K),
+                   matching the spec sample's paired, varying "X.X/Y.YK"
+                   format
+      HPBW      <- HDU1 (feed HDU, named e.g. "04.5S") HPBW
+      Date      <- HDU0 DATE-OBS, falling back to DATE
+      Object    <- HDU0 OBJECT
+      Focus     <- HDU0 FOCUS
+      Humidity  <- HDU0 HUMIDITY
+
+    Two fields are BEST-EFFORT, NOT fully confirmed -- flagged here and
+    to the team rather than silently picked:
+      Tsys    <- HDU1 NOMTSYS ("nominal Tsys"). Real good.fits/faulty.fits
+                 both have NOMTSYS=45.0 (IDENTICAL across both files) --
+                 plausible as a fixed per-receiver-config nominal value,
+                 but the build spec's own sample rows show Tsys VARYING
+                 per row (47.6K/48.1K/48.9K), which a constant wouldn't
+                 reproduce. TODO: confirm against design -- is "Tsys"
+                 really NOMTSYS, or some other per-scan-varying value?
+      Focus units <- displayed with "mm" per the spec sample's format,
+                 but no TUNIT-style keyword confirms FOCUS is actually in
+                 mm in the real header (it's a bare HDU0 keyword, not a
+                 table column with an associated unit field). Real
+                 observed values (~4.6) are plausible in mm but unverified.
+      RA/Dec  <- NOT AVAILABLE. Neither loader nor any header here exposes
+                 source RA/Dec, only telescope LONGITUD/LATITUDE (pointing,
+                 not source coordinates) -- fits_ingest.py's own docstring
+                 is explicit about this gap. Shown as "pending" rather
+                 than silently substituting telescope pointing.
+
+    Never raises -- a file whose header can't be read at all, or is
+    missing a given keyword, gets "pending" for the fields it's missing
+    rather than crashing the page.
     """
+    fields = {col: "pending" for col in HEADER_FIELDS_COLUMNS}
+    try:
+        with fits.open(path) as hdul:
+            h0 = hdul[0].header
+            h1 = hdul[1].header if len(hdul) > 1 else {}
+            h3 = hdul[3].header if len(hdul) > 3 else {}
+
+            if "SPVLSR" in h0:
+                fields["Vlsr"] = f"{h0['SPVLSR']:.1f} km/s"
+            if "TSYS1" in h3 and "TSYS2" in h3:
+                fields["LCP/RCP"] = f"{h3['TSYS1']:.1f}/{h3['TSYS2']:.1f}K"
+            if "HPBW" in h1:
+                fields["HPBW"] = f"{h1['HPBW']:.3f}\u00b0"
+            if "NOMTSYS" in h1:  # best-effort -- see docstring
+                fields["Tsys"] = f"{h1['NOMTSYS']:.1f}K"
+            date_val = h0.get("DATE-OBS") or h0.get("DATE")
+            if date_val:
+                date_str = str(date_val)
+                fields["Date"] = date_str[5:10] if len(date_str) >= 10 else date_str
+            if "OBJECT" in h0:
+                fields["Object"] = str(h0["OBJECT"])
+            if "FOCUS" in h0:  # units best-effort -- see docstring
+                fields["Focus"] = f"{h0['FOCUS']:.1f}mm"
+            if "HUMIDITY" in h0:
+                fields["Humidity"] = f"{h0['HUMIDITY']:.0f}%"
+    except Exception:
+        pass  # every field stays "pending" -- never crash the page over a display table
+    return fields
+
+
+def _render_header_fields_table() -> None:
+    """Real per-file header-fields table (FR-03 handoff step 6).
+
+    One row per active (non-quarantined) file, per the confirmed design
+    answer from earlier in the FR-03 handoff -- replaces the static
+    HEADER_FIELDS_ROWS sample data. Uses st.dataframe rather than the
+    hand-rolled _render_table_header/_render_table_row helpers, per the
+    build spec's own explicit guidance for this specific table ("clean
+    Pandas DataFrame ... st.dataframe()") -- the column-name search
+    filter (kept from before) doesn't need hand-rolled HTML the way the
+    Quarantine button's inline row layout does on the validation table.
+
+    See `_read_display_header_fields`'s docstring for exactly which
+    fields are confirmed-real vs. best-effort/flagged (Tsys, Focus units)
+    vs. genuinely unavailable (RA/Dec, shown as "pending").
+    """
+    quarantined = st.session_state.get("file_loader_quarantined", set())
+    filenames = [f for f in _get_target_filenames() if f not in quarantined]
+
     search = st.text_input(
         "Search fields",
         placeholder="Search 30+ fields\u2026",
@@ -600,18 +690,24 @@ def _render_header_fields_table() -> None:
         visible_columns = HEADER_FIELDS_COLUMNS
 
     styles.render_panel_open("")
-    if not visible_columns:
+    if not filenames:
+        st.caption("No active files to show header fields for.")
+    elif not visible_columns:
         st.caption(
             "No matching fields among the 9 priority columns shown here. "
             "The full 30+ field list isn't specified yet in the build spec -- "
             "ask before adding more columns rather than inventing field names."
         )
     else:
-        col_width = f"{100 / len(visible_columns):.4f}%"
-        _render_table_header([(c, col_width) for c in visible_columns])
-        for idx, row in enumerate(HEADER_FIELDS_ROWS):
-            values = [row[HEADER_FIELDS_COLUMNS.index(c)] for c in visible_columns]
-            _render_table_row([(v, col_width) for v in values], striped=(idx % 2 == 1))
+        rows = []
+        for filename in filenames:
+            path = fits_ingest.get_archive_root() / filename
+            file_fields = _read_display_header_fields(path)
+            row = {"File": filename}
+            row.update({col: file_fields[col] for col in visible_columns})
+            rows.append(row)
+        df = pd.DataFrame(rows).set_index("File")
+        st.dataframe(df, use_container_width=True)
     styles.render_panel_close()
 
 

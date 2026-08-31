@@ -452,6 +452,38 @@ def test_header_fields_search_filters_columns(fits_archive):
     at.run(timeout=30)
     at.text_input(key="file_loader_field_search").set_value("Vlsr").run(timeout=30)
     assert not at.exception
-    markdown_html = _markdown_html(at)
-    assert "Vlsr" in markdown_html
-    assert "Humidity" not in markdown_html
+    dataframes = at.dataframe
+    assert len(dataframes) == 1
+    columns = list(dataframes[0].value.columns)
+    assert "Vlsr" in columns
+    assert "Humidity" not in columns
+
+
+def test_header_fields_table_shows_real_per_file_data(fits_archive):
+    """FR-03 handoff step 6: real per-file header values, not the old
+    static HEADER_FIELDS_ROWS sample data -- confirms the table actually
+    reflects the file that was loaded, not a fixed mockup."""
+    at = _app_for("good_dateobs.fits")
+    at.run(timeout=30)
+    assert not at.exception
+    dataframes = at.dataframe
+    assert len(dataframes) == 1
+    df = dataframes[0].value
+    assert list(df.index) == ["good_dateobs.fits"]
+    # good_dateobs.fits explicitly sets TSYS1/TSYS2 in make_fixtures.py --
+    # confirms the real astropy header read actually ran, not a static row.
+    assert "/" in df.loc["good_dateobs.fits", "LCP/RCP"]
+    assert df.loc["good_dateobs.fits", "RA/Dec"] == "pending"
+
+
+def test_header_fields_table_excludes_quarantined_files(isolated_fits_archive):
+    at = _app_for("good_date.fits", "unrecognized.fits")
+    at.run(timeout=30)
+    at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
+    at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
+    assert not at.exception
+    dataframes = at.dataframe
+    assert len(dataframes) == 1
+    df = dataframes[0].value
+    assert "unrecognized.fits" not in df.index
+    assert "good_date.fits" in df.index
