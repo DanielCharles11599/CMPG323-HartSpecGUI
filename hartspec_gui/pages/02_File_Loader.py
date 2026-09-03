@@ -658,6 +658,222 @@ def _read_display_header_fields(path) -> dict[str, str]:
     return fields
 
 
+# --------------------------------------------------------------------------
+# Auto/Manual column-mapping (FR-02, confirmed 2026-08-30). "Auto" is the
+# best-effort fixed mapping above (_read_display_header_fields). "Manual"
+# lets the user override which raw header keyword feeds each column, for
+# receiver configs / non-standard headers Auto's fixed mapping doesn't
+# handle -- confirmed scope, from the actual answer this was built against:
+#   - Manual mapping only affects THIS display table, not clc's real
+#     ingestion (clc/load_file.py and load_file2.py are off-limits to
+#     modify, and there's nowhere else for an override to plug into).
+#   - Limited to the same 9 confirmed priority columns, not the full 30+
+#     field set -- that list still isn't documented anywhere, so manual
+#     mapping can't be built for fields whose names aren't known yet.
+#   - "LCP/RCP" gets TWO source-field pickers, not one, since it's an
+#     explicitly combined column (build spec §7: "LCP and RCP are
+#     combined into one ... column -- reproduce this ... exactly").
+#   - RA/Dec: Auto mode still never auto-substitutes telescope pointing
+#     for source coordinates (that rule is unchanged). Manual mode lets a
+#     user deliberately point RA/Dec at LONGITUD/LATITUDE (or anything
+#     else) if they choose to -- a conscious human choice via the picker,
+#     not a silent substitution by the code, which is a different thing.
+# --------------------------------------------------------------------------
+
+# Pure FITS-standard structural bookkeeping (binary layout, not
+# observation metadata) -- excluded from the Manual-mode header preview
+# and field picker so that UI is actually "browse the meaningful header
+# fields and pick one" rather than mostly TTYPE/TFORM/NAXIS noise.
+_STRUCTURAL_HEADER_KEYS = {
+    "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "XTENSION", "PCOUNT", "GCOUNT",
+    "TFIELDS", "EXTNAME", "COMMENT", "HISTORY", "",
+}
+_STRUCTURAL_KEY_PREFIXES = ("NAXIS", "TTYPE", "TFORM", "TDISP", "TUNIT")
+
+
+def _is_structural_key(key: str) -> bool:
+    if key in _STRUCTURAL_HEADER_KEYS:
+        return True
+    return any(key.startswith(prefix) and key[len(prefix):].isdigit() for prefix in _STRUCTURAL_KEY_PREFIXES)
+
+
+def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+    """Every non-plumbing header keyword across every HDU in a file, as
+    (qualified_key, hdu_label, formatted_value) tuples.
+
+    This IS the "header preview" Manual mode shows (per the confirmed
+    FR-02 answer), and also the pool of choices its per-column
+    selectboxes are populated from -- so what a user sees and what they
+    can pick from are the same list, not two things that could drift
+    apart. qualified_key (e.g. "HDU3:TSYS1") is the stable identifier
+    stored in session_state and resolved back to a value at display time.
+
+    Never raises -- an unreadable file returns an empty list rather than
+    crashing the Manual-mapping expander.
+    """
+    items: list[tuple[str, str, str]] = []
+    try:
+        with fits.open(path) as hdul:
+            for idx, hdu in enumerate(hdul):
+                hdu_label = hdu.name or f"HDU{idx}"
+                seen: set[str] = set()
+                for key in hdu.header.keys():
+                    if not key or key in seen or _is_structural_key(key):
+                        continue
+                    seen.add(key)
+                    value = hdu.header.get(key)
+                    items.append((f"HDU{idx}:{key}", hdu_label, str(value)))
+    except Exception:
+        pass
+    return items
+
+
+def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
+    """Look up one "HDU{n}:{key}" identifier's current value in a file.
+
+    Returns None (never raises) if the key is unset, the HDU index is out
+    of range for this particular file, or the file can't be read at all
+    -- callers treat None as "pending", the same convention used
+    everywhere else in this module for a value that couldn't be sourced.
+    """
+    if not qualified_key or ":" not in qualified_key:
+        return None
+    hdu_part, key = qualified_key.split(":", 1)
+    if not hdu_part.startswith("HDU"):
+        return None
+    try:
+        hdu_index = int(hdu_part[3:])
+    except ValueError:
+        return None
+    try:
+        with fits.open(path) as hdul:
+            if hdu_index >= len(hdul):
+                return None
+            value = hdul[hdu_index].header.get(key)
+            return None if value is None else str(value)
+    except Exception:
+        return None
+
+
+def _default_manual_mapping(path) -> dict:
+    """Seed the Manual mapping UI with whatever Auto mode already
+    resolved for THIS file, so a user only has to change what's actually
+    wrong rather than start from a blank slate every time. Mirrors
+    `_read_display_header_fields`'s own hardcoded choices -- if that
+    function's mapping ever changes, this needs to change with it.
+
+    RA/Dec is deliberately None here, not guessed -- Auto mode never
+    picks a value for it either (see that function's docstring), and
+    seeding a default here would be exactly the silent substitution the
+    project has repeatedly ruled out elsewhere.
+    """
+    return {
+        "Vlsr": "HDU0:SPVLSR",
+        "LCP/RCP": ("HDU3:TSYS1", "HDU3:TSYS2"),
+        "HPBW": "HDU1:HPBW",
+        "Tsys": "HDU1:NOMTSYS",
+        "Date": "HDU0:DATE-OBS",
+        "Object": "HDU0:OBJECT",
+        "RA/Dec": None,
+        "Focus": "HDU0:FOCUS",
+        "Humidity": "HDU0:HUMIDITY",
+    }
+
+
+def _read_display_header_fields_manual(path, mapping: dict) -> dict[str, str]:
+    """Manual-mode counterpart to `_read_display_header_fields`.
+
+    Uses whichever qualified header key the user explicitly assigned to
+    each column, instead of the fixed best-effort mapping. Deliberately
+    shows the RAW value with no unit suffix or domain-specific formatting
+    (unlike Auto mode's "48.1K"/"0.23\u00b0" style) -- Auto's formatting
+    assumes a KNOWN field (it always appends "K" because it knows it
+    picked TSYS1 specifically), which doesn't hold for an arbitrary
+    user-chosen keyword. This trades some display polish for not
+    mislabeling units on a value the code doesn't actually know the
+    meaning of.
+    """
+    fields: dict[str, str] = {}
+    for column in HEADER_FIELDS_COLUMNS:
+        if column == "LCP/RCP":
+            lcp_key, rcp_key = mapping.get(column, (None, None))
+            lcp_val = _resolve_qualified_key(path, lcp_key)
+            rcp_val = _resolve_qualified_key(path, rcp_key)
+            fields[column] = f"{lcp_val}/{rcp_val}" if lcp_val is not None and rcp_val is not None else "pending"
+        else:
+            value = _resolve_qualified_key(path, mapping.get(column))
+            fields[column] = value if value is not None else "pending"
+    return fields
+
+
+def _render_manual_mapping_expander(filename: str) -> dict:
+    """Per-file 'Manual column mapping' UI: a header preview (all
+    non-plumbing keywords found in this specific file) plus one
+    selectbox per display column (two for LCP/RCP) to assign a source
+    keyword. Returns the resulting mapping dict, also persisted to
+    st.session_state["file_loader_manual_mapping"][filename] so it
+    survives reruns.
+    """
+    path = fits_ingest.get_archive_root() / filename
+    preview_items = _flatten_header_preview(path)
+    none_option = "\u2014 none \u2014"
+    options = [none_option] + [qk for qk, _, _ in preview_items]
+
+    mapping_state = st.session_state.setdefault("file_loader_manual_mapping", {})
+    current = mapping_state.setdefault(filename, _default_manual_mapping(path))
+
+    if not preview_items:
+        with st.expander(f"Manual column mapping \u2014 {filename}", expanded=False):
+            st.caption("Could not read this file's header \u2014 nothing to map.")
+        return current
+
+    # Two SIBLING expanders, not nested -- Streamlit raises
+    # StreamlitAPIException("Expanders may not be nested inside other
+    # expanders") on this project's actually-pinned streamlit==1.32.0.
+    # This was originally written nested and passed every test in this
+    # session's sandbox -- because that sandbox had drifted to a newer
+    # streamlit (1.62.0) that no longer enforces this restriction,
+    # silently masking the bug. Confirmed by reinstalling the exact
+    # pinned 1.32.0 and reproducing the real exception directly before
+    # writing this fix -- not just trusting the traceback at face value.
+    with st.expander(f"Header preview \u2014 {filename}", expanded=False):
+        for qualified_key, hdu_label, value in preview_items:
+            st.caption(f"[{hdu_label}] {qualified_key.split(':', 1)[1]} = {value}")
+
+    with st.expander(f"Manual column mapping \u2014 {filename}", expanded=False):
+        for column in HEADER_FIELDS_COLUMNS:
+            if column == "LCP/RCP":
+                lcp_default, rcp_default = current.get(column) or (None, None)
+                lcp_col, rcp_col = st.columns(2)
+                with lcp_col:
+                    lcp_choice = st.selectbox(
+                        "LCP source field", options=options,
+                        index=options.index(lcp_default) if lcp_default in options else 0,
+                        key=f"manual_map_{filename}_LCP",
+                    )
+                with rcp_col:
+                    rcp_choice = st.selectbox(
+                        "RCP source field", options=options,
+                        index=options.index(rcp_default) if rcp_default in options else 0,
+                        key=f"manual_map_{filename}_RCP",
+                    )
+                current[column] = (
+                    None if lcp_choice == none_option else lcp_choice,
+                    None if rcp_choice == none_option else rcp_choice,
+                )
+            else:
+                default = current.get(column)
+                choice = st.selectbox(
+                    f"{column} source field", options=options,
+                    index=options.index(default) if default in options else 0,
+                    key=f"manual_map_{filename}_{column}",
+                )
+                current[column] = None if choice == none_option else choice
+
+    mapping_state[filename] = current
+    return current
+
+
 def _render_header_fields_table() -> None:
     """Real per-file header-fields table (FR-03 handoff step 6).
 
@@ -670,12 +886,27 @@ def _render_header_fields_table() -> None:
     filter (kept from before) doesn't need hand-rolled HTML the way the
     Quarantine button's inline row layout does on the validation table.
 
+    Also doubles as the FR-02 "FITS extension viewer": per the confirmed
+    answer, that requirement IS a searchable metadata table via
+    st.dataframe() with no raw binary reaching the client -- exactly what
+    this function already is. No separate component was built for it.
+
     See `_read_display_header_fields`'s docstring for exactly which
-    fields are confirmed-real vs. best-effort/flagged (Tsys, Focus units)
-    vs. genuinely unavailable (RA/Dec, shown as "pending").
+    Auto-mode fields are confirmed-real vs. best-effort/flagged (Tsys,
+    Focus units) vs. genuinely unavailable (RA/Dec, shown as "pending").
+    Manual mode (see `_render_manual_mapping_expander` /
+    `_read_display_header_fields_manual`) lets a user override any of
+    that on a per-file basis.
     """
     quarantined = st.session_state.get("file_loader_quarantined", set())
     filenames = [f for f in _get_target_filenames() if f not in quarantined]
+
+    mode = st.radio(
+        "Column mapping mode",
+        options=["Auto", "Manual"],
+        key="file_loader_mapping_mode",
+        horizontal=True,
+    )
 
     search = st.text_input(
         "Search fields",
@@ -688,6 +919,10 @@ def _render_header_fields_table() -> None:
         visible_columns = [c for c in HEADER_FIELDS_COLUMNS if search.lower() in c.lower()]
     else:
         visible_columns = HEADER_FIELDS_COLUMNS
+
+    if mode == "Manual":
+        for filename in filenames:
+            _render_manual_mapping_expander(filename)
 
     styles.render_panel_open("")
     if not filenames:
@@ -702,7 +937,13 @@ def _render_header_fields_table() -> None:
         rows = []
         for filename in filenames:
             path = fits_ingest.get_archive_root() / filename
-            file_fields = _read_display_header_fields(path)
+            if mode == "Manual":
+                mapping = st.session_state.get("file_loader_manual_mapping", {}).get(filename)
+                if mapping is None:
+                    mapping = _default_manual_mapping(path)
+                file_fields = _read_display_header_fields_manual(path, mapping)
+            else:
+                file_fields = _read_display_header_fields(path)
             row = {"File": filename}
             row.update({col: file_fields[col] for col in visible_columns})
             rows.append(row)

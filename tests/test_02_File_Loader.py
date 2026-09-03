@@ -487,3 +487,90 @@ def test_header_fields_table_excludes_quarantined_files(isolated_fits_archive):
     df = dataframes[0].value
     assert "unrecognized.fits" not in df.index
     assert "good_date.fits" in df.index
+
+# --------------------------------------------------------------------------
+# FR-02: Auto/Manual column-mapping toggle (confirmed 2026-08-30). Manual
+# mode lets a user override which raw header keyword feeds each display
+# column, scoped to this display table only -- see the page module's own
+# docstring block above _render_manual_mapping_expander for the confirmed
+# design constraints these tests check against.
+# --------------------------------------------------------------------------
+
+
+def test_manual_mode_default_selection_matches_auto_value(fits_archive):
+    """Manual mode's pre-seeded default (Object -> HDU0:OBJECT) resolves
+    to the same underlying value Auto mode shows, just without Auto's
+    unit/format polish -- confirms the default seeding actually works,
+    not just that Manual mode renders at all."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+    dataframes = at.dataframe
+    assert len(dataframes) == 1
+    df = dataframes[0].value
+    assert df.loc["good_date.fits", "Object"] == "W3(OH)"
+
+
+def test_manual_mode_override_changes_displayed_value(fits_archive):
+    """Explicitly reassigning a column's source field must change what's
+    displayed -- proves the override actually takes effect, not just
+    that the picker UI renders."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+
+    # Re-point "Object" at a different real field in the fixture's header
+    # (SPPOINT = 0, set by make_fixtures.py's _primary()).
+    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df.loc["good_date.fits", "Object"] == "0"
+
+
+def test_manual_mode_lcp_rcp_needs_both_fields_set(fits_archive):
+    """LCP/RCP is an explicitly combined column (build spec §7) -- Manual
+    mode must require BOTH source fields before showing a combined value,
+    not silently show a half-populated pair."""
+    at = _app_for("good_dateobs.fits")  # has real TSYS1/TSYS2, unlike good_date.fits
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert "/" in df.loc["good_dateobs.fits", "LCP/RCP"]  # both defaults resolved
+
+    at.selectbox(key="manual_map_good_dateobs.fits_RCP").set_value("\u2014 none \u2014").run(timeout=30)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df.loc["good_dateobs.fits", "LCP/RCP"] == "pending"
+
+
+def test_manual_mode_shows_header_preview(fits_archive):
+    """The 'header preview' the confirmed FR-02 answer describes -- every
+    non-plumbing keyword actually found in the file, shown so a user can
+    pick from real values rather than guessing keyword names blind."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+    caption_texts = "\n".join(c.value for c in at.caption)
+    assert "OBJECT" in caption_texts
+    assert "W3(OH)" in caption_texts
+
+
+def test_manual_mode_does_not_affect_ingestion_or_auto_default(fits_archive):
+    """Confirmed scope: Manual mapping only affects THIS display table --
+    it must never touch fits_ingest.ingest_fits_file()'s real result, and
+    switching back to Auto must show Auto's own values again, not
+    whatever was left over from a Manual override."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
+    assert at.session_state["file_loader_load_done"] is True  # ingestion result untouched
+
+    at.radio(key="file_loader_mapping_mode").set_value("Auto").run(timeout=30)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df.loc["good_date.fits", "Object"] == "W3(OH)"  # back to Auto's real value
