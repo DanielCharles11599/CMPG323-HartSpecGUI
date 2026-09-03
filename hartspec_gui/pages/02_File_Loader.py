@@ -728,6 +728,41 @@ def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
     return items
 
 
+def _read_all_raw_fields(path) -> dict[str, str]:
+    """Every non-plumbing header keyword found in this file, as a flat
+    {display_name: value} dict -- included as extra columns in the
+    header-fields table, in BOTH Auto and Manual mode.
+
+    This is what the build spec's own "Search 30+ fields..." placeholder
+    text actually refers to: the 9 curated columns
+    (HEADER_FIELDS_COLUMNS) were a hand-picked PREVIEW subset, not the
+    full dataset -- real files inspected during this session have ~70
+    meaningful fields once FITS-standard plumbing (SIMPLE/BITPIX/TTYPEn/
+    etc.) is excluded, comfortably past "30+". Originally this only
+    surfaced inside Manual mode's header-preview expander; moved into the
+    main table directly (both modes) since hiding it there made it hard
+    to find and meant Auto mode couldn't be searched against it at all.
+
+    Disambiguates keys that repeat across multiple HDUs (e.g. TCAL1
+    appears in both the Spectra and Chart HDUs, sometimes with different
+    values) by appending the HDU label in brackets ONLY for those
+    specific repeated keys -- an unambiguous key keeps its plain name,
+    so most columns aren't cluttered with a qualifier they don't need.
+    """
+    items = _flatten_header_preview(path)  # (qualified_key, hdu_label, value)
+    bare_key_counts: dict[str, int] = {}
+    for qualified_key, _, _ in items:
+        bare_key = qualified_key.split(":", 1)[1]
+        bare_key_counts[bare_key] = bare_key_counts.get(bare_key, 0) + 1
+
+    fields: dict[str, str] = {}
+    for qualified_key, hdu_label, value in items:
+        bare_key = qualified_key.split(":", 1)[1]
+        display_name = bare_key if bare_key_counts[bare_key] == 1 else f"{bare_key} [{hdu_label}]"
+        fields[display_name] = value
+    return fields
+
+
 def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
     """Look up one "HDU{n}:{key}" identifier's current value in a file.
 
@@ -807,12 +842,20 @@ def _read_display_header_fields_manual(path, mapping: dict) -> dict[str, str]:
 
 
 def _render_manual_mapping_expander(filename: str) -> dict:
-    """Per-file 'Manual column mapping' UI: a header preview (all
-    non-plumbing keywords found in this specific file) plus one
-    selectbox per display column (two for LCP/RCP) to assign a source
-    keyword. Returns the resulting mapping dict, also persisted to
-    st.session_state["file_loader_manual_mapping"][filename] so it
+    """Per-file 'Manual column mapping' UI -- ONE expander (not two) with
+    one selectbox per curated display column (two for LCP/RCP) to assign
+    a source keyword. Returns the resulting mapping dict, also persisted
+    to st.session_state["file_loader_manual_mapping"][filename] so it
     survives reruns.
+
+    Previously this was two SIBLING expanders (a separate "header
+    preview" dump, then this one) -- collapsed by default, easy to open
+    only the first one and never notice the second existed, which is
+    exactly the "I don't see any buttons for it" confusion this was
+    rebuilt to fix. The raw field dump itself moved into the main table
+    (see `_read_all_raw_fields`, used in both Auto and Manual mode now),
+    so it isn't needed here anymore either -- one expander, containing
+    only the actual assignment controls.
     """
     path = fits_ingest.get_archive_root() / filename
     preview_items = _flatten_header_preview(path)
@@ -822,25 +865,16 @@ def _render_manual_mapping_expander(filename: str) -> dict:
     mapping_state = st.session_state.setdefault("file_loader_manual_mapping", {})
     current = mapping_state.setdefault(filename, _default_manual_mapping(path))
 
-    if not preview_items:
-        with st.expander(f"Manual column mapping \u2014 {filename}", expanded=False):
-            st.caption("Could not read this file's header \u2014 nothing to map.")
-        return current
-
-    # Two SIBLING expanders, not nested -- Streamlit raises
-    # StreamlitAPIException("Expanders may not be nested inside other
-    # expanders") on this project's actually-pinned streamlit==1.32.0.
-    # This was originally written nested and passed every test in this
-    # session's sandbox -- because that sandbox had drifted to a newer
-    # streamlit (1.62.0) that no longer enforces this restriction,
-    # silently masking the bug. Confirmed by reinstalling the exact
-    # pinned 1.32.0 and reproducing the real exception directly before
-    # writing this fix -- not just trusting the traceback at face value.
-    with st.expander(f"Header preview \u2014 {filename}", expanded=False):
-        for qualified_key, hdu_label, value in preview_items:
-            st.caption(f"[{hdu_label}] {qualified_key.split(':', 1)[1]} = {value}")
-
     with st.expander(f"Manual column mapping \u2014 {filename}", expanded=False):
+        if not preview_items:
+            st.caption("Could not read this file's header \u2014 nothing to map.")
+            return current
+
+        st.caption(
+            "Raw field values are shown as additional columns in the table below \u2014 "
+            "use those to help pick a source field for each column here."
+        )
+
         for column in HEADER_FIELDS_COLUMNS:
             if column == "LCP/RCP":
                 lcp_default, rcp_default = current.get(column) or (None, None)
@@ -891,12 +925,30 @@ def _render_header_fields_table() -> None:
     st.dataframe() with no raw binary reaching the client -- exactly what
     this function already is. No separate component was built for it.
 
+    REVISED after first real-world use: each row now shows the 9 curated
+    columns (HEADER_FIELDS_COLUMNS -- best-effort/Auto or user-assigned/
+    Manual, see below) PLUS every other real, non-plumbing header field
+    found in that file (`_read_all_raw_fields`), in BOTH Auto and Manual
+    mode. Originally the raw fields only showed inside a Manual-mode-only
+    "header preview" expander -- moved into the main table because (a)
+    that's genuinely what the build spec's "Search 30+ fields..."
+    placeholder was describing all along, not just a curated 9-column
+    preview, and (b) Auto mode couldn't be searched against any of that
+    data before, which defeated the point of the search box existing.
+    The search box now filters over the REAL full column set for
+    whichever file(s) are loaded, not a fixed 9-name list -- so which
+    columns are searchable can vary slightly by file (a field present in
+    one file's header but not another's still shows as a column, just
+    NaN for files that don't have it -- pandas handles that natively).
+
     See `_read_display_header_fields`'s docstring for exactly which
-    Auto-mode fields are confirmed-real vs. best-effort/flagged (Tsys,
-    Focus units) vs. genuinely unavailable (RA/Dec, shown as "pending").
-    Manual mode (see `_render_manual_mapping_expander` /
-    `_read_display_header_fields_manual`) lets a user override any of
-    that on a per-file basis.
+    curated Auto-mode fields are confirmed-real vs. best-effort/flagged
+    (Tsys, Focus units) vs. genuinely unavailable (RA/Dec, shown as
+    "pending"). Manual mode (`_render_manual_mapping_expander` /
+    `_read_display_header_fields_manual`) lets a user override any
+    curated column's source field on a per-file basis; the raw columns
+    are always a straight dump regardless of mode, since they ARE the
+    source data, not a derived/mapped value.
     """
     quarantined = st.session_state.get("file_loader_quarantined", set())
     filenames = [f for f in _get_target_filenames() if f not in quarantined]
@@ -915,11 +967,10 @@ def _render_header_fields_table() -> None:
         label_visibility="collapsed",
     )
 
-    if search:
-        visible_columns = [c for c in HEADER_FIELDS_COLUMNS if search.lower() in c.lower()]
-    else:
-        visible_columns = HEADER_FIELDS_COLUMNS
-
+    # Manual-mapping expanders must render (and update session_state)
+    # BEFORE the rows below read that state -- a selectbox's new value
+    # from this rerun isn't in session_state until the widget itself has
+    # been instantiated.
     if mode == "Manual":
         for filename in filenames:
             _render_manual_mapping_expander(filename)
@@ -927,12 +978,6 @@ def _render_header_fields_table() -> None:
     styles.render_panel_open("")
     if not filenames:
         st.caption("No active files to show header fields for.")
-    elif not visible_columns:
-        st.caption(
-            "No matching fields among the 9 priority columns shown here. "
-            "The full 30+ field list isn't specified yet in the build spec -- "
-            "ask before adding more columns rather than inventing field names."
-        )
     else:
         rows = []
         for filename in filenames:
@@ -941,14 +986,28 @@ def _render_header_fields_table() -> None:
                 mapping = st.session_state.get("file_loader_manual_mapping", {}).get(filename)
                 if mapping is None:
                     mapping = _default_manual_mapping(path)
-                file_fields = _read_display_header_fields_manual(path, mapping)
+                curated_fields = _read_display_header_fields_manual(path, mapping)
             else:
-                file_fields = _read_display_header_fields(path)
+                curated_fields = _read_display_header_fields(path)
+            raw_fields = _read_all_raw_fields(path)
+
             row = {"File": filename}
-            row.update({col: file_fields[col] for col in visible_columns})
+            row.update(curated_fields)  # curated columns first, in HEADER_FIELDS_COLUMNS order
+            row.update(raw_fields)      # then every other real field found in this file
             rows.append(row)
+
         df = pd.DataFrame(rows).set_index("File")
-        st.dataframe(df, use_container_width=True)
+
+        if search:
+            matching_columns = [c for c in df.columns if search.lower() in c.lower()]
+            if not matching_columns:
+                st.caption(f'No fields match "{search}" among this file set\'s real header fields.')
+                df = None
+            else:
+                df = df[matching_columns]
+
+        if df is not None:
+            st.dataframe(df, use_container_width=True)
     styles.render_panel_close()
 
 

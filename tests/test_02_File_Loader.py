@@ -546,17 +546,49 @@ def test_manual_mode_lcp_rcp_needs_both_fields_set(fits_archive):
     assert df.loc["good_dateobs.fits", "LCP/RCP"] == "pending"
 
 
-def test_manual_mode_shows_header_preview(fits_archive):
-    """The 'header preview' the confirmed FR-02 answer describes -- every
-    non-plumbing keyword actually found in the file, shown so a user can
-    pick from real values rather than guessing keyword names blind."""
+def test_auto_mode_shows_raw_fields_alongside_curated_columns(fits_archive):
+    """The actual 'header preview' / 'search 30+ fields' dataset -- every
+    real, non-plumbing header field -- must appear as columns in BOTH
+    modes, not just Manual. Originally only surfaced inside a
+    Manual-mode-only expander; this is the fix for that."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    assert not at.exception
+    df = at.dataframe[0].value
+    # OBJECT is a raw field (all-caps, as it appears in the real header),
+    # distinct from the curated "Object" column -- both should be present.
+    assert "OBJECT" in df.columns
+    assert "Object" in df.columns
+    assert df.loc["good_date.fits", "OBJECT"] == "W3(OH)"
+    assert df.loc["good_date.fits", "SPPOINT"] == "0"
+
+
+def test_manual_mode_shows_same_raw_fields_as_auto(fits_archive):
+    """The raw fields are a straight dump regardless of mode -- Manual
+    mode changes the curated columns, not the raw ones."""
     at = _app_for("good_date.fits")
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
-    caption_texts = "\n".join(c.value for c in at.caption)
-    assert "OBJECT" in caption_texts
-    assert "W3(OH)" in caption_texts
+    df = at.dataframe[0].value
+    assert "OBJECT" in df.columns
+    assert df.loc["good_date.fits", "OBJECT"] == "W3(OH)"
+
+
+def test_manual_mapping_expander_has_no_nested_expander(fits_archive):
+    """Regression test for the real StreamlitAPIException hit in
+    production (nested st.expander is disallowed on the project's
+    pinned streamlit==1.32.0) -- confirms Manual mode renders without
+    raising, and that the mapping controls (not just a header dump) are
+    actually reachable in that single expander."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+    # The actual assignment control must exist and be interactable --
+    # this is the concrete fix for "there is no buttons for it".
+    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
+    assert not at.exception
 
 
 def test_manual_mode_does_not_affect_ingestion_or_auto_default(fits_archive):
