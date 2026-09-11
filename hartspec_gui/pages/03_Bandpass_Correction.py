@@ -8,13 +8,15 @@ from typing import Any, Mapping
 
 # NumPy is used to validate and compare spectrum arrays.
 import numpy as np
+# Astropy is used only to read the POSITION keyword directly from the second FITS file when the loaded spectrum dictionary does not contain it.
+from astropy.io import fits
 # Plotly renders the interactive before/after spectrum chart required by FR-04.
 import plotly.graph_objects as go
 # Streamlit provides the page widgets, session state, navigation, and messages.
 import streamlit as st
 
-# Shared project utilities keep session persistence, sidebar state, and styling consistent with the other pages.
-from utils import session_store, sidebar, styles
+# Shared project utilities keep FITS paths, session persistence, sidebar state, and styling consistent with the other pages.
+from utils import fits_ingest, session_store, sidebar, styles
 from utils.bandpass_correction_logic import (
     MODE_OPTIONS,
     THIS_STAGE_KEY,
@@ -54,6 +56,99 @@ def _completed_upstream_count() -> int:
 def _upstream_complete() -> bool:
     completed = st.session_state["completed_stages"]
     return all(key in completed for key in UPSTREAM_STAGE_KEYS)
+
+
+# Return the filenames Page 02 was asked to load, preserving the same order Page 02 used.
+def _target_filenames() -> list[str]:
+    pipeline_selection = st.session_state.get("pipeline_data", {}).get("01_source_browser", {})
+    selected_files = pipeline_selection.get("selected_files") or []
+    if selected_files:
+        return [str(filename) for filename in selected_files]
+
+    fallback_files = st.session_state.get("file_loader_target_filenames") or []
+    return [str(filename) for filename in fallback_files]
+
+
+# Read the two CLC metadata fields used to distinguish pointing scans from full integrations and to identify the switching mode.
+def _read_observation_metadata(filename: str) -> tuple[int | None, str]:
+    try:
+        path = fits_ingest.get_archive_root() / filename
+        with fits.open(path) as hdul:
+            sp_point_raw = hdul[0].header.get("SPPOINT") if len(hdul) > 0 else None
+            position_raw = hdul[2].header.get("POSITION") if len(hdul) > 2 else None
+
+        try:
+            sp_point = int(sp_point_raw) if sp_point_raw is not None else None
+        except (TypeError, ValueError):
+            sp_point = None
+
+        position = str(position_raw).strip().upper() if position_raw is not None else ""
+        return sp_point, position
+    except (OSError, ValueError, IndexError, KeyError):
+        return None, ""
+
+
+# Rebuild Page 02's successful filename-to-spectrum handoff so Page 03 can associate each spectrum with its FITS metadata.
+def _successful_loaded_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+
+    for filename in _target_filenames():
+        ingest_result = st.session_state.get(f"file_loader_ingest_result::{filename}")
+        if ingest_result is None or not getattr(ingest_result, "ok", False):
+            continue
+
+        spectrum = getattr(ingest_result, "spectrum", None)
+        if spectrum is None:
+            continue
+
+        sp_point, position = _read_observation_metadata(filename)
+        entries.append(
+            {
+                "filename": filename,
+                "spectrum": spectrum,
+                "sp_point": sp_point,
+                "position": position,
+            }
+        )
+
+    return entries
+
+
+# Detect the first full-integration pair using the same SPPOINT ordering rule as the original HartSpec workflow.
+def _detect_bandpass_pair() -> tuple[dict[str, Any], dict[str, Any]] | None:
+    entries = _successful_loaded_entries()
+
+    # The original CLC builds full_int_on from files where SPPOINT == 0 and
+    # pairs those indices in observation order: [0,1], [2,3], ... .
+    full_integrations = [entry for entry in entries if entry["sp_point"] == 0]
+
+    if len(full_integrations) < 2:
+        return None
+
+    return full_integrations[0], full_integrations[1]
+
+
+# Suggest the switching mode from the second member of the detected full-integration pair, matching the original CLC convention.
+def _suggest_mode_from_metadata(pair2: Mapping[str, Any]) -> tuple[str, str]:
+    position = str(pair2.get("position", "")).strip().upper()
+
+    if position == "ON":
+        return "Frequency Switch", "second full-integration file POSITION = ON"
+    if position == "OFF":
+        return "Position Switch", "second full-integration file POSITION = OFF"
+
+    return "Unknown", "second full-integration file POSITION metadata is unavailable or unrecognised"
+
+
+# Show which full-integration pair Page 03 detected and the switching mode suggested by the second file's metadata.
+def _render_detected_pair_info(pair: tuple[dict[str, Any], dict[str, Any]]) -> None:
+    first, second = pair
+    suggested_mode, reason = _suggest_mode_from_metadata(second)
+
+    st.info(
+        f"Pair detected: {first['filename']} + {second['filename']}\n\n"
+        f"Suggested mode from metadata: **{suggested_mode}** ({reason})."
+    )
 
 
 # Convert a spectrum handoff into validated one-dimensional numeric arrays that downstream code can safely use.
@@ -274,6 +369,23 @@ if len(loaded_spectra) < 2:
         st.switch_page("pages/02_File_Loader.py")
     st.stop()
 
+# Detect the first full-integration pair using SPPOINT == 0, exactly as the original CLC groups science integrations.
+detected_pair = _detect_bandpass_pair()
+if detected_pair is None:
+    _clear_stage3_and_downstream()
+    st.error(
+        "No complete bandpass pair could be detected. Page 03 needs at least two "
+        "successfully loaded FITS files with SPPOINT = 0 in the same observation set."
+    )
+    if st.button("Return to File Loader", key="bandpass_return_loader_no_pair"):
+        st.switch_page("pages/02_File_Loader.py")
+    st.stop()
+
+_render_detected_pair_info(detected_pair)
+
+# Keep the exact two spectra used for the detected pair so Apply operates on the same files shown above.
+detected_pair_spectra = [detected_pair[0]["spectrum"], detected_pair[1]["spectrum"]]
+
 # Let the user explicitly choose the scientific switching mode required by FR-04.
 st.markdown('<div class="hs-eyebrow">Bandpass mode</div>', unsafe_allow_html=True)
 st.radio(
@@ -295,7 +407,7 @@ apply_clicked = st.button(
 # Run the correction, commit it only if successful, and leave the stage incomplete if validation fails.
 if apply_clicked:
     try:
-        result = build_bandpass_result(st.session_state["bandpass_mode"])
+        result = build_bandpass_result(st.session_state["bandpass_mode"], detected_pair_spectra)
         _commit_result(st.session_state["bandpass_mode"], result)
         st.success("Bandpass correction applied successfully.")
     except (ValueError, TypeError, KeyError) as exc:
