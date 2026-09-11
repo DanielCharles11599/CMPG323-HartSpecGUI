@@ -1,4 +1,34 @@
 # 03_Bandpass_Correction.py — FR-04: explicit bandpass correction workflow.
+#
+# --------------------------------------------------------------------------
+# FR-19 SESSION-REPLAY REVISION (this revision)
+# --------------------------------------------------------------------------
+# Confirmed via NotebookLM against Technical Specifications §3.5.3 and §5.4,
+# and Functional Specifications §3.2.1: FR-19 "Load Session" is a
+# parameter-restoration + deterministic-re-execution design, not a binary
+# state snapshot. The session JSON never stores computed spectrum arrays
+# (Vlsr/LCP/RCP) -- only stage parameters (here: `mode`). Loading a session
+# is expected to "pre-fill every prior pipeline stage with its saved
+# parameters" and replay them, relying on NFR-05's six-significant-figure
+# determinism guarantee to reproduce identical array output.
+#
+# Before this revision, Page 03 honored the *storage* half of that contract
+# (pipeline_data[PAGE_STAGE_KEY] already held "mode") but not the *replay*
+# half: after Load Session, `completed_stages` and `pipeline_data` would
+# already show this stage as done, but `bandpass_display_result` (in-memory
+# only, by design -- see `_commit_result`'s own comment) would be empty, so
+# the page fell through to "Choose the switching mode, then click Apply
+# Bandpass Correction to run FR-04" as if nothing had ever been saved. The
+# user had to notice this mismatch and manually re-click Apply -- not
+# actual session replay.
+#
+# `_auto_replay_if_needed()` below closes that gap: if this stage is marked
+# complete but its in-memory result is missing or belongs to a different
+# mode than the one saved in pipeline_data, it re-runs
+# `build_bandpass_result()` with the saved mode automatically, using the
+# exact same commit path (`_commit_result`) the "Apply" button already
+# uses -- so replay can't behave differently than a manual click would.
+# --------------------------------------------------------------------------
 
 # Postpone evaluation of type annotations so type hints do not interfere with runtime imports.
 from __future__ import annotations
@@ -134,7 +164,12 @@ def _commit_result(mode: str, result: Mapping[str, Any]) -> None:
         )
 
     # Full arrays remain in memory for Page 04; only lightweight metadata is
-    # placed in pipeline_data so session JSON remains serializable.
+    # placed in pipeline_data so session JSON remains serializable. This is
+    # by design, confirmed against Technical Specifications §3.5.3 -- see
+    # this module's header comment. It's also exactly why
+    # `_auto_replay_if_needed()` exists below: the metadata survives a
+    # save/load round trip, the arrays don't, and FR-19 defines the fix as
+    # "re-run from the saved metadata", not "also serialize the arrays".
     st.session_state["bandpass_corrected_spectrum"] = corrected
     st.session_state["bandpass_display_result"] = {
         "mode": mode,
@@ -152,6 +187,56 @@ def _commit_result(mode: str, result: Mapping[str, Any]) -> None:
     session_store.log_event(
         f"Bandpass correction applied — {mode} ({corrected['Vlsr'].size} channels)"
     )
+
+
+# FR-19 session replay (see this module's header comment for the confirmed
+# spec basis). Runs on every page load; it's a no-op unless the saved
+# parameters and the current in-memory result have actually diverged, so
+# it's safe to call unconditionally rather than gating it behind a "was
+# this a Load Session click" flag.
+def _auto_replay_if_needed() -> None:
+    """Reproduce a saved bandpass result from `pipeline_data` alone.
+
+    Fires when this stage is recorded as complete (e.g. because
+    `session_store.load_session()` just restored a saved
+    `completed_stages` set) but the in-memory `bandpass_display_result` is
+    either missing entirely (a brand-new browser session that loaded
+    straight into a saved session) or belongs to a different mode than the
+    one actually saved (a stale in-memory result left over from something
+    else in the same browser tab). In either case this re-runs the exact
+    same `build_bandpass_result` / `_commit_result` path the "Apply"
+    button uses, seeded from the saved mode, instead of leaving the page
+    showing "choose a mode" underneath a progress bar that already claims
+    this stage is done.
+
+    Deliberately does NOT run when the stage was never completed (a
+    genuinely fresh session) -- in that case `pipeline_data` has no saved
+    mode to replay from, and the normal "pick a mode, click Apply" flow is
+    correct, unchanged behavior.
+    """
+    completed = st.session_state["completed_stages"]
+    if PAGE_STAGE_KEY not in completed:
+        return  # nothing was ever saved as complete for this stage
+
+    saved_mode = st.session_state["pipeline_data"].get(PAGE_STAGE_KEY, {}).get("mode")
+    if saved_mode not in MODE_OPTIONS:
+        return  # no valid saved parameter to replay from -- let the normal button flow handle it
+
+    stored_result = st.session_state.get("bandpass_display_result")
+    applied_mode = st.session_state.get("bandpass_applied_mode")
+    if stored_result is not None and applied_mode == saved_mode:
+        return  # already reflects the saved parameters -- nothing to replay
+
+    st.session_state["bandpass_mode"] = saved_mode
+    try:
+        result = build_bandpass_result(saved_mode)
+        _commit_result(saved_mode, result)
+        session_store.log_event(
+            f"Bandpass correction replayed from saved session — {saved_mode}"
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        _clear_stage3_and_downstream()
+        st.error(f"Could not replay saved bandpass correction: {exc}")
 
 
 # Add one consistently formatted spectrum line to the Plotly figure.
@@ -273,6 +358,13 @@ if len(loaded_spectra) < 2:
     if st.button("Return to File Loader", key="bandpass_return_loader_pair"):
         st.switch_page("pages/02_File_Loader.py")
     st.stop()
+
+# FR-19 session replay -- see _auto_replay_if_needed's own docstring and
+# this module's header comment. Must run after the loaded_spectra check
+# above (replay needs the same spectra Page 02 already re-derived on this
+# rerun) and before the manual mode/Apply controls below, so a replayed
+# result renders immediately instead of behind an extra click.
+_auto_replay_if_needed()
 
 # Let the user explicitly choose the scientific switching mode required by FR-04.
 st.markdown('<div class="hs-eyebrow">Bandpass mode</div>', unsafe_allow_html=True)
