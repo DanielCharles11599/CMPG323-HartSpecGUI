@@ -491,7 +491,7 @@ def _render_validation_table() -> None:
         # unrelated rerun after the one that actually failed.
         st.error(f"Could not quarantine: {quarantine_error}")
 
-    with st.container(border=True):
+    with st.container():
         _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
         for idx, row in enumerate(rows):
@@ -988,7 +988,7 @@ def _render_header_fields_table() -> None:
         for filename in filenames:
             _render_manual_mapping_expander(filename)
 
-    with st.container(border=True):
+    with st.container():
         if not filenames:
             st.caption("No active files to show header fields for.")
         else:
@@ -1080,6 +1080,21 @@ def main() -> None:
 
     if st.session_state.get("file_loader_load_done"):
         session_store.mark_stage_complete(STAGE_KEY)
+
+        # "Continue to X ->" pattern, matching Page 03's own button
+        # (see 03_Bandpass_Correction.py's "Continue to Baseline Block
+        # Editor ->"). Only shown once loading actually succeeded for at
+        # least one file -- same gate mark_stage_complete() above already
+        # uses, so this button can never appear ahead of the stage it's
+        # meant to follow. Styled as the primary CTA per the build spec's
+        # own description of Page 01's equivalent button ("Load into
+        # Pipeline ->" primary button) -- Page 03's current button doesn't
+        # set type="primary" and renders as secondary instead, which looks
+        # like a separate small inconsistency worth fixing there too, not
+        # copied here on purpose.
+        st.markdown(f"<div style='height:{styles.SECTION_GAP}px'></div>", unsafe_allow_html=True)
+        if st.button("Continue to Bandpass Correction →", type="primary", key="continue_to_bandpass"):
+            st.switch_page("pages/03_Bandpass_Correction.py")
 
 
 if __name__ == "__main__":
