@@ -11,7 +11,34 @@ An earlier revision recreated those two helpers as page-local private
 functions so the tables kept working -- untouched by this revision.
 
 --------------------------------------------------------------------------
-FR-03 MULTI-FILE REVISION (this revision)
+LOAD-PROGRESS UI CLEANUP (this revision)
+--------------------------------------------------------------------------
+Two things removed from `_render_load_progress()` after real browser
+feedback:
+
+1. The "Load details" expander -- redundant once the validation table
+   below already shows, per file, an OK/FLAGGED badge plus (for FLAGGED
+   rows) the specific issue in its own "Issue" column
+   (`_build_validation_rows()`). The expander was duplicating that same
+   information in a second place with a different presentation, adding UI
+   clutter without adding new information for the person using the page.
+2. The aggregate `st.error("Could not load N of M file(s) ...")` banner --
+   replaced with a server-side `logging.warning()` call instead of a
+   browser-facing red block. The per-file failure reason is still fully
+   visible to the end user (in the validation table's Issue column); the
+   full per-attempt trace (which convention was tried, in what order, and
+   why each attempt failed) that used to live inside the removed "Load
+   details" expander is now written to the server's own log output
+   instead, which is the more appropriate audience for that level of
+   diagnostic detail. No `logging.basicConfig()` call is added here on
+   purpose -- Python's logging module prints WARNING-and-above to stderr
+   via its own "handler of last resort" with zero configuration, and a
+   page module forcing global logging config would risk clobbering
+   whatever the actual deployment's logging setup does elsewhere.
+--------------------------------------------------------------------------
+
+--------------------------------------------------------------------------
+FR-03 MULTI-FILE REVISION (earlier revision, unchanged by the above)
 --------------------------------------------------------------------------
 Per the FR-03 handoff's CORE DESIGN CONSTRAINT: page 01 lets the user
 select MULTIPLE files, and page 02 must load + validate ALL of them, not
@@ -78,6 +105,7 @@ still true here:
 
 from __future__ import annotations
 
+import logging
 import time
 
 import pandas as pd
@@ -86,6 +114,8 @@ from astropy.io import fits
 
 from utils import fits_ingest, session_store, sidebar, styles
 from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
+
+logger = logging.getLogger(__name__)
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
@@ -285,97 +315,80 @@ def _render_load_progress() -> None:
     active_filenames = [f for f in filenames if f not in quarantined]
     n = len(active_filenames)
 
-    styles.render_panel_open("")
+    with st.container(border=False):
+        # A single placeholder for the whole label+bar+caption block -- see
+        # this function's earlier revision note; this used to be three
+        # separate st.empty() placeholders. Writing the full block as one
+        # HTML string per _draw() call keeps it as one element with no
+        # inter-element gap. The live "Loading file X of N" animation is
+        # unchanged -- Streamlit still streams st.empty() updates to the
+        # browser mid-script.
+        progress_slot = st.empty()
 
-    label_slot = st.empty()
-    bar_slot = st.empty()
-    caption_slot = st.empty()
+        def _draw(label: str, frac: float, caption: str) -> None:
+            frac = max(0.0, min(1.0, frac))
+            fill_width = round(1140 * frac)
+            progress_slot.markdown(
+                f"""
+                <div style="font-size:14px; color:{theme['text-body']};">{label}</div>
+                <div style="width:100%; height:10px; border-radius:5px;
+                            background-color:{theme['border-subtle']}; margin:14px 0 8px;">
+                  <div style="width:{fill_width}px; height:100%; border-radius:5px;
+                              background-color:{theme['accent']};"></div>
+                </div>
+                <div style="font-size:11px; color:{theme['text-muted']};">{caption}</div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    def _draw(label: str, frac: float, caption: str) -> None:
-        frac = max(0.0, min(1.0, frac))
-        fill_width = round(1140 * frac)
-        label_slot.markdown(
-            f'<div style="font-size:14px; color:{theme["text-body"]};">{label}</div>',
-            unsafe_allow_html=True,
-        )
-        bar_slot.markdown(
-            f"""
-            <div style="width:100%; height:10px; border-radius:5px;
-                        background-color:{theme['border-subtle']}; margin:14px 0 8px;">
-              <div style="width:{fill_width}px; height:100%; border-radius:5px;
-                          background-color:{theme['accent']};"></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        caption_slot.markdown(
-            f'<div style="font-size:11px; color:{theme["text-muted"]};">{caption}</div>',
-            unsafe_allow_html=True,
-        )
+        if n == 0:
+            _draw("No active files to load", 1.0, "All selected files have been quarantined.")
+            st.session_state["file_loader_load_done"] = False
+            st.session_state["loaded_spectra"] = []
+            st.session_state.pop("loaded_spectrum", None)
+            return
 
-    if n == 0:
-        _draw("No active files to load", 1.0, "All selected files have been quarantined.")
-        styles.render_panel_close()
-        st.session_state["file_loader_load_done"] = False
-        st.session_state["loaded_spectra"] = []
-        st.session_state.pop("loaded_spectrum", None)
-        return
+        results: dict[str, fits_ingest.IngestResult] = {}
+        start_all = time.perf_counter()
+        for idx, filename in enumerate(active_filenames, start=1):
+            _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
+            results[filename] = _run_real_load(filename)
 
-    results: dict[str, fits_ingest.IngestResult] = {}
-    start_all = time.perf_counter()
-    for idx, filename in enumerate(active_filenames, start=1):
-        _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
-        results[filename] = _run_real_load(filename)
+        loaded_spectra = [
+            result.spectrum
+            for result in results.values()
+            if result.ok and result.spectrum is not None
+        ]
+        st.session_state["loaded_spectra"] = loaded_spectra
+        if loaded_spectra:
+            st.session_state["loaded_spectrum"] = loaded_spectra[0]
+        else:
+            st.session_state.pop("loaded_spectrum", None)
 
-    loaded_spectra = [
-        result.spectrum
-        for result in results.values()
-        if result.ok and result.spectrum is not None
-    ]
-    st.session_state["loaded_spectra"] = loaded_spectra
-    if loaded_spectra:
-        st.session_state["loaded_spectrum"] = loaded_spectra[0]
-    else:
-        st.session_state.pop("loaded_spectrum", None)
+        elapsed_total = time.perf_counter() - start_all
 
-    elapsed_total = time.perf_counter() - start_all
-
-    ok_count = sum(1 for r in results.values() if r.ok)
-    plural = "s" if n != 1 else ""
-    _draw(
-        f"Loaded {ok_count} of {n} file{plural}",
-        1.0,
-        f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
-    )
-
-    with st.expander("Load details", expanded=False):
-        for filename, result in results.items():
-            if result.ok:
-                convention_label = {"date": "DATE", "date-obs": "DATE-OBS"}.get(
-                    result.convention, "unknown"
-                )
-                badge = styles.render_badge(convention_label, "info")
-                spectrum = result.spectrum or {}
-                st.markdown(
-                    f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
-                    f'\u00b7 Date: {spectrum.get("date", "?")}',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(f"**{filename}** \u2014 failed to load:")
-                for attempt in result.attempts:
-                    st.caption(attempt)
-
-    if ok_count < n:
-        failed = [f for f, r in results.items() if not r.ok]
-        st.error(
-            f"Could not load {n - ok_count} of {n} file(s) -- neither the DATE nor "
-            f"DATE-OBS convention loader could read: {', '.join(failed)}. "
-            "See the validation table below."
+        ok_count = sum(1 for r in results.values() if r.ok)
+        plural = "s" if n != 1 else ""
+        _draw(
+            f"Loaded {ok_count} of {n} file{plural}",
+            1.0,
+            f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
         )
 
-    styles.render_panel_close()
-    st.session_state["file_loader_load_done"] = ok_count > 0
+        # Aggregate failure reporting is server-side only -- the end user
+        # still sees exactly which files failed and why in the validation
+        # table's Issue column, and the full per-attempt trace is in the
+        # FR-20 audit log via _run_real_load's own log_event call. Phrased
+        # as "flagged" rather than "could not load" -- these files were
+        # correctly identified as unreadable by FR-03's own logic doing
+        # its job, not an application malfunction, and "flagged" matches
+        # the badge terminology already shown in the validation table
+        # right below this panel.
+        if ok_count < n:
+            failed_filenames = [f for f, r in results.items() if not r.ok]
+            logger.warning("%d of %d file(s) flagged as unreadable: %s", n - ok_count, n, ", ".join(failed_filenames))
+
+        st.session_state["file_loader_load_done"] = ok_count > 0
 
 
 def _request_quarantine(filename: str) -> None:
@@ -478,99 +491,99 @@ def _render_validation_table() -> None:
         # unrelated rerun after the one that actually failed.
         st.error(f"Could not quarantine: {quarantine_error}")
 
-    styles.render_panel_open("")
-    _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
+    with st.container(border=True):
+        _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
-    for idx, row in enumerate(rows):
-        striped = idx % 2 == 1
-        theme = styles.get_theme()
-        bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
+        for idx, row in enumerate(rows):
+            striped = idx % 2 == 1
+            theme = styles.get_theme()
+            bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
 
-        if row["status"] == "error":
-            # Flagged rows get a real inline Quarantine button, so they're
-            # laid out with st.columns (matching the header's proportions)
-            # instead of the static _render_table_row helper. Now scoped
-            # per-row across however many files are actually flagged, not
-            # hardcoded to a single known-bad sample row.
-            is_quarantined = row["file"] in quarantined
-            is_pending = row["file"] == pending
-            status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
+            if row["status"] == "error":
+                # Flagged rows get a real inline Quarantine button, so they're
+                # laid out with st.columns (matching the header's proportions)
+                # instead of the static _render_table_row helper. Now scoped
+                # per-row across however many files are actually flagged, not
+                # hardcoded to a single known-bad sample row.
+                is_quarantined = row["file"] in quarantined
+                is_pending = row["file"] == pending
+                status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
 
-            st.markdown(
-                f'<div style="background-color:{bg}; border-bottom:1px solid '
-                f'{theme["border-subtle"]}; padding:2px 0;">',
-                unsafe_allow_html=True,
-            )
-            col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
-            with col_file:
                 st.markdown(
-                    f'<div style="padding-left:10px; font-size:10.5px; color:{theme["text-body"]}; '
-                    f'line-height:28px;">{row["file"]}</div>',
+                    f'<div style="background-color:{bg}; border-bottom:1px solid '
+                    f'{theme["border-subtle"]}; padding:2px 0;">',
                     unsafe_allow_html=True,
                 )
-            with col_issue:
-                st.markdown(
-                    f'<div style="font-size:10.5px; color:{theme["text-body"]}; '
-                    f'line-height:28px;">{row["issue"]}</div>',
-                    unsafe_allow_html=True,
-                )
-            with col_status:
-                st.markdown(
-                    f'<div style="line-height:28px;">{styles.render_badge(status_label, "error")}</div>',
-                    unsafe_allow_html=True,
-                )
-            with col_action:
-                if not is_quarantined:
-                    if is_pending:
-                        # FR-03 handoff step 4: confirmation before
-                        # quarantine, inline where the Quarantine button
-                        # was rather than a page-top banner -- keeps the
-                        # confirmation visually attached to the specific
-                        # row it applies to, especially once several rows
-                        # can be flagged at once. "Continue" / "Cancel"
-                        # per explicit naming request (not "Confirm").
-                        if st.button(
-                            "Continue", key=f"confirm_quarantine_{row['file']}",
-                            type="primary", use_container_width=True,
-                        ):
-                            _quarantine_file(row["file"])
-                            st.session_state["file_loader_pending_quarantine"] = None
-                            st.rerun()
-                        if st.button(
-                            "Cancel", key=f"cancel_quarantine_{row['file']}",
-                            use_container_width=True,
-                        ):
-                            st.session_state["file_loader_pending_quarantine"] = None
-                            st.rerun()
-                    else:
-                        if st.button("Quarantine", key=f"quarantine_{row['file']}", use_container_width=True):
-                            _request_quarantine(row["file"])
-                            st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+                col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
+                with col_file:
+                    st.markdown(
+                        f'<div style="padding-left:10px; font-size:10.5px; color:{theme["text-body"]}; '
+                        f'line-height:28px;">{row["file"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_issue:
+                    st.markdown(
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; '
+                        f'line-height:28px;">{row["issue"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_status:
+                    st.markdown(
+                        f'<div style="line-height:28px;">{styles.render_badge(status_label, "error")}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_action:
+                    if not is_quarantined:
+                        if is_pending:
+                            # FR-03 handoff step 4: confirmation before
+                            # quarantine, inline where the Quarantine button
+                            # was rather than a page-top banner -- keeps the
+                            # confirmation visually attached to the specific
+                            # row it applies to, especially once several rows
+                            # can be flagged at once. "Continue" / "Cancel"
+                            # per explicit naming request (not "Confirm").
+                            if st.button(
+                                "Continue", key=f"confirm_quarantine_{row['file']}",
+                                type="primary", use_container_width=True,
+                            ):
+                                _quarantine_file(row["file"])
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                            if st.button(
+                                "Cancel", key=f"cancel_quarantine_{row['file']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                        else:
+                            if st.button(
+                                "Quarantine", key=f"quarantine_{row['file']}", use_container_width=True
+                            ):
+                                _request_quarantine(row["file"])
+                                st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            if is_pending:
-                # Confirmation copy updated for step 5: this now describes
-                # a real, irreversible-from-the-UI action (a real
-                # shutil.move(), not just session state) -- the earlier
-                # "this doesn't do anything yet" dev note is gone now that
-                # it's no longer true; don't reintroduce it without also
-                # reverting the move_to_quarantine() call above.
-                st.markdown(
-                    f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
-                    f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
-                    f'{theme["border-subtle"]};">Quarantine {row["file"]}? This moves the file '
-                    f"out of the active archive into <code>Flagged/</code> immediately -- "
-                    f"undoing it means manually moving the file back on disk.</div>",
-                    unsafe_allow_html=True,
+                if is_pending:
+                    # Confirmation copy updated for step 5: this now describes
+                    # a real, irreversible-from-the-UI action (a real
+                    # shutil.move(), not just session state) -- the earlier
+                    # "this doesn't do anything yet" dev note is gone now that
+                    # it's no longer true; don't reintroduce it without also
+                    # reverting the move_to_quarantine() call above.
+                    st.markdown(
+                        f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
+                        f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
+                        f'{theme["border-subtle"]};">Quarantine {row["file"]}? This moves the file '
+                        f"out of the active archive into <code>Flagged/</code> immediately -- "
+                        f"undoing it means manually moving the file back on disk.</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                badge = styles.render_badge("OK", "ok")
+                _render_table_row(
+                    [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
+                    striped=striped,
                 )
-        else:
-            badge = styles.render_badge("OK", "ok")
-            _render_table_row(
-                [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
-                striped=striped,
-            )
-
-    styles.render_panel_close()
 
 
 def _read_display_header_fields(path) -> dict[str, str]:
@@ -975,40 +988,39 @@ def _render_header_fields_table() -> None:
         for filename in filenames:
             _render_manual_mapping_expander(filename)
 
-    styles.render_panel_open("")
-    if not filenames:
-        st.caption("No active files to show header fields for.")
-    else:
-        rows = []
-        for filename in filenames:
-            path = fits_ingest.get_archive_root() / filename
-            if mode == "Manual":
-                mapping = st.session_state.get("file_loader_manual_mapping", {}).get(filename)
-                if mapping is None:
-                    mapping = _default_manual_mapping(path)
-                curated_fields = _read_display_header_fields_manual(path, mapping)
-            else:
-                curated_fields = _read_display_header_fields(path)
-            raw_fields = _read_all_raw_fields(path)
+    with st.container(border=True):
+        if not filenames:
+            st.caption("No active files to show header fields for.")
+        else:
+            rows = []
+            for filename in filenames:
+                path = fits_ingest.get_archive_root() / filename
+                if mode == "Manual":
+                    mapping = st.session_state.get("file_loader_manual_mapping", {}).get(filename)
+                    if mapping is None:
+                        mapping = _default_manual_mapping(path)
+                    curated_fields = _read_display_header_fields_manual(path, mapping)
+                else:
+                    curated_fields = _read_display_header_fields(path)
+                raw_fields = _read_all_raw_fields(path)
 
-            row = {"File": filename}
-            row.update(curated_fields)  # curated columns first, in HEADER_FIELDS_COLUMNS order
-            row.update(raw_fields)      # then every other real field found in this file
-            rows.append(row)
+                row = {"File": filename}
+                row.update(curated_fields)  # curated columns first, in HEADER_FIELDS_COLUMNS order
+                row.update(raw_fields)      # then every other real field found in this file
+                rows.append(row)
 
-        df = pd.DataFrame(rows).set_index("File")
+            df = pd.DataFrame(rows).set_index("File")
 
-        if search:
-            matching_columns = [c for c in df.columns if search.lower() in c.lower()]
-            if not matching_columns:
-                st.caption(f'No fields match "{search}" among this file set\'s real header fields.')
-                df = None
-            else:
-                df = df[matching_columns]
+            if search:
+                matching_columns = [c for c in df.columns if search.lower() in c.lower()]
+                if not matching_columns:
+                    st.caption(f'No fields match "{search}" among this file set\'s real header fields.')
+                    df = None
+                else:
+                    df = df[matching_columns]
 
-        if df is not None:
-            st.dataframe(df, use_container_width=True)
-    styles.render_panel_close()
+            if df is not None:
+                st.dataframe(df, use_container_width=True)
 
 
 def main() -> None:
@@ -1019,12 +1031,12 @@ def main() -> None:
     styles.inject_base_css()
 
     # Streamlit's own st.expander header ("Dev override: choose files
-    # manually" / "Load details") and widget labels (e.g. the "Dev
-    # override" text area's own label) are rendered as native chrome, not
-    # through unsafe_allow_html markdown -- there's no HTML string here we
-    # can wrap in a themed <div>, unlike the custom "Load details" content
-    # rows below. That native text falls back to Streamlit's own base theme
-    # from .streamlit/config.toml, which is static per server instance and
+    # manually") and widget labels (e.g. the "Dev override" text area's
+    # own label) are rendered as native chrome, not through unsafe_allow_html
+    # markdown -- there's no HTML string here we can wrap in a themed
+    # <div>, unlike the custom "Load details" content rows below. That
+    # native text falls back to Streamlit's own base theme from
+    # .streamlit/config.toml, which is static per server instance and
     # doesn't react to st.session_state["theme"] (see the Style Guide's
     # §5 note). inject_base_css() apparently doesn't already override this
     # -- unlike .stButton, which does work correctly (see

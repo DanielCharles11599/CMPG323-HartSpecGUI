@@ -108,8 +108,9 @@ def test_page01_selection_is_picked_up_by_page02(fits_archive):
     assert at.session_state["file_loader_load_done"] is True
     markdown_html = _markdown_html(at)
     assert "good_dateobs.fits" in markdown_html
-    assert "DATE-OBS" in markdown_html
-
+    ingest_result = at.session_state["file_loader_ingest_result::good_dateobs.fits"]
+    assert ingest_result.ok
+    assert ingest_result.convention == "date-obs"
 
 def test_page01_multiple_selected_files_all_processed(fits_archive):
     """The actual point of FR-03: page 01's selected_files is a list, and
@@ -152,8 +153,9 @@ def test_date_convention_file_loads_successfully(fits_archive):
     at.run(timeout=30)
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is True
-    markdown_html = _markdown_html(at)
-    assert "DATE" in markdown_html
+    ingest_result = at.session_state["file_loader_ingest_result::good_date.fits"]
+    assert ingest_result.ok
+    assert ingest_result.convention == "date"
 
 
 def test_dateobs_convention_file_falls_back_and_loads(fits_archive):
@@ -164,18 +166,20 @@ def test_dateobs_convention_file_falls_back_and_loads(fits_archive):
     at.run(timeout=30)
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is True
-    markdown_html = _markdown_html(at)
-    assert "DATE-OBS" in markdown_html
+    ingest_result = at.session_state["file_loader_ingest_result::good_dateobs.fits"]
+    assert ingest_result.ok
+    assert ingest_result.convention == "date-obs"
 
-
-def test_unrecognized_file_fails_gracefully_without_exception(fits_archive):
+def test_unrecognized_file_fails_gracefully_without_exception(fits_archive, caplog):
     at = _app_for("unrecognized.fits")
-    at.run(timeout=30)
+    with caplog.at_level("WARNING"):
+        at.run(timeout=30)
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is False
+    # The failure summary now goes to the server log, not a browser error banner.
+    assert "flagged as unreadable" in caplog.text
     error_texts = "\n".join(e.value for e in at.error)
-    assert "Could not load" in error_texts
-
+    assert "Could not load" not in error_texts
 
 def test_failed_load_does_not_mark_pipeline_stage_complete(fits_archive):
     at = _app_for("unrecognized.fits")
@@ -194,19 +198,14 @@ def test_successful_load_marks_pipeline_stage_complete(fits_archive):
     assert not at.exception
     assert "file_loader" in at.session_state["completed_stages"]
 
-
-def test_partial_failure_across_multiple_files_still_marks_complete(fits_archive):
-    """Confirmed design: if AT LEAST ONE file loaded, the stage still
-    counts as in-progress/complete for pipeline purposes -- a single bad
-    file in a multi-file selection shouldn't block the whole stage."""
+def test_partial_failure_across_multiple_files_still_marks_complete(fits_archive, caplog):
     at = _app_for("good_date.fits", "unrecognized.fits")
-    at.run(timeout=30)
+    with caplog.at_level("WARNING"):
+        at.run(timeout=30)
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is True
     assert "file_loader" in at.session_state["completed_stages"]
-    error_texts = "\n".join(e.value for e in at.error)
-    assert "Could not load 1 of 2" in error_texts
-
+    assert "1 of 2 file(s) flagged as unreadable" in caplog.text
 
 def test_successful_load_writes_audit_log_entry(fits_archive):
     at = _app_for("good_date.fits")
