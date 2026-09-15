@@ -75,7 +75,6 @@ def _load_pss_series(path):
     }
 
 
-
 def get_observation_mjd(observation_date):
     """Convert a loaded FITS observation date to Modified Julian Date."""
     if observation_date is None:
