@@ -64,9 +64,15 @@ if loaded_spectrum is not None:
 
 was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
 
+baseline_ready = (
+    "04_baseline_editor" in st.session_state["completed_stages"]
+    and st.session_state.get("baseline_corrected_spectrum") is not None
+)
+
 if loaded_spectrum is not None:
     page_complete = (
-        atmospheric_result is not None
+        baseline_ready
+        and atmospheric_result is not None
         and atmospheric_result["optical_depth"] is not None
         and atmospheric_error is None
         and pss_history is not None
@@ -126,7 +132,11 @@ if loaded_spectrum is not None:
 
         if not was_page_complete:
             session_store.log_event(
-                "Calibration dashboard completed — atmospheric and PSS calibration ready"
+                "Calibration dashboard completed — "
+                f"PWV {atmospheric_result['pwv']:.3f} mm, "
+                f"elevation {atmospheric_result['elevation']:.3f}°, "
+                f"zenith optical depth {atmospheric_result['optical_depth']:.4f}, "
+                f"ATcor {atmospheric_result['atcor']:.4f}"
             )
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
@@ -309,6 +319,7 @@ with st.container(border=True):
                 y=pss_history["lcp"]["pss"],
                 mode="lines",
                 name="LCP",
+                line=dict(color="#1F77B4"),
                 hovertemplate="MJD %{x:.3f}<br>LCP %{y:.4f}<extra></extra>",
             )
         )
@@ -319,6 +330,7 @@ with st.container(border=True):
                 y=pss_history["rcp"]["pss"],
                 mode="lines",
                 name="RCP",
+                line=dict(color="#FF7F0E"),
                 hovertemplate="MJD %{x:.3f}<br>RCP %{y:.4f}<extra></extra>",
             )
         )
@@ -347,6 +359,10 @@ with st.container(border=True):
             height=340,
             xaxis=dict(
                 title="Modified Julian Date",
+                range=[
+                    pss_window["start_mjd"],
+                    pss_window["end_mjd"],
+                ],
             ),
             yaxis=dict(
                 title="PSS",

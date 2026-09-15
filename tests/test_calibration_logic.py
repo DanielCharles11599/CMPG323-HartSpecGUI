@@ -199,3 +199,61 @@ class TestAtmosphericCalibration:
         assert result["azimuth"] == pytest.approx(180.0)
         assert result["pwv"] == pytest.approx(13.9)
         assert result["optical_depth"] == pytest.approx(0.027)
+
+
+REFERENCE_CALIBRATION_FITS = [
+    Path("tests/data/calibration/2006d182_16h05m42s_Spec_sharmila_G328.24-0.55.fits"),
+    Path("tests/data/calibration/2007d007_04h32m42s_Spec_sharmila_G328.24-0.55.fits"),
+    Path("tests/data/calibration/2007d353_07h43m52s_Spec_sharmila_G328.24-0.55.fits"),
+]
+
+
+@pytest.mark.parametrize("fits_path", REFERENCE_CALIBRATION_FITS)
+def test_reference_fits_matches_direct_clc_calibration(fits_path):
+    """Regression check: Page 05 calibration must match direct CLC output."""
+    from astropy.io import fits
+
+    def header_value(hdul, key):
+        for hdu in hdul:
+            if key in hdu.header:
+                return hdu.header[key]
+        raise KeyError(f"{key} not found in {fits_path}")
+
+    with fits.open(fits_path, memmap=True) as hdul:
+        spectrum = {
+            "date": header_value(hdul, "DATE"),
+            "longitude": float(header_value(hdul, "LONGITUD")),
+            "latitude": float(header_value(hdul, "LATITUDE")),
+            "Tamb": float(header_value(hdul, "TAMBIENT")),
+            "Humid": float(header_value(hdul, "HUMIDITY")),
+            "restfreq": float(header_value(hdul, "RESTFREQ")),
+        }
+
+    gui_result = calibration_logic.get_atmospheric_calibration(spectrum)
+
+    direct_result = calibration_logic.PWR(
+        spectrum["date"],
+        spectrum["longitude"],
+        spectrum["latitude"],
+        spectrum["Tamb"],
+        spectrum["Humid"],
+        gui_result["frequency"],
+        return_optical_depth=True,
+    )
+
+    expected = {
+        "nd_lcp": direct_result[0],
+        "nd_rcp": direct_result[1],
+        "atcor": direct_result[2],
+        "elevation": direct_result[3],
+        "azimuth": direct_result[4],
+        "pwv": direct_result[5],
+        "optical_depth": direct_result[6],
+    }
+
+    for key, expected_value in expected.items():
+        assert gui_result[key] == pytest.approx(
+            expected_value,
+            rel=1e-10,
+            abs=1e-10,
+        )
