@@ -130,10 +130,12 @@ with st.container(border=True):
     if atmospheric_result is not None:
         pwv_value = f"{atmospheric_result['pwv']:.3f} mm"
         elevation_value = f"{atmospheric_result['elevation']:.3f}°"
+        optical_depth_value = f"{atmospheric_result['optical_depth']:.4f}"
         atcor_value = f"{atmospheric_result['atcor']:.4f}"
     else:
         pwv_value = "Not calculated"
         elevation_value = "Not calculated"
+        optical_depth_value = "Not calculated"
         atcor_value = "Not calculated"
 
     with metric_cols[0]:
@@ -143,7 +145,7 @@ with st.container(border=True):
         st.metric("Elevation", elevation_value)
 
     with metric_cols[2]:
-        st.metric("Zenith optical depth", "Not available")
+        st.metric("Zenith optical depth", optical_depth_value)
 
     with metric_cols[3]:
         st.metric("ATcor", atcor_value)

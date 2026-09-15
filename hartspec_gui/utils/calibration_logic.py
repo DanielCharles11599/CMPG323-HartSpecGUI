@@ -161,13 +161,14 @@ def get_atmospheric_calibration(spectrum):
 
     frequency = str(spectrum["restfreq"])[:5]
 
-    nd_lcp, nd_rcp, atcor, elevation, azimuth, pwv = PWR(
+    nd_lcp, nd_rcp, atcor, elevation, azimuth, pwv, optical_depth = PWR(
         spectrum["date"],
         spectrum["longitude"],
         spectrum["latitude"],
         spectrum["Tamb"],
         spectrum["Humid"],
         frequency,
+        return_optical_depth=True,
     )
 
     return {
@@ -178,5 +179,5 @@ def get_atmospheric_calibration(spectrum):
         "atcor": atcor,
         "nd_lcp": nd_lcp,
         "nd_rcp": nd_rcp,
-        "optical_depth": None,
+        "optical_depth": optical_depth,
     }

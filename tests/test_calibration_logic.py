@@ -157,7 +157,15 @@ class TestAtmosphericCalibration:
 
         captured = {}
 
-        def fake_pwr(date, longitude, latitude, tamb, humid, frequency):
+        def fake_pwr(
+            date,
+            longitude,
+            latitude,
+            tamb,
+            humid,
+            frequency,
+            return_optical_depth=False,
+        ):
             captured["args"] = (
                 date,
                 longitude,
@@ -166,12 +174,14 @@ class TestAtmosphericCalibration:
                 humid,
                 frequency,
             )
-            return 1.1, 2.2, 1.03, 61.2, 180.0, 13.9
+            captured["return_optical_depth"] = return_optical_depth
+            return 1.1, 2.2, 1.03, 61.2, 180.0, 13.9, 0.027
 
         monkeypatch.setattr(calibration_logic, "PWR", fake_pwr)
 
         result = calibration_logic.get_atmospheric_calibration(spectrum)
 
+        assert captured["return_optical_depth"] is True
         assert captured["args"] == (
             "2013-04-25T00:27:32",
             27.6854,
@@ -188,4 +198,4 @@ class TestAtmosphericCalibration:
         assert result["elevation"] == pytest.approx(61.2)
         assert result["azimuth"] == pytest.approx(180.0)
         assert result["pwv"] == pytest.approx(13.9)
-        assert result["optical_depth"] is None
+        assert result["optical_depth"] == pytest.approx(0.027)
