@@ -88,6 +88,50 @@ class TestPssHistory:
             calibration_logic.get_pss_history(9999999999.0)
 
 
+class TestPssWindowAverages:
+    def test_averages_only_values_inside_pss_window(self):
+        history = {
+            "lcp": {
+                "mjd": [99.0, 100.0, 110.0, 120.0, 121.0],
+                "pss": [1.0, 10.0, 20.0, 30.0, 40.0],
+            },
+            "rcp": {
+                "mjd": [99.0, 100.0, 110.0, 120.0, 121.0],
+                "pss": [2.0, 8.0, 16.0, 24.0, 32.0],
+            },
+        }
+        window = {
+            "start_mjd": 100.0,
+            "end_mjd": 120.0,
+        }
+
+        result = calibration_logic.get_pss_window_averages(history, window)
+
+        assert result["lcp"] == pytest.approx(20.0)
+        assert result["rcp"] == pytest.approx(16.0)
+
+    def test_returns_none_when_window_contains_no_values(self):
+        history = {
+            "lcp": {
+                "mjd": [1.0, 2.0],
+                "pss": [10.0, 20.0],
+            },
+            "rcp": {
+                "mjd": [1.0, 2.0],
+                "pss": [8.0, 12.0],
+            },
+        }
+        window = {
+            "start_mjd": 10.0,
+            "end_mjd": 20.0,
+        }
+
+        result = calibration_logic.get_pss_window_averages(history, window)
+
+        assert result["lcp"] is None
+        assert result["rcp"] is None
+
+
 class TestAtmosphericCalibration:
     def test_requires_calibration_metadata(self):
         spectrum = {

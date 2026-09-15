@@ -125,6 +125,28 @@ def get_pss_history(frequency):
     }
 
 
+def get_pss_window_averages(pss_history, pss_window):
+    """Return mean LCP and RCP PSS values inside the inclusive PSS window."""
+    if pss_history is None or pss_window is None:
+        raise ValueError("PSS history and window are required.")
+
+    start_mjd = float(pss_window["start_mjd"])
+    end_mjd = float(pss_window["end_mjd"])
+
+    def mean_for(series):
+        values = [
+            float(pss)
+            for mjd, pss in zip(series["mjd"], series["pss"])
+            if start_mjd <= float(mjd) <= end_mjd
+        ]
+        return float(np.mean(values)) if values else None
+
+    return {
+        "lcp": mean_for(pss_history["lcp"]),
+        "rcp": mean_for(pss_history["rcp"]),
+    }
+
+
 def get_atmospheric_calibration(spectrum):
     """Run the existing HartSpec atmospheric calibration for one spectrum."""
     if not spectrum:

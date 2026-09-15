@@ -36,6 +36,7 @@ atmospheric_error = None
 
 pss_history = None
 pss_window = None
+pss_averages = None
 pss_error = None
 
 if loaded_spectrum is not None:
@@ -53,6 +54,10 @@ if loaded_spectrum is not None:
         )
         pss_window = calibration_logic.get_pss_window(
             loaded_spectrum["date"]
+        )
+        pss_averages = calibration_logic.get_pss_window_averages(
+            pss_history,
+            pss_window,
         )
     except Exception as exc:
         pss_error = str(exc)
@@ -81,6 +86,16 @@ if loaded_spectrum is not None:
             "start_mjd": float(pss_window["start_mjd"]),
             "end_mjd": float(pss_window["end_mjd"]),
             "window_days": int(pss_window["days"]),
+            "lcp_window_mean": (
+                None
+                if pss_averages is None or pss_averages["lcp"] is None
+                else float(pss_averages["lcp"])
+            ),
+            "rcp_window_mean": (
+                None
+                if pss_averages is None or pss_averages["rcp"] is None
+                else float(pss_averages["rcp"])
+            ),
             "source_files": dict(pss_history["source_files"]),
         }
 
@@ -232,11 +247,26 @@ with st.container(border=True):
 
     pss_metric_cols = st.columns(2)
 
+    if pss_averages is not None:
+        lcp_mean_value = (
+            f"{pss_averages['lcp']:.4f}"
+            if pss_averages["lcp"] is not None
+            else "Not available"
+        )
+        rcp_mean_value = (
+            f"{pss_averages['rcp']:.4f}"
+            if pss_averages["rcp"] is not None
+            else "Not available"
+        )
+    else:
+        lcp_mean_value = "Not calculated"
+        rcp_mean_value = "Not calculated"
+
     with pss_metric_cols[0]:
-        st.metric("LCP monthly mean", "Not calculated")
+        st.metric("LCP ±15-day mean", lcp_mean_value)
 
     with pss_metric_cols[1]:
-        st.metric("RCP monthly mean", "Not calculated")
+        st.metric("RCP ±15-day mean", rcp_mean_value)
 
     if loaded_spectrum is None:
         st.info("Load a spectrum to view PSS calibration history.")
