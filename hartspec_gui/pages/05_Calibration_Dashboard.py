@@ -63,8 +63,20 @@ if loaded_spectrum is not None:
         pss_error = str(exc)
 
 if loaded_spectrum is not None:
+    page_complete = (
+        atmospheric_result is not None
+        and atmospheric_result["optical_depth"] is not None
+        and atmospheric_error is None
+        and pss_history is not None
+        and pss_window is not None
+        and pss_averages is not None
+        and pss_averages["lcp"] is not None
+        and pss_averages["rcp"] is not None
+        and pss_error is None
+    )
+
     page_payload = {
-        "complete": False,
+        "complete": page_complete,
         "atmospheric": None,
         "pss": None,
     }
@@ -106,8 +118,14 @@ if loaded_spectrum is not None:
         page_payload["pss_error"] = pss_error
 
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = page_payload
+
+    if page_complete:
+        session_store.mark_stage_complete(PAGE_STAGE_KEY)
+    else:
+        st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
 else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+    st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
 
 styles.render_page_header(
     title=PAGE_TITLE,
