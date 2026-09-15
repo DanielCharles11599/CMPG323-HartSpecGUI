@@ -62,6 +62,8 @@ if loaded_spectrum is not None:
     except Exception as exc:
         pss_error = str(exc)
 
+was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
+
 if loaded_spectrum is not None:
     page_complete = (
         atmospheric_result is not None
@@ -121,6 +123,11 @@ if loaded_spectrum is not None:
 
     if page_complete:
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
+
+        if not was_page_complete:
+            session_store.log_event(
+                "Calibration dashboard completed — atmospheric and PSS calibration ready"
+            )
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
 else:
