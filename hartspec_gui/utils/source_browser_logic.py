@@ -20,9 +20,10 @@
 #     session_state["pipeline_data"] gets the filtered FITS paths, chosen
 #     source name, chosen frequency, and earliest observation date.
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from astropy.io import fits
 
@@ -231,6 +232,55 @@ def matching_files(
     ]
 
 
+def group_files_by_month(files: List[SourceFileEntry]) -> List[Tuple[str, List[SourceFileEntry]]]:
+    """Group (already-filtered) files by observation year-month, newest first.
+
+    Restores the build spec's original "grouped by observation month"
+    browsing structure (e.g. "2026-08 Observations") on top of the live
+    directory scan. This matters for real archives: the live scan's tree
+    view mirrors whatever the on-disk folder layout happens to be, which
+    may not be date-organized (or may just be one flat directory) --
+    for a monitoring program spanning many months at the same source and
+    frequency, that's a wall of files with no structure to navigate by.
+    Grouping by calendar month scales the way the original spec intended,
+    regardless of how files happen to be laid out on disk.
+
+    Files with no readable observation_date go in a trailing "Unknown
+    date" bucket rather than being silently dropped from the browser.
+    Within a group, files are sorted by date then filename so browsing is
+    chronological, not just alphabetical.
+    """
+    groups: Dict[str, List[SourceFileEntry]] = defaultdict(list)
+    for f in files:
+        key = f.observation_date[:7] if f.observation_date else "unknown"
+        groups[key].append(f)
+
+    def _sort_key(entry: SourceFileEntry):
+        return (entry.observation_date or "", entry.filename)
+
+    ordered_keys = sorted((k for k in groups if k != "unknown"), reverse=True)
+    if "unknown" in groups:
+        ordered_keys.append("unknown")
+
+    return [
+        (f"{key} Observations" if key != "unknown" else "Unknown date", sorted(groups[key], key=_sort_key))
+        for key in ordered_keys
+    ]
+
+
+def filter_by_filename(files: List[SourceFileEntry], search_text: str) -> List[SourceFileEntry]:
+    """Case-insensitive filename substring filter for the browse search box.
+
+    A blank search matches everything -- this is a narrowing aid on top of
+    the Source Name / Frequency dropdowns, not a replacement for them, for
+    when the user already knows roughly what filename they're looking for.
+    """
+    if not search_text:
+        return files
+    needle = search_text.strip().lower()
+    return [f for f in files if needle in f.filename.lower()]
+
+
 def earliest_observation_date(files: List[SourceFileEntry]) -> Optional[str]:
     """Earliest observation date among a set of files, or None if unknown for all."""
     dates = [f.observation_date for f in files if f.observation_date]
@@ -317,18 +367,35 @@ def build_selected_files(filtered_files: List[SourceFileEntry]) -> List[str]:
 
 
 def run_file_check_placeholder(fits_paths: List[Path], workspace_dir: Path) -> Path:
-    """NOT the real clc.File_check integration — see the chat response.
+    """NOT the real clc.File_check integration -- see the chat response for
+    the full writeup.
 
-    Per the FR-01 spec: "File_check.py executes on the server to sort files
-    into temporary observation block text files in the session's active
-    workspace folder." clc/File_check.py's actual function signature wasn't
-    available when this was written, so this is a deliberately simple stand-
-    in (writes one flat text file listing the selected paths) rather than a
-    guess at File_check.py's real sorting/block-splitting behavior.
+    The real clc/File_check.py has now been reviewed, and it can't be wired
+    in as a simple function call the way clc.load_file / clc.load_file2 are
+    in fits_ingest.py. As written, File_check.py is a bare top-level
+    script, not a function:
+      - It calls Interact.interaction() to prompt for Observation/Frequency
+        via terminal input() -- the same blocking-input problem the
+        Phase-0 fix already removed from Option.py, apparently not yet
+        applied here.
+      - It calls os.chdir() into a working directory it builds itself --
+        an unsafe global side effect in a shared Streamlit server process.
+      - It shells out via os.system('ls *.fits > ...') and reads/writes
+        several files relative to that chdir'd cwd, rather than an
+        explicit workspace_dir passed in.
+      - Its file-to-block sorting (grouping FITS files into observation
+        blocks by 'position'/'pointing' header values -- HPN/HPS/HPE/HPW/
+        ON/OFF) is a real, fairly intricate state machine, not incidental
+        GUI plumbing -- reimplementing it here would mean reinterpreting
+        domain-specific observational logic, which the "never modify the
+        underlying scientific algorithms" rule says not to do without
+        asking first. It also appears to contain a bug (two `elif`
+        branches with an identical guard condition, the second
+        unreachable) -- not something to silently "fix" one way or the
+        other on a guess.
 
-    Replace this function's body with a real call into clc.File_check once
-    its signature is confirmed — the page's call site is isolated to this one
-    function specifically so that swap won't require touching anything else.
+    This stays as the explicit stand-in until the team decides how to
+    handle it -- see the chat response for the options raised.
     """
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)

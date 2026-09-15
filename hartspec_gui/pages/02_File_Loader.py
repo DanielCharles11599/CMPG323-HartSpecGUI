@@ -250,6 +250,33 @@ def _run_real_verify(filename: str) -> fits_ingest.VerificationResult:
     return result
 
 
+def _render_error_banner(message: str) -> None:
+    """Themed replacement for st.error().
+
+    Streamlit's native st.error() colors come from its own theme
+    machinery -- ultimately the static .streamlit/config.toml base theme
+    (see the Style Guide's §5 note on why that can't hot-swap with this
+    app's in-session light/dark toggle), not from styles.get_theme(). That
+    made it look fine in whichever mode config.toml happens to match and
+    hard to read in the other -- the same root cause already fixed for
+    the expander headers and widget labels in main() below.
+
+    Colors here are the Style Guide's own locked "Error / flagged /
+    quarantined" status pair (§1) -- the same pair styles.render_badge()
+    already uses for the FLAGGED/QUARANTINED badges elsewhere on this
+    page, so this banner and those badges always agree with each other.
+    The left-border accent reuses the fit-overlay red/light-red pair (§1)
+    rather than inventing a new color.
+    """
+    is_dark = st.session_state.get("theme") == "dark"
+    bg, text, border = ("#7F1D1D", "#FCA5A5", "#F87171") if is_dark else ("#FEE2E2", "#991B1B", "#DC2626")
+    st.markdown(
+        f'<div style="background-color:{bg}; color:{text}; border-left:3px solid {border}; '
+        f'border-radius:6px; padding:10px 14px; font-size:12.5px; line-height:1.5;">{message}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_load_progress() -> None:
     """Load every target file, showing 'Loading file X of N' + one
     aggregate progress bar -- per the confirmed answer to the FR-03
@@ -350,7 +377,7 @@ def _render_load_progress() -> None:
 
     if ok_count < n:
         failed = [f for f, r in results.items() if not r.ok]
-        st.error(
+        _render_error_banner(
             f"Could not load {n - ok_count} of {n} file(s) -- neither the DATE nor "
             f"DATE-OBS convention loader could read: {', '.join(failed)}. "
             "See the validation table below."
@@ -546,6 +573,18 @@ def main() -> None:
         [data-testid="stTextArea"] textarea,
         [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
+        }}
+        /* Placeholder text (e.g. "Search 30+ fields...") needs its own
+           ::placeholder rule -- a plain color: on the input itself doesn't
+           reach it. text-faint is the Style Guide's dedicated placeholder
+           token (distinct from text-body/text-muted above). opacity:1
+           overrides browsers (Firefox in particular) that otherwise dim
+           ::placeholder by default, which would wash out the exact token
+           color. */
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder {{
+            color: {_theme['text-faint']} !important;
+            opacity: 1;
         }}
         </style>
         """,

@@ -43,6 +43,8 @@ from utils.source_browser_logic import (
     distinct_frequencies_mhz,
     distinct_source_names,
     earliest_observation_date,
+    filter_by_filename,
+    group_files_by_month,
     matching_files,
     run_file_check_placeholder,
     scan_fits_directory_tree,
@@ -101,6 +103,38 @@ st.markdown(
     }}
     [data-testid="stVerticalBlockBorderWrapper"] {{
         margin-bottom: {styles.SECTION_GAP}px;
+    }}
+    /* The month-grouped browse view (group_files_by_month()) renders one
+       st.expander() per group. Both the header text and the panel border
+       are native Streamlit chrome, not HTML this page controls -- they
+       fall back to Streamlit's static base theme (.streamlit/config.toml),
+       which doesn't react to st.session_state["theme"] (Style Guide §5).
+       Same root cause and same fix as 02_File_Loader.py's expander/widget
+       CSS: forced here with theme tokens and !important, since Streamlit's
+       own expander CSS carries specificity a plain rule won't reliably
+       beat. border-default is the Style Guide's token for card/input
+       borders generally, which an expander panel matches.
+    */
+    [data-testid="stExpander"] {{
+        border-color: {_theme['border-default']} !important;
+    }}
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stExpander"] summary span,
+    .streamlit-expanderHeader,
+    .streamlit-expanderHeader p {{
+        color: {_theme['text-body']} !important;
+    }}
+    [data-testid="stExpanderToggleIcon"] {{
+        fill: {_theme['text-body']} !important;
+        color: {_theme['text-body']} !important;
+    }}
+    [data-testid="stTextInput"] input {{
+        color: {_theme['text-body']} !important;
+    }}
+    [data-testid="stTextInput"] input::placeholder {{
+        color: {_theme['text-faint']} !important;
+        opacity: 1;
     }}
     </style>
     """,
@@ -205,59 +239,56 @@ with filter_cols[1]:
 
 
 # ---------------------------------------------------------------------------
-# Directory tree view — nested expandable containers, pruned to only show
-# branches that contain at least one file matching the current filters.
+# Filtered file set — computed once, up front, so the browse panel below
+# groups/searches the already-narrowed result rather than walking the whole
+# scanned tree. Source Name + Frequency still do the heavy narrowing; the
+# search box below is a further, optional refinement on top of that.
 # ---------------------------------------------------------------------------
-def _render_tree(node, source_filter, frequency_filter, depth: int = 0) -> None:
-    if node is None or not matching_files(node, source_filter, frequency_filter):
-        return
+source_frequency_matches = matching_files(tree, selected_source, selected_frequency)
 
-    indent = "&nbsp;" * (depth * 4)
-
-    st.markdown(
-        f"{indent}**{node.name or '/'}**",
-        unsafe_allow_html=True,
-    )
-
-    for source_file in node.files:
-        if (
-            source_file.source_name != source_filter
-            or source_file.frequency_mhz != frequency_filter
-        ):
-            continue
-
-        badge_html = styles.render_badge(
-            source_file.status,
-            status_css_class(source_file.status),
-        )
-
-        st.markdown(
-            f'{indent}&nbsp;&nbsp;&nbsp;&nbsp;'
-            f'<div class="hs-file-name">{source_file.filename}</div>'
-            f'<div class="hs-file-caption">'
-            f'{source_file.size_mb:.1f}MB · {badge_html}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    for child in node.subdirectories:
-        _render_tree(
-            child,
-            source_filter,
-            frequency_filter,
-            depth + 1,
-        )
+st.markdown('<div class="hs-eyebrow">Search filename</div>', unsafe_allow_html=True)
+filename_search = st.text_input(
+    "Search filename",
+    key="source_browser_filename_search",
+    label_visibility="collapsed",
+    placeholder="e.g. spectrum_002",
+)
+filtered_files = filter_by_filename(source_frequency_matches, filename_search)
 
 
+# ---------------------------------------------------------------------------
+# Browse panel — grouped by observation month (newest first), not a raw
+# directory tree. A real monitoring archive can have hundreds of files under
+# one Source Name / Frequency combination; mirroring on-disk folder
+# structure (which may not even be date-organized) doesn't scale for
+# browsing that, which is what the build spec's original month-grouped
+# design was for. Only the newest group starts expanded so the page isn't a
+# wall of files by default.
+# ---------------------------------------------------------------------------
 with st.container(border=True):
     st.markdown('<div class="hs-panel-title">Source Browser — FR-01</div>', unsafe_allow_html=True)
-    _render_tree(tree, selected_source, selected_frequency)
+
+    if not filtered_files:
+        st.markdown(
+            '<div class="hs-file-caption">No files match the current filters/search.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        for group_index, (group_label, group_files) in enumerate(group_files_by_month(filtered_files)):
+            with st.expander(f"{group_label} ({len(group_files)} file{'s' if len(group_files) != 1 else ''})",
+                              expanded=(group_index == 0)):
+                for source_file in group_files:
+                    badge_html = styles.render_badge(source_file.status, status_css_class(source_file.status))
+                    st.markdown(
+                        f'<div class="hs-file-name">{source_file.filename}</div>'
+                        f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB · {badge_html}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 # ---------------------------------------------------------------------------
 # Selection summary + "Load into Pipeline"
 # ---------------------------------------------------------------------------
-filtered_files = matching_files(tree, selected_source, selected_frequency)
 earliest_date = earliest_observation_date(filtered_files)
 
 with st.container(border=True):
