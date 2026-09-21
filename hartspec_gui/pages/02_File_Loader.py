@@ -132,6 +132,13 @@ HEADER_FIELDS_COLUMNS = [
     "Vlsr", "LCP/RCP", "HPBW", "Tsys", "Date", "Object", "RA/Dec", "Focus", "Humidity",
 ]
 
+# Used to stop a raw header field from silently overwriting a curated
+# column of the same literal (case-sensitive) name when the two dicts are
+# merged into one row below -- see the merge site's own comment for the
+# real bug this caused ("HPBW" specifically, since it's the one curated
+# name that happens to be case-identical to its actual FITS keyword).
+_CURATED_COLUMN_NAMES = set(HEADER_FIELDS_COLUMNS)
+
 
 # --------------------------------------------------------------------------
 # Page-local replacements for the two table helpers that were removed from
@@ -1056,6 +1063,23 @@ def _render_header_fields_table() -> None:
                 else:
                     curated_fields = _read_display_header_fields(path)
                 raw_fields = _read_all_raw_fields(path)
+
+                # Real bug found and fixed here: "HPBW" is the one curated
+                # column whose display name is literally identical (same
+                # case) to its actual raw FITS keyword -- every other
+                # curated column differs in case from its raw source
+                # ("Object" vs "OBJECT", "Focus" vs "FOCUS", "Humidity" vs
+                # "HUMIDITY", "Date" vs "DATE-OBS"), so only HPBW ever
+                # collided. Without this, row.update(raw_fields) below
+                # would silently overwrite whatever curated_fields (Auto
+                # OR Manual-mode-assigned) had just computed for "HPBW"
+                # with the raw dump's own value, making a Manual HPBW
+                # reassignment look like it had no effect even though it
+                # was computed correctly one line earlier.
+                raw_fields = {
+                    (f"{key} (raw)" if key in _CURATED_COLUMN_NAMES else key): value
+                    for key, value in raw_fields.items()
+                }
 
                 row = {"File": filename}
                 row.update(curated_fields)  # curated columns first, in HEADER_FIELDS_COLUMNS order

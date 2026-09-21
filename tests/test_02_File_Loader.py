@@ -614,3 +614,20 @@ def test_manual_mapping_applies_to_every_loaded_file(fits_archive):
     df = at.dataframe[0].value
     assert df.loc["good_date.fits", "Object"] == "0"
     assert df.loc["good_dateobs.fits", "Object"] == "0"
+
+
+def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
+    """Regression test: HPBW is the one curated column whose display name
+    is case-identical to its raw FITS keyword, so a Manual-mode
+    reassignment was silently overwritten by the raw field dump merged in
+    right after it."""
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    at.selectbox(key="manual_map_global_HPBW").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df.loc["good_date.fits", "HPBW"] == "0"
+    # the raw dump must still be visible too, just relabeled
+    assert "HPBW (raw)" in df.columns
