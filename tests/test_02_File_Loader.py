@@ -60,6 +60,18 @@ def _app_for(*filenames: str) -> AppTest:
 def _markdown_html(at: AppTest) -> str:
     return "\n".join(m.value for m in at.markdown if m.value)
 
+def _click_apply_mapping(at: AppTest) -> AppTest:
+    """Click the manual-mapping form's submit button and rerun.
+
+    st.form_submit_button() has no key= on this project's pinned
+    streamlit==1.32.0 (see 02_File_Loader.py's own comment on that), and
+    AppTest in this version has no dedicated .form_submit_button accessor
+    either -- form submit buttons are plain Button elements under the
+    hood, so they're found here by their label instead.
+    """
+    submit_btn = next(b for b in at.button if b.label == "Apply Mapping")
+    return submit_btn.click().run(timeout=30)
+
 
 # --------------------------------------------------------------------------
 # Real files (good.fits / faulty.fits) -- opt-in via real_fits_archive.
@@ -512,37 +524,41 @@ def test_manual_mode_default_selection_matches_auto_value(fits_archive):
 
 
 def test_manual_mode_override_changes_displayed_value(fits_archive):
-    """Explicitly reassigning a column's source field must change what's
-    displayed -- proves the override actually takes effect, not just
-    that the picker UI renders."""
     at = _app_for("good_date.fits")
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
 
-    # Re-point "Object" at a different real field in the fixture's header
-    # (SPPOINT = 0, set by make_fixtures.py's _primary()).
-    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
+    at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
     assert not at.exception
     df = at.dataframe[0].value
     assert df.loc["good_date.fits", "Object"] == "0"
 
 
 def test_manual_mode_lcp_rcp_needs_both_fields_set(fits_archive):
-    """LCP/RCP is an explicitly combined column (build spec §7) -- Manual
-    mode must require BOTH source fields before showing a combined value,
-    not silently show a half-populated pair."""
-    at = _app_for("good_dateobs.fits")  # has real TSYS1/TSYS2, unlike good_date.fits
+    at = _app_for("good_dateobs.fits")
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
     df = at.dataframe[0].value
-    assert "/" in df.loc["good_dateobs.fits", "LCP/RCP"]  # both defaults resolved
+    assert "/" in df.loc["good_dateobs.fits", "LCP/RCP"]
 
-    at.selectbox(key="manual_map_good_dateobs.fits_RCP").set_value("\u2014 none \u2014").run(timeout=30)
+    at.selectbox(key="manual_map_global_RCP").set_value("\u2014 none \u2014")
+    _click_apply_mapping(at)
     assert not at.exception
     df = at.dataframe[0].value
     assert df.loc["good_dateobs.fits", "LCP/RCP"] == "pending"
+
+
+def test_manual_mapping_card_has_no_nested_expander(fits_archive):
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    assert not at.exception
+    at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
+    assert not at.exception
 
 
 def test_auto_mode_shows_raw_fields_alongside_curated_columns(fits_archive):
@@ -574,34 +590,27 @@ def test_manual_mode_shows_same_raw_fields_as_auto(fits_archive):
     assert df.loc["good_date.fits", "OBJECT"] == "W3(OH)"
 
 
-def test_manual_mapping_expander_has_no_nested_expander(fits_archive):
-    """Regression test for the real StreamlitAPIException hit in
-    production (nested st.expander is disallowed on the project's
-    pinned streamlit==1.32.0) -- confirms Manual mode renders without
-    raising, and that the mapping controls (not just a header dump) are
-    actually reachable in that single expander."""
-    at = _app_for("good_date.fits")
-    at.run(timeout=30)
-    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
-    assert not at.exception
-    # The actual assignment control must exist and be interactable --
-    # this is the concrete fix for "there is no buttons for it".
-    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
-    assert not at.exception
-
-
 def test_manual_mode_does_not_affect_ingestion_or_auto_default(fits_archive):
-    """Confirmed scope: Manual mapping only affects THIS display table --
-    it must never touch fits_ingest.ingest_fits_file()'s real result, and
-    switching back to Auto must show Auto's own values again, not
-    whatever was left over from a Manual override."""
     at = _app_for("good_date.fits")
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
-    at.selectbox(key="manual_map_good_date.fits_Object").set_value("HDU0:SPPOINT").run(timeout=30)
-    assert at.session_state["file_loader_load_done"] is True  # ingestion result untouched
+    at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
+    assert at.session_state["file_loader_load_done"] is True
 
     at.radio(key="file_loader_mapping_mode").set_value("Auto").run(timeout=30)
     assert not at.exception
     df = at.dataframe[0].value
-    assert df.loc["good_date.fits", "Object"] == "W3(OH)"  # back to Auto's real value
+    assert df.loc["good_date.fits", "Object"] == "W3(OH)"
+
+
+def test_manual_mapping_applies_to_every_loaded_file(fits_archive):
+    at = _app_for("good_date.fits", "good_dateobs.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df.loc["good_date.fits", "Object"] == "0"
+    assert df.loc["good_dateobs.fits", "Object"] == "0"

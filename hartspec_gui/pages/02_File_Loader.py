@@ -491,7 +491,7 @@ def _render_validation_table() -> None:
         # unrelated rerun after the one that actually failed.
         st.error(f"Could not quarantine: {quarantine_error}")
 
-    with st.container():
+    with st.container(border=False):
         _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
         for idx, row in enumerate(rows):
@@ -803,12 +803,18 @@ def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
         return None
 
 
-def _default_manual_mapping(path) -> dict:
-    """Seed the Manual mapping UI with whatever Auto mode already
-    resolved for THIS file, so a user only has to change what's actually
-    wrong rather than start from a blank slate every time. Mirrors
+def _default_manual_mapping() -> dict:
+    """Seed the Manual mapping UI with the same fixed choices Auto mode
+    resolves, so a user only has to change what's actually wrong for
+    their receiver config rather than start from a blank slate. Mirrors
     `_read_display_header_fields`'s own hardcoded choices -- if that
     function's mapping ever changes, this needs to change with it.
+
+    No longer takes a `path` argument (this revision) -- see this
+    module's "GLOBAL MANUAL MAPPING" comment above `_render_manual_
+    mapping_card`. The defaults below were never actually file-specific
+    to begin with (they're fixed HDU/keyword names, not read from any
+    particular file), so the parameter was unused dead weight.
 
     RA/Dec is deliberately None here, not guessed -- Auto mode never
     picks a value for it either (see that function's docstring), and
@@ -854,71 +860,118 @@ def _read_display_header_fields_manual(path, mapping: dict) -> dict[str, str]:
     return fields
 
 
-def _render_manual_mapping_expander(filename: str) -> dict:
-    """Per-file 'Manual column mapping' UI -- ONE expander (not two) with
-    one selectbox per curated display column (two for LCP/RCP) to assign
-    a source keyword. Returns the resulting mapping dict, also persisted
-    to st.session_state["file_loader_manual_mapping"][filename] so it
-    survives reruns.
+# --------------------------------------------------------------------------
+# GLOBAL MANUAL MAPPING (this revision, replaces per-file mapping)
+# --------------------------------------------------------------------------
+# Real reported problem with a 230+ file batch: Manual mode used to render
+# one full expander with its own ~10 selectboxes PER FILE
+# (`_render_manual_mapping_expander`, one call per filename in a loop) --
+# roughly 2,300 widgets for a 230-file load, re-rendered on every single
+# rerun. That's both the direct cause of the reported lag, and tedious in
+# its own right: assigning "Vlsr comes from SPVLSR" 230 times when every
+# file in a load comes from the same instrument/receiver configuration in
+# practice was never actually useful, just repetitive.
+#
+# Fix: ONE mapping card, ONE set of ~10 selectboxes total, applied to
+# EVERY loaded file at once -- not a full picker set per file. The picker
+# OPTIONS (which real header keywords are available to choose from) are
+# read from just the first file in the current selection; this is fine in
+# practice since files from one load share the same header schema, and
+# `_resolve_qualified_key()` already resolves per-file and degrades
+# gracefully to "pending" if a chosen key happens to be absent from some
+# other specific file's header -- it doesn't assume every file has it.
+#
+# Persisted as one flat dict at
+# st.session_state["file_loader_manual_mapping_global"], replacing the
+# old per-file dict-of-dicts at "file_loader_manual_mapping".
+# --------------------------------------------------------------------------
 
-    Previously this was two SIBLING expanders (a separate "header
-    preview" dump, then this one) -- collapsed by default, easy to open
-    only the first one and never notice the second existed, which is
-    exactly the "I don't see any buttons for it" confusion this was
-    rebuilt to fix. The raw field dump itself moved into the main table
-    (see `_read_all_raw_fields`, used in both Auto and Manual mode now),
-    so it isn't needed here anymore either -- one expander, containing
-    only the actual assignment controls.
+def _render_manual_mapping_card(filenames: list[str]) -> dict:
+    """Single, file-agnostic 'Manual column mapping' card, with an
+    explicit Apply Mapping button (this revision).
+
+    Wrapped in `st.form()` rather than bare selectboxes -- outside a
+    form, EVERY individual selectbox change triggers its own full
+    Streamlit rerun immediately, which re-runs the header-fields table's
+    full per-file disk-read loop on every single field pick, not just
+    once you're done choosing. Inside a form, none of the selectboxes
+    trigger a rerun on their own; only clicking "Apply Mapping" (the
+    form's submit button) does, and it commits every field's choice
+    together in that one rerun. This also means a half-finished set of
+    picks (e.g. Vlsr assigned, Object not yet touched) never gets applied
+    to the table mid-edit -- the previously-applied mapping stays in
+    effect until Apply is actually clicked.
+
+    See the "GLOBAL MANUAL MAPPING" comment above for why this is one
+    shared card for every loaded file, not one per file. Returns the
+    currently APPLIED mapping dict -- NOT necessarily whatever is
+    currently live in the form's widgets, if Apply hasn't been clicked
+    since the last change.
     """
-    path = fits_ingest.get_archive_root() / filename
-    preview_items = _flatten_header_preview(path)
     none_option = "\u2014 none \u2014"
+    reference_filename = filenames[0] if filenames else None
+    preview_items: list[tuple[str, str, str]] = []
+    if reference_filename:
+        reference_path = fits_ingest.get_archive_root() / reference_filename
+        preview_items = _flatten_header_preview(reference_path)
     options = [none_option] + [qk for qk, _, _ in preview_items]
 
-    mapping_state = st.session_state.setdefault("file_loader_manual_mapping", {})
-    current = mapping_state.setdefault(filename, _default_manual_mapping(path))
+    applied = st.session_state.setdefault("file_loader_manual_mapping_global", _default_manual_mapping())
 
-    with st.expander(f"Manual column mapping \u2014 {filename}", expanded=False):
+    with st.expander("Manual column mapping (applies to every loaded file)", expanded=False):
         if not preview_items:
-            st.caption("Could not read this file's header \u2014 nothing to map.")
-            return current
+            st.caption("No files loaded yet \u2014 nothing to map.")
+            return applied
 
         st.caption(
-            "Raw field values are shown as additional columns in the table below \u2014 "
-            "use those to help pick a source field for each column here."
+            f"Field choices are read from {reference_filename}'s header. Pick your fields "
+            "below, then click Apply Mapping \u2014 the table only updates once you apply, "
+            "not on every individual selection."
         )
 
-        for column in HEADER_FIELDS_COLUMNS:
-            if column == "LCP/RCP":
-                lcp_default, rcp_default = current.get(column) or (None, None)
-                lcp_col, rcp_col = st.columns(2)
-                with lcp_col:
-                    lcp_choice = st.selectbox(
-                        "LCP source field", options=options,
-                        index=options.index(lcp_default) if lcp_default in options else 0,
-                        key=f"manual_map_{filename}_LCP",
+        with st.form(key="manual_mapping_form"):
+            pending: dict = {}
+            for column in HEADER_FIELDS_COLUMNS:
+                if column == "LCP/RCP":
+                    lcp_default, rcp_default = applied.get(column) or (None, None)
+                    lcp_col, rcp_col = st.columns(2)
+                    with lcp_col:
+                        lcp_choice = st.selectbox(
+                            "LCP source field", options=options,
+                            index=options.index(lcp_default) if lcp_default in options else 0,
+                            key="manual_map_global_LCP",
+                        )
+                    with rcp_col:
+                        rcp_choice = st.selectbox(
+                            "RCP source field", options=options,
+                            index=options.index(rcp_default) if rcp_default in options else 0,
+                            key="manual_map_global_RCP",
+                        )
+                    pending[column] = (
+                        None if lcp_choice == none_option else lcp_choice,
+                        None if rcp_choice == none_option else rcp_choice,
                     )
-                with rcp_col:
-                    rcp_choice = st.selectbox(
-                        "RCP source field", options=options,
-                        index=options.index(rcp_default) if rcp_default in options else 0,
-                        key=f"manual_map_{filename}_RCP",
+                else:
+                    default = applied.get(column)
+                    choice = st.selectbox(
+                        f"{column} source field", options=options,
+                        index=options.index(default) if default in options else 0,
+                        key=f"manual_map_global_{column}",
                     )
-                current[column] = (
-                    None if lcp_choice == none_option else lcp_choice,
-                    None if rcp_choice == none_option else rcp_choice,
-                )
-            else:
-                default = current.get(column)
-                choice = st.selectbox(
-                    f"{column} source field", options=options,
-                    index=options.index(default) if default in options else 0,
-                    key=f"manual_map_{filename}_{column}",
-                )
-                current[column] = None if choice == none_option else choice
+                    pending[column] = None if choice == none_option else choice
 
-    mapping_state[filename] = current
-    return current
+            # No key= here -- st.form_submit_button() on this project's
+            # pinned streamlit==1.32.0 doesn't accept one (added in a
+            # later Streamlit release). Not needed anyway: a form can
+            # only have one submit button, already uniquely scoped by
+            # the form's own key ("manual_mapping_form" above).
+            submitted = st.form_submit_button("Apply Mapping", type="primary")
+
+        if submitted:
+            st.session_state["file_loader_manual_mapping_global"] = pending
+            applied = pending
+
+    return applied
 
 
 def _render_header_fields_table() -> None:
@@ -957,11 +1010,13 @@ def _render_header_fields_table() -> None:
     See `_read_display_header_fields`'s docstring for exactly which
     curated Auto-mode fields are confirmed-real vs. best-effort/flagged
     (Tsys, Focus units) vs. genuinely unavailable (RA/Dec, shown as
-    "pending"). Manual mode (`_render_manual_mapping_expander` /
+    "pending"). Manual mode (`_render_manual_mapping_card` /
     `_read_display_header_fields_manual`) lets a user override any
-    curated column's source field on a per-file basis; the raw columns
-    are always a straight dump regardless of mode, since they ARE the
-    source data, not a derived/mapped value.
+    curated column's source field, applied to every loaded file at once
+    (see the "GLOBAL MANUAL MAPPING" comment above that function for why
+    this is no longer per-file); the raw columns are always a straight
+    dump regardless of mode, since they ARE the source data, not a
+    derived/mapped value.
     """
     quarantined = st.session_state.get("file_loader_quarantined", set())
     filenames = [f for f in _get_target_filenames() if f not in quarantined]
@@ -980,15 +1035,16 @@ def _render_header_fields_table() -> None:
         label_visibility="collapsed",
     )
 
-    # Manual-mapping expanders must render (and update session_state)
+    # The manual mapping card must render (and update session_state)
     # BEFORE the rows below read that state -- a selectbox's new value
     # from this rerun isn't in session_state until the widget itself has
-    # been instantiated.
+    # been instantiated. One card, applied to every file below -- not one
+    # per file (see "GLOBAL MANUAL MAPPING" comment above).
+    global_mapping = None
     if mode == "Manual":
-        for filename in filenames:
-            _render_manual_mapping_expander(filename)
+        global_mapping = _render_manual_mapping_card(filenames)
 
-    with st.container():
+    with st.container(border=False):
         if not filenames:
             st.caption("No active files to show header fields for.")
         else:
@@ -996,10 +1052,7 @@ def _render_header_fields_table() -> None:
             for filename in filenames:
                 path = fits_ingest.get_archive_root() / filename
                 if mode == "Manual":
-                    mapping = st.session_state.get("file_loader_manual_mapping", {}).get(filename)
-                    if mapping is None:
-                        mapping = _default_manual_mapping(path)
-                    curated_fields = _read_display_header_fields_manual(path, mapping)
+                    curated_fields = _read_display_header_fields_manual(path, global_mapping)
                 else:
                     curated_fields = _read_display_header_fields(path)
                 raw_fields = _read_all_raw_fields(path)
