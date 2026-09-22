@@ -75,7 +75,6 @@ def _load_pss_series(path):
     }
 
 
-
 def get_observation_mjd(observation_date):
     """Convert a loaded FITS observation date to Modified Julian Date."""
     if observation_date is None:
@@ -125,6 +124,28 @@ def get_pss_history(frequency):
     }
 
 
+def get_pss_window_averages(pss_history, pss_window):
+    """Return mean LCP and RCP PSS values inside the inclusive PSS window."""
+    if pss_history is None or pss_window is None:
+        raise ValueError("PSS history and window are required.")
+
+    start_mjd = float(pss_window["start_mjd"])
+    end_mjd = float(pss_window["end_mjd"])
+
+    def mean_for(series):
+        values = [
+            float(pss)
+            for mjd, pss in zip(series["mjd"], series["pss"])
+            if start_mjd <= float(mjd) <= end_mjd
+        ]
+        return float(np.mean(values)) if values else None
+
+    return {
+        "lcp": mean_for(pss_history["lcp"]),
+        "rcp": mean_for(pss_history["rcp"]),
+    }
+
+
 def get_atmospheric_calibration(spectrum):
     """Run the existing HartSpec atmospheric calibration for one spectrum."""
     if not spectrum:
@@ -139,13 +160,14 @@ def get_atmospheric_calibration(spectrum):
 
     frequency = str(spectrum["restfreq"])[:5]
 
-    nd_lcp, nd_rcp, atcor, elevation, azimuth, pwv = PWR(
+    nd_lcp, nd_rcp, atcor, elevation, azimuth, pwv, optical_depth = PWR(
         spectrum["date"],
         spectrum["longitude"],
         spectrum["latitude"],
         spectrum["Tamb"],
         spectrum["Humid"],
         frequency,
+        return_optical_depth=True,
     )
 
     return {
@@ -156,5 +178,5 @@ def get_atmospheric_calibration(spectrum):
         "atcor": atcor,
         "nd_lcp": nd_lcp,
         "nd_rcp": nd_rcp,
-        "optical_depth": None,
+        "optical_depth": optical_depth,
     }
