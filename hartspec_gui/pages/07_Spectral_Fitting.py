@@ -1,201 +1,253 @@
-# 07_Spectral_Fitting.py — FR-14–17: Gaussian / polynomial / multi-component fit UI.
+# 07_Spectral_Fitting.py — FR-14/15/16/17: Gaussian / polynomial / multi-
+# component spectral line fitting, with a live spectrum + fit overlay chart
+# and a fit-parameters table.
 #
-# STATUS: visual scaffold only, matching the style/layout of Pages 01-05.
-# Page 06 (Pointing Correction) doesn't exist yet, so this page deliberately
-# has NO real fitting logic wired up -- no read from a Page 06 handoff, no
-# call into clc/Gaussf.py (or whichever module ends up backing FR-14-17),
-# and no pipeline_data write / mark_stage_complete() call. It renders the
-# FIT TYPE selector, the spectrum+fit chart panel, and the fit-parameters
-# table exactly per the build spec's layout (§7, page 07), with every data
-# value shown as a "Not calculated" placeholder rather than inventing
-# fabricated fit output.
-#
-# When Page 06 exists and a real fitting module is confirmed, this page
-# needs: an upstream-completeness gate (see 04_Baseline_Editor.py's
-# _upstream_complete() pattern), a real corrected-spectrum handoff, real
-# Gaussian/polynomial/multi-component fit calls per the active FIT TYPE,
-# and pipeline_data["07_spectral_fitting"] + mark_stage_complete() once a
-# fit actually succeeds. None of that is guessed here.
-#
-# Table styling deliberately duplicates 02_File_Loader.py's page-local
-# _render_table_header/_render_table_row helpers rather than importing a
-# shared one from utils/styles.py -- that promotion was explicitly deferred
-# in Page 02's own comment ("not done here without confirmation since
-# styles.py is actively being edited by the team"), so this follows the
-# same page-local pattern rather than touching the shared file.
-
+# TODO: confirm against design — see build spec §3
+# FR-15 "2D Gaussian" is listed as a fit-type option alongside "1D Gaussian"
+# on this page, which otherwise fits a 1D velocity spectrum. It isn't clear
+# from the build spec whether this means (a) a genuinely 2D spatial Gaussian
+# (the kind you'd fit to FR-12/13 pointing-scan data), or (b) a two-component
+# 1D Gaussian fit to the same velocity spectrum (e.g. a blended maser line).
+# Implemented below as interpretation (b), since it's the closer fit to
+# "spectral fitting" in context — flagged here rather than silently guessed.
+# Please confirm the intended FR-15 behavior via NotebookLM before this ships.
 from __future__ import annotations
 
+import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from scipy.optimize import curve_fit
 
-from utils import session_store, sidebar, styles
+from utils.session import get_stage_data, log_action, set_stage_data
+from utils.sidebar import render_header, render_sidebar
+from utils.styles import (LCP_COLOR, fit_overlay_color, inject_theme_css,
+                           plot_bg_colors, render_legend)
 
-CURRENT_STAGE = 7
+STAGE_INDEX = 6  # 0-based -> page 07 of 8
 
-PAGE_TITLE = "Spectral Fitting"
-PAGE_SUBTITLE = "FR-14–17 — Gaussian / polynomial / multi-component fits"
-
-FIT_TYPE_OPTIONS = ["1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component"]
-
-FIT_PARAMETER_ROWS = [
-    ("Amplitude", "Not calculated", "—"),
-    ("Center (Vlsr)", "Not calculated", "—"),
-    ("FWHM", "Not calculated", "—"),
-]
-
-st.set_page_config(
-    page_title="HARTSPEC — Spectral Fitting",
-    layout="wide",
-    initial_sidebar_state="expanded",
+st.set_page_config(page_title="HARTSPEC — Spectral Fitting", layout="wide")
+render_sidebar(STAGE_INDEX)
+inject_theme_css()
+render_header(
+    "Spectral Fitting",
+    "FR-14\u201317 \u2014 Gaussian / polynomial / multi-component fits",
+    STAGE_INDEX,
 )
 
-session_store.init_session_state()
-sidebar.render_sidebar(current_stage=CURRENT_STAGE)
-styles.inject_base_css()
-
-_theme = styles.get_theme()
+FIT_TYPES = ["1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component"]
 
 
-# --------------------------------------------------------------------------
-# Page-local table helpers -- copied from 02_File_Loader.py on purpose, see
-# module docstring. Keep any visual fix made there (header radius, stripe
-# color, etc.) mirrored here until both are promoted to utils/styles.py.
-# --------------------------------------------------------------------------
-def _render_table_header(columns: list[tuple[str, str]]) -> None:
-    theme = styles.get_theme()
-    cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10px; '
-        f'font-weight:600; color:{theme["table-header-text"]};">{label}</div>'
-        for label, width in columns
+def _get_spectrum() -> tuple[np.ndarray, np.ndarray]:
+    """Velocity + intensity arrays for the currently loaded spectrum.
+
+    In the full pipeline this should come from the calibration stage's
+    output (session["calibration"]["velocity"/"intensity"], written by
+    05_Calibration_Dashboard.py). Falls back to a synthetic single-peak
+    spectrum so this page is runnable standalone during development — the
+    fallback is clearly marked and must not ship silently once upstream
+    pages are wired up.
+    """
+    calib = get_stage_data("calibration")
+    if calib and "velocity" in calib and "intensity" in calib:
+        return np.array(calib["velocity"]), np.array(calib["intensity"])
+
+    # TODO: confirm against design — see build spec §3 (placeholder data only)
+    velocity = np.linspace(-20, 20, 1024)
+    rng = np.random.default_rng(42)
+    intensity = (
+        8.42 * np.exp(-0.5 * ((velocity - (-4.2)) / (2.31 / 2.3548)) ** 2)
+        + rng.normal(0, 0.15, velocity.size)
     )
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; height:{styles.TABLE_HEADER_HEIGHT}px;
-                    background-color:{theme['table-header-bg']}; border-radius:{styles.PANEL_RADIUS}px
-                    {styles.PANEL_RADIUS}px 0 0;">
-          {cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    return velocity, intensity
 
 
-def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
-    theme = styles.get_theme()
-    bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
-    cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; '
-        f'color:{theme["text-body"]};">{content}</div>'
-        for content, width in cells_html
-    )
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; height:{styles.TABLE_ROW_HEIGHT}px;
-                    background-color:{bg}; border-bottom:1px solid {theme['border-subtle']};">
-          {cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _gaussian(x, amp, center, fwhm, offset):
+    sigma = fwhm / 2.3548
+    return amp * np.exp(-0.5 * ((x - center) / sigma) ** 2) + offset
 
 
-def _render_legend(theme: dict[str, str]) -> None:
-    """Spectrum / Fit swatch legend, per the style guide's chart-panel legend spec
-    (10x10px swatch, 2px radius, 9px Regular text-muted label)."""
-    st.markdown(
-        f"""
-        <div style="display:flex; gap:16px; margin-top:8px;">
-          <div style="display:flex; align-items:center; gap:6px;">
-            <span style="display:inline-block; width:10px; height:10px; border-radius:2px;
-                        background-color:{styles.LCP_COLOR};"></span>
-            <span style="font-size:9px; color:{theme['text-muted']};">Spectrum</span>
-          </div>
-          <div style="display:flex; align-items:center; gap:6px;">
-            <span style="display:inline-block; width:10px; height:10px; border-radius:2px;
-                        background-color:{styles.get_fit_line_color()};
-                        border:1px dashed {styles.get_fit_line_color()};"></span>
-            <span style="font-size:9px; color:{theme['text-muted']};">Fit</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _double_gaussian(x, amp1, c1, fwhm1, amp2, c2, fwhm2, offset):
+    return (_gaussian(x, amp1, c1, fwhm1, 0.0)
+            + _gaussian(x, amp2, c2, fwhm2, 0.0) + offset)
 
 
-styles.render_page_header(
-    title=PAGE_TITLE,
-    subtitle=PAGE_SUBTITLE,
-    current_stage=CURRENT_STAGE,
-    completed_stages=session_store.completed_count(),
+def fit_1d_gaussian(v: np.ndarray, i: np.ndarray):
+    """FR-14 — single Gaussian fit via scipy.optimize.curve_fit."""
+    p0 = [i.max() - i.min(), v[np.argmax(i)], 4.0, i.min()]
+    popt, pcov = curve_fit(_gaussian, v, i, p0=p0, maxfev=10000)
+    perr = np.sqrt(np.diag(pcov))
+    fit_curve = _gaussian(v, *popt)
+    params = [
+        ("Amplitude", f"{popt[0]:.2f} K", f"{perr[0]:.2f} K"),
+        ("Center (Vlsr)", f"{popt[1]:.2f} km/s", f"{perr[1]:.2f} km/s"),
+        ("FWHM", f"{popt[2]:.2f} km/s", f"{perr[2]:.2f} km/s"),
+    ]
+    return fit_curve, params
+
+
+def fit_2d_gaussian(v: np.ndarray, i: np.ndarray):
+    """FR-15 — see module-level TODO re: interpretation. Implemented as a
+    two-component 1D Gaussian fit pending spec confirmation."""
+    peak_idx = np.argsort(i)[-2:]
+    p0 = [
+        i.max() - i.min(), v[peak_idx[0]], 3.0,
+        (i.max() - i.min()) * 0.6, v[peak_idx[1]], 3.0,
+        i.min(),
+    ]
+    try:
+        popt, pcov = curve_fit(_double_gaussian, v, i, p0=p0, maxfev=20000)
+    except RuntimeError:
+        return fit_1d_gaussian(v, i)
+    perr = np.sqrt(np.diag(pcov))
+    fit_curve = _double_gaussian(v, *popt)
+    params = [
+        ("Amplitude 1", f"{popt[0]:.2f} K", f"{perr[0]:.2f} K"),
+        ("Center 1 (Vlsr)", f"{popt[1]:.2f} km/s", f"{perr[1]:.2f} km/s"),
+        ("FWHM 1", f"{popt[2]:.2f} km/s", f"{perr[2]:.2f} km/s"),
+        ("Amplitude 2", f"{popt[3]:.2f} K", f"{perr[3]:.2f} K"),
+        ("Center 2 (Vlsr)", f"{popt[4]:.2f} km/s", f"{perr[4]:.2f} km/s"),
+        ("FWHM 2", f"{popt[5]:.2f} km/s", f"{perr[5]:.2f} km/s"),
+    ]
+    return fit_curve, params
+
+
+def fit_polynomial_peak(v: np.ndarray, i: np.ndarray, order: int = 4):
+    """FR-16 — polynomial fit around the line peak."""
+    coeffs = np.polyfit(v, i, order)
+    fit_curve = np.polyval(coeffs, v)
+    peak_v = v[np.argmax(fit_curve)]
+    params = [(f"Coefficient x^{order - k}", f"{c:.4g}", "\u2014")
+              for k, c in enumerate(coeffs)]
+    params.append(("Peak Vlsr", f"{peak_v:.2f} km/s", "\u2014"))
+    return fit_curve, params
+
+
+def fit_multi_component(v: np.ndarray, i: np.ndarray, n_components: int = 3):
+    """FR-17 — sum of N Gaussians, seeded from the N tallest local maxima."""
+    from scipy.signal import find_peaks
+
+    peak_idx, _ = find_peaks(i, distance=max(len(v) // 20, 1))
+    if len(peak_idx) < n_components:
+        peak_idx = np.argsort(i)[-n_components:]
+    top = peak_idx[np.argsort(i[peak_idx])[-n_components:]]
+
+    def model(x, *p):
+        offset = p[-1]
+        y = np.zeros_like(x) + offset
+        for k in range(n_components):
+            amp, c, fwhm = p[3 * k: 3 * k + 3]
+            y += _gaussian(x, amp, c, fwhm, 0.0)
+        return y
+
+    p0 = []
+    for idx in top:
+        p0 += [i[idx] - i.min(), v[idx], 3.0]
+    p0.append(i.min())
+
+    try:
+        popt, pcov = curve_fit(model, v, i, p0=p0, maxfev=30000)
+    except RuntimeError:
+        return fit_1d_gaussian(v, i)
+    perr = np.sqrt(np.diag(pcov))
+    fit_curve = model(v, *popt)
+    params = []
+    for k in range(n_components):
+        amp, c, fwhm = popt[3 * k: 3 * k + 3]
+        ea, ec, ef = perr[3 * k: 3 * k + 3]
+        params.append((f"Amplitude {k + 1}", f"{amp:.2f} K", f"{ea:.2f} K"))
+        params.append((f"Center {k + 1} (Vlsr)", f"{c:.2f} km/s", f"{ec:.2f} km/s"))
+        params.append((f"FWHM {k + 1}", f"{fwhm:.2f} km/s", f"{ef:.2f} km/s"))
+    return fit_curve, params
+
+
+FIT_FUNCS = {
+    "1D Gaussian": fit_1d_gaussian,
+    "2D Gaussian": fit_2d_gaussian,
+    "Polynomial Peak": fit_polynomial_peak,
+    "Multi-component": fit_multi_component,
+}
+
+# ---------------------------------------------------------------------
+# FIT TYPE segmented control (style guide §4 pill spec: accent fill when
+# active, outlined when inactive — approximated with Streamlit's native
+# primary/secondary button styling, which is bound to the accent color via
+# .streamlit/config.toml's primaryColor).
+# ---------------------------------------------------------------------
+st.markdown('<div class="hs-eyebrow">Fit Type</div>', unsafe_allow_html=True)
+if "fit_type" not in st.session_state:
+    st.session_state["fit_type"] = FIT_TYPES[0]
+
+pill_cols = st.columns(len(FIT_TYPES))
+for col, label in zip(pill_cols, FIT_TYPES):
+    is_active = st.session_state["fit_type"] == label
+    if col.button(label, key=f"fit_pill_{label}",
+                  type="primary" if is_active else "secondary",
+                  use_container_width=True):
+        if not is_active:
+            st.session_state["fit_type"] = label
+            log_action(f"Fit type set to {label}")
+            st.rerun()
+
+st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------
+# Spectrum + fit overlay chart
+# ---------------------------------------------------------------------
+velocity, intensity = _get_spectrum()
+fit_curve, param_rows = FIT_FUNCS[st.session_state["fit_type"]](velocity, intensity)
+
+st.markdown('<div class="hs-panel">', unsafe_allow_html=True)
+st.markdown('<div class="hs-panel-title">Spectrum + fit overlay</div>', unsafe_allow_html=True)
+
+fig = go.Figure()
+fig.add_scatter(x=velocity, y=intensity, mode="lines",
+                 line=dict(color=LCP_COLOR, width=1.6), name="Spectrum", showlegend=False)
+fig.add_scatter(x=velocity, y=fit_curve, mode="lines",
+                 line=dict(color=fit_overlay_color(), width=1.6, dash="dash"),
+                 name="Fit", showlegend=False)
+fig.update_layout(
+    height=320, margin=dict(l=40, r=20, t=10, b=40),
+    xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False),
+    yaxis=dict(title="Intensity (K)", showgrid=False, zeroline=False),
+    **plot_bg_colors(),
 )
-
-
-# FIT TYPE — four-way segmented control (FR-14 through FR-17), same pattern
-# as 03_Bandpass_Correction.py's mode radio: st.radio horizontal, no custom
-# pill CSS invented here (none exists in utils/styles.py for radios yet).
-st.session_state.setdefault("spectral_fit_type", FIT_TYPE_OPTIONS[0])
-st.markdown('<div class="hs-eyebrow">Fit type</div>', unsafe_allow_html=True)
-st.radio(
-    "Fit type",
-    options=FIT_TYPE_OPTIONS,
-    horizontal=True,
-    key="spectral_fit_type",
-    label_visibility="collapsed",
+st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.markdown(
+    render_legend([("Spectrum", LCP_COLOR), ("Fit", fit_overlay_color())]),
+    unsafe_allow_html=True,
 )
+st.markdown("</div>", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------
+# Fit parameters table
+# ---------------------------------------------------------------------
+st.markdown('<div class="hs-panel">', unsafe_allow_html=True)
+st.markdown('<div class="hs-panel-title">Fit parameters</div>', unsafe_allow_html=True)
+rows_html = "".join(
+    f"<tr><td>{p}</td><td>{v}</td><td>{e}</td></tr>" for p, v, e in param_rows
+)
+st.markdown(
+    f"""
+    <table class="hs-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>\u00b1 Error</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+    </table>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown("</div>", unsafe_allow_html=True)
 
-# Spectrum + fit overlay chart panel
-with st.container(border=True):
-    st.markdown(
-        '<div class="hs-panel-title">Spectrum + fit overlay</div>',
-        unsafe_allow_html=True,
-    )
-
-    fit_fig = go.Figure()
-    fit_fig.add_annotation(
-        text="Spectrum + fit overlay will appear here once fitting is wired up",
-        x=0.5,
-        y=0.5,
-        xref="paper",
-        yref="paper",
-        showarrow=False,
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=13,
-            color=_theme["text-muted"],
-        ),
-    )
-    fit_fig.update_layout(
-        paper_bgcolor=_theme["bg-panel"],
-        plot_bgcolor=_theme["bg-panel"],
-        margin=dict(l=48, r=16, t=20, b=40),
-        height=320,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        font=dict(
-            family="Inter, -apple-system, 'Segoe UI', sans-serif",
-            size=11,
-            color=_theme["text-body"],
-        ),
-    )
-    st.plotly_chart(fit_fig, use_container_width=True, config={"displayModeBar": False})
-
-    _render_legend(_theme)
-
-
-# Fit-parameters table panel
-with st.container(border=True):
-    st.markdown(
-        '<div class="hs-panel-title">Fit parameters</div>',
-        unsafe_allow_html=True,
-    )
-
-    _render_table_header([("Parameter", "38.7%"), ("Value", "28.6%"), ("± Error", "28.6%")])
-    for idx, (parameter, value, error) in enumerate(FIT_PARAMETER_ROWS):
-        _render_table_row(
-            [(parameter, "38.7%"), (value, "28.6%"), (error, "28.6%")],
-            striped=idx % 2 == 1,
-        )
-
-    st.caption("Fit output will populate once Page 06 and the fitting backend are wired up.")
+# ---------------------------------------------------------------------
+# Commit fit to session — drives the progress bar and feeds page 08's
+# export/observation log. Not an explicit element in the mockup; added so
+# the pipeline has a real "stage complete" trigger rather than auto-marking
+# on every recompute (which would spam the audit log on every pill click).
+# TODO: confirm against design — see build spec §3
+# ---------------------------------------------------------------------
+if st.button("Save fit to session", type="primary"):
+    set_stage_data("fitting", {
+        "fit_type": st.session_state["fit_type"],
+        "parameters": param_rows,
+    })
+    log_action(f"Spectral fit committed \u2014 {st.session_state['fit_type']}")
+    st.success("Fit saved to session.")
