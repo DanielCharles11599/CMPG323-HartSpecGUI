@@ -20,21 +20,75 @@ try both loaders and see which one (if either) succeeds:
     both underlying errors are kept so a human can tell "wrong convention"
     apart from "genuinely corrupt/incomplete" during review.
 
-FR-03 structural corruption detection lives here too now, as
+FR-03 structural corruption detection lives here too, as
 `verify_fits_file()` -- see its docstring for exactly what it does and
-does not catch. Quarantine (shutil.move to Flagged/) is NOT wired in yet
--- that's a later step, separate review.
+does not catch.
 
 Known open gap (flagged, not fabricated): neither loader returns RA/Dec
 source coordinates -- only telescope `LONGITUD`/`LATITUDE` are present.
 Anything downstream that wants RA/Dec must say so explicitly rather than
 silently substituting telescope pointing for source coordinates.
+
+--------------------------------------------------------------------------
+WINDOWS QUARANTINE-DELETE FIX (this revision)
+--------------------------------------------------------------------------
+Symptom reported from a real Windows dev machine: confirming quarantine on
+a flagged file copies it into `Flagged/` but the original file is NOT
+removed from the active archive -- the file ends up living in both places
+at once, silently, with no error surfaced to the page.
+
+Root cause: `astropy.io.fits.open()` memory-maps FITS files by default
+(`memmap=True`). On Windows, an active memory mapping keeps a real OS-level
+handle open on the underlying file until the Python object that created it
+is actually closed or garbage-collected -- unlike POSIX, Windows generally
+refuses to rename OR delete a file that still has such a handle open
+(`PermissionError` / WinError 32, "the process cannot access the file
+because it is being used by another process"). `shutil.move()`'s internal
+fallback path (used whenever a plain `os.rename()` fails, e.g. because the
+file is memory-mapped) is `copy2()` then `os.unlink()` -- the copy succeeds
+regardless (reading a memory-mapped file is fine), but the trailing
+`os.unlink()` on the ORIGINAL path can fail for the same open-handle
+reason, leaving a real duplicate on disk. `clc/load_file.py` /
+`load_file2.py` open every FITS file this way and, being simple adapted
+CLI scripts, never explicitly close what they open -- and both are
+off-limits to modify, so this can't be fixed at the source.
+
+Two changes, both at this wrapper layer (same justification pattern as
+the `matplotlib.use("Agg")` fix below: can't fix clc/, so the safe default
+is forced here instead):
+
+1. `fits.conf.use_memmap = False`, set once at import time, applies
+   process-wide to every `fits.open()` call with no explicit `memmap=`
+   argument -- including calls made from inside `clc/load_file.py` /
+   `load_file2.py`, since Python config state is shared across modules in
+   the same process. This means FITS data is read fully into memory
+   up-front rather than memory-mapped, so there's no lingering OS-level
+   mapping left behind once the returned dict/object goes out of scope.
+2. Defensive belt-and-braces in `move_to_quarantine()` itself: force a
+   `gc.collect()` immediately before the move (closes out any HDUList
+   object that's already unreferenced but hasn't been swept yet), then
+   retry the actual `shutil.move()` a few times with a short backoff if it
+   raises `PermissionError` specifically, rather than failing on the very
+   first attempt. This covers the case where a loader is still holding a
+   plain (non-memmapped) file handle open at the exact moment quarantine
+   is confirmed.
+
+Not verified on a real Windows machine by this assistant (no Windows
+environment available here) -- this is the standard, documented fix for
+this exact astropy/Windows failure signature, but please confirm for real:
+after confirming quarantine, check the original directory in Explorer/
+`dir` directly, not just the browser's QUARANTINED badge, since the UI
+badge is exactly what silently lied before this fix.
+--------------------------------------------------------------------------
 """
 
 from __future__ import annotations
 
+import gc
 import os
+import shutil
 import sys
+import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +111,18 @@ import matplotlib
 matplotlib.use("Agg")
 
 from astropy.io import fits
+
+# Windows quarantine-delete fix -- see this module's header comment for
+# the full diagnosis. Setting this BEFORE `clc/load_file.py` /
+# `load_file2.py` are imported below matters less than it did for the
+# matplotlib backend (this is a mutable config flag read at each
+# `fits.open()` call, not a one-time backend selection), but it's kept in
+# the same "configure astropy before anything else touches it" spot for
+# consistency and to make the fix trivially easy to find later. This is
+# an I/O default, not a change to any scientific algorithm or output
+# value -- it does not affect what data is read, only whether the OS
+# keeps a memory mapping open afterward.
+fits.conf.use_memmap = False
 
 from utils.env import load_dotenv_if_present
 
@@ -89,6 +155,16 @@ def get_archive_root() -> Path:
     return Path(override) if override else DEFAULT_ARCHIVE_ROOT
 
 
+# Single source of truth for the quarantine destination's directory name --
+# `move_to_quarantine()` below writes into `<archive_root>/<this>`, and
+# `source_browser_logic.py`'s directory scanner imports this same constant
+# to make sure a quarantined file's new home is never re-discovered as a
+# selectable source file (see that module's own comment on the bug this
+# caused: a quarantined file kept getting re-scanned, re-selected, and
+# re-quarantined into an increasingly suffixed duplicate).
+QUARANTINE_DIRNAME = "Flagged"
+
+
 # clc/ is a flat directory of modules that import each other directly
 # (e.g. `import File_Manage as FE` inside File_Manage.py itself), not a
 # Python package -- so we add it to sys.path rather than assuming
@@ -106,14 +182,14 @@ if str(CLC_DIR) not in sys.path:
 
 
 try:
-    import clc.load_file as _lf_date  # DATE convention
+    import load_file as _lf_date  # DATE convention
     _LF_DATE_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - environment-dependent
     _lf_date = None
     _LF_DATE_IMPORT_ERROR = str(exc)
 
 try:
-    import clc.load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
+    import load_file2 as _lf_dateobs  # DATE-OBS convention; imports specutils
     _LF_DATEOBS_IMPORT_ERROR: str | None = None
 except ImportError as exc:  # pragma: no cover - specutils missing
     _lf_dateobs = None
@@ -302,3 +378,117 @@ def verify_fits_file(path: str | Path) -> VerificationResult:
         issues=issues,
         checksum_checked=checksum_checked,
     )
+
+
+# ---------------------------------------------------------------------------
+# FR-03: real quarantine move. Per the project's mandated architecture, the
+# FITS archive is read-only everywhere EXCEPT this one action -- and even
+# this is only ever triggered from a confirmed user action in the UI (see
+# pages/02_File_Loader.py's confirm/cancel flow), never automatically.
+# ---------------------------------------------------------------------------
+
+class QuarantineError(Exception):
+    """Raised when a file can't be moved to Flagged/ -- caught by the page,
+    never allowed to crash the app. A distinct exception type (rather than
+    letting OSError/shutil.Error propagate raw) so the page can show one
+    consistent error message regardless of the underlying cause (missing
+    file, permissions, cross-device move, etc.)."""
+
+
+# Windows quarantine-delete fix, part 2 -- see this module's header
+# comment. Short, bounded retry: three attempts, doubling backoff, only
+# for PermissionError specifically (the concrete symptom of a lingering
+# Windows file handle) -- anything else (missing file, real permissions
+# problem unrelated to a stale handle, etc.) still fails immediately
+# rather than being retried pointlessly.
+_QUARANTINE_MOVE_RETRY_ATTEMPTS = 3
+_QUARANTINE_MOVE_RETRY_DELAY_S = 0.15
+
+
+def _move_with_retry(source_path: Path, dest_path: Path) -> None:
+    """Attempt `shutil.move`, retrying past a transient Windows file lock.
+
+    A `gc.collect()` runs before every attempt (including the first) to
+    close out any FITS `HDUList` object that clc's loaders opened and
+    never explicitly closed, but that has already gone out of scope --
+    this is the actual fix for the reported symptom, not just a delay.
+    Only `PermissionError` triggers a retry; any other `OSError`/
+    `shutil.Error` propagates immediately to the caller, unchanged from
+    before this revision.
+    """
+    last_error: OSError | None = None
+    for attempt in range(1, _QUARANTINE_MOVE_RETRY_ATTEMPTS + 1):
+        gc.collect()
+        try:
+            shutil.move(str(source_path), str(dest_path))
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt < _QUARANTINE_MOVE_RETRY_ATTEMPTS:
+                time.sleep(_QUARANTINE_MOVE_RETRY_DELAY_S * attempt)
+    # All retries exhausted -- re-raise the last real error rather than a
+    # generic message, so the resulting QuarantineError still tells the
+    # user (and the audit log) what Windows actually said.
+    raise last_error
+
+
+def move_to_quarantine(filename: str) -> Path:
+    """Move one file from the archive root into `<archive_root>/Flagged/`,
+    per the project's mandated folder structure (`/data/fits/Flagged/`,
+    not a relative path like the original CLI scripts used).
+
+    `filename` may include a subdirectory prefix (e.g.
+    "2026-08/spectrum_002.fits", per Page 01's directory-tree scan) -- the
+    destination inside Flagged/ deliberately uses only the basename, not a
+    mirrored subdirectory structure, since the build spec's FR-03 section
+    describes a single flat Flagged/ directory, not a parallel tree.
+
+    Collision handling: if a file with the same basename already exists in
+    Flagged/ (two different subdirectories both containing e.g.
+    "spectrum_002.fits", or the same file quarantined twice), this does
+    NOT silently overwrite it -- that would be silent data loss on a
+    read-only-except-quarantine archive, which is exactly the failure mode
+    the read-only design is meant to prevent. Instead the destination gets
+    a numeric suffix (spectrum_002.fits -> spectrum_002__2.fits). This
+    wasn't specified anywhere in the source docs; flagging it here as a
+    real (if judgment-call) decision rather than a silent default.
+
+    The actual move is delegated to `_move_with_retry()` -- see this
+    module's header comment for why a plain single-shot `shutil.move()`
+    was not reliable on Windows.
+
+    Raises QuarantineError (never a raw OSError/shutil.Error) if the move
+    can't complete, so the caller can show one consistent message.
+    """
+    archive_root = get_archive_root()
+    source_path = archive_root / filename
+
+    if not source_path.is_file():
+        raise QuarantineError(f"{filename} was not found under the archive root ({source_path}).")
+
+    flagged_dir = archive_root / QUARANTINE_DIRNAME
+    try:
+        flagged_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise QuarantineError(f"could not create/access {flagged_dir}: {exc}") from exc
+
+    dest_path = flagged_dir / source_path.name
+    if dest_path.exists():
+        stem, suffix = source_path.stem, source_path.suffix
+        counter = 2
+        while dest_path.exists():
+            dest_path = flagged_dir / f"{stem}__{counter}{suffix}"
+            counter += 1
+
+    try:
+        _move_with_retry(source_path, dest_path)
+    except (OSError, shutil.Error) as exc:
+        raise QuarantineError(
+            f"could not move {filename} to {dest_path}: {exc}. "
+            "On Windows this usually means another handle to the file is "
+            "still open (e.g. from FITS ingestion) -- try again in a "
+            "moment, and close any external program that may have the "
+            "file open."
+        ) from exc
+
+    return dest_path

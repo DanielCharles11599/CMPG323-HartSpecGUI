@@ -11,7 +11,34 @@ An earlier revision recreated those two helpers as page-local private
 functions so the tables kept working -- untouched by this revision.
 
 --------------------------------------------------------------------------
-FR-03 MULTI-FILE REVISION (this revision)
+LOAD-PROGRESS UI CLEANUP (this revision)
+--------------------------------------------------------------------------
+Two things removed from `_render_load_progress()` after real browser
+feedback:
+
+1. The "Load details" expander -- redundant once the validation table
+   below already shows, per file, an OK/FLAGGED badge plus (for FLAGGED
+   rows) the specific issue in its own "Issue" column
+   (`_build_validation_rows()`). The expander was duplicating that same
+   information in a second place with a different presentation, adding UI
+   clutter without adding new information for the person using the page.
+2. The aggregate `st.error("Could not load N of M file(s) ...")` banner --
+   replaced with a server-side `logging.warning()` call instead of a
+   browser-facing red block. The per-file failure reason is still fully
+   visible to the end user (in the validation table's Issue column); the
+   full per-attempt trace (which convention was tried, in what order, and
+   why each attempt failed) that used to live inside the removed "Load
+   details" expander is now written to the server's own log output
+   instead, which is the more appropriate audience for that level of
+   diagnostic detail. No `logging.basicConfig()` call is added here on
+   purpose -- Python's logging module prints WARNING-and-above to stderr
+   via its own "handler of last resort" with zero configuration, and a
+   page module forcing global logging config would risk clobbering
+   whatever the actual deployment's logging setup does elsewhere.
+--------------------------------------------------------------------------
+
+--------------------------------------------------------------------------
+FR-03 MULTI-FILE REVISION (earlier revision, unchanged by the above)
 --------------------------------------------------------------------------
 Per the FR-03 handoff's CORE DESIGN CONSTRAINT: page 01 lets the user
 select MULTIPLE files, and page 02 must load + validate ALL of them, not
@@ -28,17 +55,36 @@ this was built (not guessed):
    `_render_validation_table()` then runs verification per file afterward.
 2. Multi-file progress UI -> **"Loading file X of N" text + a single
    aggregate bar** (not per-file spinners, not a bare aggregate-only bar).
-3. Header-fields table -> **confirmed it will be one row per file** once
-   built -- but that build is explicitly deferred to a later step in the
-   handoff's own sequencing (step 6, after quarantine is wired in step 5).
-   `_render_header_fields_table()` below is UNCHANGED / still static
-   sample data in this revision -- don't mistake that for an oversight.
+3. Header-fields table -> **confirmed one row per file**, now built (FR-03
+   handoff step 6) -- see `_read_display_header_fields`'s docstring for
+   which of the 9 columns are confirmed-real vs. best-effort/flagged
+   (Tsys, Focus units) vs. genuinely unavailable (RA/Dec).
 
 FR-03 corruption detection now runs for real (`fits_ingest.verify_fits_file`,
 built in the prior step and confirmed against real good.fits/faulty.fits).
-Quarantine is still NOT wired to a real `shutil.move()` -- the Quarantine
-button still only touches session state. That's the next step, not this
-one.
+
+FR-03 handoff step 4: quarantine requires explicit confirmation before it
+takes effect -- clicking a row's Quarantine button stages ONE pending file
+(`st.session_state["file_loader_pending_quarantine"]`) rather than
+quarantining immediately. Confirm/Cancel render inline in that row's own
+action column (not a page-top banner -- keeps the confirmation visually
+attached to the specific row, especially with several flagged rows at
+once). This project's pinned `streamlit==1.32.0` predates `st.dialog`
+(added 1.37+), so this is a plain inline element, not a real modal --
+flagged rather than silently worked around.
+
+FR-03 handoff step 5 (this revision): confirming now calls
+`fits_ingest.move_to_quarantine()`, a REAL `shutil.move()` into
+`<archive_root>/Flagged/` -- no longer session-state-only. A failed move
+(missing file, permissions, Flagged/ uncreatable) surfaces as
+`st.error()` via `st.session_state["file_loader_quarantine_error"]` and
+leaves the row FLAGGED rather than silently marking it QUARANTINED when
+nothing actually moved. This is a genuinely destructive, irreversible-
+from-the-UI action now -- test coverage for it uses a dedicated
+function-scoped fixture (`isolated_fits_archive`, see conftest.py) rather
+than the shared session-scoped `fits_archive` fixture, specifically so a
+test confirming quarantine doesn't delete fixture files out from under
+every other test in the same pytest run.
 --------------------------------------------------------------------------
 
 Two design choices carried over from the original single-file revision,
@@ -59,12 +105,17 @@ still true here:
 
 from __future__ import annotations
 
+import logging
 import time
 
+import pandas as pd
 import streamlit as st
+from astropy.io import fits
 
 from utils import fits_ingest, session_store, sidebar, styles
 from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
+
+logger = logging.getLogger(__name__)
 
 STAGE_NUMBER = 2
 STAGE_KEY = "file_loader"
@@ -81,11 +132,12 @@ HEADER_FIELDS_COLUMNS = [
     "Vlsr", "LCP/RCP", "HPBW", "Tsys", "Date", "Object", "RA/Dec", "Focus", "Humidity",
 ]
 
-HEADER_FIELDS_ROWS = [
-    ["-4.2 km/s", "12.3/11.8K", "0.23\u00b0", "48.1K", "08-12", "W3(OH)", "02:27+61\u00b0", "3.1mm", "38%"],
-    ["-3.8 km/s", "11.9/11.5K", "0.23\u00b0", "47.6K", "08-12", "W49N", "19:10+09\u00b0", "3.0mm", "37%"],
-    ["-5.1 km/s", "13.0/12.4K", "0.23\u00b0", "48.9K", "08-11", "G34.3", "18:53+01\u00b0", "3.2mm", "41%"],
-]
+# Used to stop a raw header field from silently overwriting a curated
+# column of the same literal (case-sensitive) name when the two dicts are
+# merged into one row below -- see the merge site's own comment for the
+# real bug this caused ("HPBW" specifically, since it's the one curated
+# name that happens to be case-identical to its actual FITS keyword).
+_CURATED_COLUMN_NAMES = set(HEADER_FIELDS_COLUMNS)
 
 
 # --------------------------------------------------------------------------
@@ -250,33 +302,6 @@ def _run_real_verify(filename: str) -> fits_ingest.VerificationResult:
     return result
 
 
-def _render_error_banner(message: str) -> None:
-    """Themed replacement for st.error().
-
-    Streamlit's native st.error() colors come from its own theme
-    machinery -- ultimately the static .streamlit/config.toml base theme
-    (see the Style Guide's §5 note on why that can't hot-swap with this
-    app's in-session light/dark toggle), not from styles.get_theme(). That
-    made it look fine in whichever mode config.toml happens to match and
-    hard to read in the other -- the same root cause already fixed for
-    the expander headers and widget labels in main() below.
-
-    Colors here are the Style Guide's own locked "Error / flagged /
-    quarantined" status pair (§1) -- the same pair styles.render_badge()
-    already uses for the FLAGGED/QUARANTINED badges elsewhere on this
-    page, so this banner and those badges always agree with each other.
-    The left-border accent reuses the fit-overlay red/light-red pair (§1)
-    rather than inventing a new color.
-    """
-    is_dark = st.session_state.get("theme") == "dark"
-    bg, text, border = ("#7F1D1D", "#FCA5A5", "#F87171") if is_dark else ("#FEE2E2", "#991B1B", "#DC2626")
-    st.markdown(
-        f'<div style="background-color:{bg}; color:{text}; border-left:3px solid {border}; '
-        f'border-radius:6px; padding:10px 14px; font-size:12.5px; line-height:1.5;">{message}</div>',
-        unsafe_allow_html=True,
-    )
-
-
 def _render_load_progress() -> None:
     """Load every target file, showing 'Loading file X of N' + one
     aggregate progress bar -- per the confirmed answer to the FR-03
@@ -286,119 +311,128 @@ def _render_load_progress() -> None:
     """
     theme = styles.get_theme()
     filenames = _get_target_filenames()
-    n = len(filenames)
+    quarantined = st.session_state.get("file_loader_quarantined", set())
+    # Quarantined files no longer exist at their original path (the whole
+    # point of moving them to Flagged/) -- reloading them here would just
+    # produce a confusing "file not found" failure that looks like a new
+    # bug rather than the intended result of a deliberate user action.
+    # They're excluded from the active load loop and its counts entirely;
+    # the validation table below still shows them, with a QUARANTINED
+    # badge and no reload attempt (see _build_validation_rows).
+    active_filenames = [f for f in filenames if f not in quarantined]
+    n = len(active_filenames)
 
-    styles.render_panel_open("")
+    with st.container(border=False):
+        # A single placeholder for the whole label+bar+caption block -- see
+        # this function's earlier revision note; this used to be three
+        # separate st.empty() placeholders. Writing the full block as one
+        # HTML string per _draw() call keeps it as one element with no
+        # inter-element gap. The live "Loading file X of N" animation is
+        # unchanged -- Streamlit still streams st.empty() updates to the
+        # browser mid-script.
+        progress_slot = st.empty()
 
-    label_slot = st.empty()
-    bar_slot = st.empty()
-    caption_slot = st.empty()
+        def _draw(label: str, frac: float, caption: str) -> None:
+            frac = max(0.0, min(1.0, frac))
+            fill_width = round(1140 * frac)
+            progress_slot.markdown(
+                f"""
+                <div style="font-size:14px; color:{theme['text-body']};">{label}</div>
+                <div style="width:100%; height:10px; border-radius:5px;
+                            background-color:{theme['border-subtle']}; margin:14px 0 8px;">
+                  <div style="width:{fill_width}px; height:100%; border-radius:5px;
+                              background-color:{theme['accent']};"></div>
+                </div>
+                <div style="font-size:11px; color:{theme['text-muted']};">{caption}</div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    def _draw(label: str, frac: float, caption: str) -> None:
-        frac = max(0.0, min(1.0, frac))
-        fill_width = round(1140 * frac)
-        label_slot.markdown(
-            f'<div style="font-size:14px; color:{theme["text-body"]};">{label}</div>',
-            unsafe_allow_html=True,
-        )
-        bar_slot.markdown(
-            f"""
-            <div style="width:100%; height:10px; border-radius:5px;
-                        background-color:{theme['border-subtle']}; margin:14px 0 8px;">
-              <div style="width:{fill_width}px; height:100%; border-radius:5px;
-                          background-color:{theme['accent']};"></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        caption_slot.markdown(
-            f'<div style="font-size:11px; color:{theme["text-muted"]};">{caption}</div>',
-            unsafe_allow_html=True,
-        )
+        if n == 0:
+            _draw("No active files to load", 1.0, "All selected files have been quarantined.")
+            st.session_state["file_loader_load_done"] = False
+            st.session_state["loaded_spectra"] = []
+            st.session_state.pop("loaded_spectrum", None)
+            return
 
-    results: dict[str, fits_ingest.IngestResult] = {}
-    start_all = time.perf_counter()
-    for idx, filename in enumerate(filenames, start=1):
-        _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
-        results[filename] = _run_real_load(filename)
-        
-######addition for page 3########
-    loaded_spectra = [
-    result.spectrum
-    for result in results.values()
-    if result.ok and result.spectrum is not None
-    ]
+        results: dict[str, fits_ingest.IngestResult] = {}
+        start_all = time.perf_counter()
+        for idx, filename in enumerate(active_filenames, start=1):
+            _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
+            results[filename] = _run_real_load(filename)
 
-    st.session_state["loaded_spectra"] = loaded_spectra
+        loaded_spectra = [
+            result.spectrum
+            for result in results.values()
+            if result.ok and result.spectrum is not None
+        ]
+        st.session_state["loaded_spectra"] = loaded_spectra
+        if loaded_spectra:
+            st.session_state["loaded_spectrum"] = loaded_spectra[0]
+        else:
+            st.session_state.pop("loaded_spectrum", None)
 
-    # Backward compatibility for anything still expecting one spectrum
-    if loaded_spectra:
-        st.session_state["loaded_spectrum"] = loaded_spectra[0]
-    else:
-        st.session_state.pop("loaded_spectrum", None)
-######addition for page 3########
+        elapsed_total = time.perf_counter() - start_all
 
-    elapsed_total = time.perf_counter() - start_all
-
-    ok_count = sum(1 for r in results.values() if r.ok)
-    plural = "s" if n != 1 else ""
-    _draw(
-        f"Loaded {ok_count} of {n} file{plural}",
-        1.0,
-        f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
-    )
-
-    with st.expander("Load details", expanded=False):
-        for filename, result in results.items():
-            if result.ok:
-                convention_label = {"date": "DATE", "date-obs": "DATE-OBS"}.get(
-                    result.convention, "unknown"
-                )
-                badge = styles.render_badge(convention_label, "info")
-                spectrum = result.spectrum or {}
-                st.markdown(
-                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
-                    f'{filename} {badge} \u2014 Object: {spectrum.get("object", "?")} '
-                    f'\u00b7 Date: {spectrum.get("date", "?")}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div style="color:{theme["text-body"]}; font-size:12px;">'
-                    f'<strong>{filename}</strong> \u2014 failed to load:</div>',
-                    unsafe_allow_html=True,
-                )
-                for attempt in result.attempts:
-                    st.markdown(
-                        f'<div style="color:{theme["text-muted"]}; font-size:11px; '
-                        f'margin-left:4px;">{attempt}</div>',
-                        unsafe_allow_html=True,
-                    )
-
-    if ok_count < n:
-        failed = [f for f, r in results.items() if not r.ok]
-        _render_error_banner(
-            f"Could not load {n - ok_count} of {n} file(s) -- neither the DATE nor "
-            f"DATE-OBS convention loader could read: {', '.join(failed)}. "
-            "See the validation table below."
+        ok_count = sum(1 for r in results.values() if r.ok)
+        plural = "s" if n != 1 else ""
+        _draw(
+            f"Loaded {ok_count} of {n} file{plural}",
+            1.0,
+            f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
         )
 
-    styles.render_panel_close()
-    st.session_state["file_loader_load_done"] = ok_count > 0
+        # Aggregate failure reporting is server-side only -- the end user
+        # still sees exactly which files failed and why in the validation
+        # table's Issue column, and the full per-attempt trace is in the
+        # FR-20 audit log via _run_real_load's own log_event call. Phrased
+        # as "flagged" rather than "could not load" -- these files were
+        # correctly identified as unreadable by FR-03's own logic doing
+        # its job, not an application malfunction, and "flagged" matches
+        # the badge terminology already shown in the validation table
+        # right below this panel.
+        if ok_count < n:
+            failed_filenames = [f for f, r in results.items() if not r.ok]
+            logger.warning("%d of %d file(s) flagged as unreadable: %s", n - ok_count, n, ", ".join(failed_filenames))
+
+        st.session_state["file_loader_load_done"] = ok_count > 0
+
+
+def _request_quarantine(filename: str) -> None:
+    """Clicking a row's Quarantine button no longer quarantines
+    immediately -- it stages ONE file for confirmation (FR-03 handoff
+    step 4). Re-targets the pending confirmation if a different row's
+    button is clicked while one is already pending, rather than stacking
+    multiple pending requests -- matches the handoff's explicit "scoped to
+    quarantining one flagged file at a time even if several are flagged".
+    """
+    st.session_state["file_loader_pending_quarantine"] = filename
 
 
 def _quarantine_file(filename: str) -> None:
-    """Mark a file quarantined in session state and log the action.
+    """Move the file to Flagged/ for real (FR-03 handoff step 5), via
+    `fits_ingest.move_to_quarantine()`, then record it in session state
+    and the audit log. Only ever called after explicit confirmation (see
+    `_render_validation_table`'s inline Continue/Cancel).
 
-    TODO: confirm against design -- should call a real quarantine function
-    (moving the file out of the read-only /data/fits/ archive into
-    Flagged/) once that's built into utils/fits_ingest.py and confirmed;
-    right now this only updates UI-facing session state. That's the next
-    step after this one, per the FR-03 handoff's step ordering.
+    `move_to_quarantine` raises `QuarantineError` (never a raw
+    OSError/shutil.Error) for anything that goes wrong -- missing file,
+    permissions, a Flagged/ dir that can't be created, etc. Caught here
+    so a failed quarantine attempt shows an error and leaves the file
+    FLAGGED (not silently marked QUARANTINED when it never actually
+    moved) rather than crashing the page.
     """
+    try:
+        dest_path = fits_ingest.move_to_quarantine(filename)
+    except fits_ingest.QuarantineError as exc:
+        st.session_state["file_loader_quarantine_error"] = str(exc)
+        session_store.log_event(f"{filename} quarantine FAILED -- {exc}")
+        return
+
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
-    session_store.log_event(f"{filename} quarantined")
+    st.session_state.pop("file_loader_quarantine_error", None)
+    session_store.log_event(f"{filename} quarantined -- moved to {dest_path}")
 
 
 def _build_validation_rows(filenames: list[str]) -> list[dict]:
@@ -406,20 +440,34 @@ def _build_validation_rows(filenames: list[str]) -> list[dict]:
     VALIDATION_ROWS sample data (FR-03 handoff step 3).
 
     Combines two independent checks per file, in priority order:
-    1. Did FR-02 ingestion succeed at all? (wrong/unrecognized convention,
+    1. Is the file already quarantined? If so, show it as such WITHOUT
+       calling `_run_real_load`/`_run_real_verify` -- per
+       `_render_load_progress`'s own comment, a quarantined file is
+       deliberately excluded from the active load loop (it no longer
+       exists at its original path once step 5 wires a real
+       `shutil.move()`), so attempting to load/verify it here would be
+       either wasted work (pre-move) or a spurious "file not found"
+       failure that looks like a new bug (post-move). This branch is
+       what actually keeps that promise -- it wasn't honored before.
+    2. Did FR-02 ingestion succeed at all? (wrong/unrecognized convention,
        or missing science keys the CLC loaders require)
-    2. If ingestion succeeded, does the file pass FR-03 structural
+    3. If ingestion succeeded, does the file pass FR-03 structural
        verification? (fits.verify / checksum / truncation -- see
        fits_ingest.verify_fits_file's docstring for exactly what this
        does and doesn't catch)
 
-    Assumes `_run_real_load` has already been called for every filename
-    (by `_render_load_progress`, which runs first) -- reads from that
-    cache rather than re-loading, per the confirmed "load all, then
-    validate all" ordering.
+    Assumes `_run_real_load` has already been called for every
+    NOT-YET-quarantined filename (by `_render_load_progress`, which runs
+    first) -- reads from that cache rather than re-loading, per the
+    confirmed "load all, then validate all" ordering.
     """
+    quarantined = st.session_state.get("file_loader_quarantined", set())
     rows = []
     for filename in filenames:
+        if filename in quarantined:
+            rows.append({"file": filename, "issue": "Quarantined by user action", "status": "error"})
+            continue
+
         ingest_result = _run_real_load(filename)  # cache hit by this point
 
         if not ingest_result.ok:
@@ -439,72 +487,554 @@ def _render_validation_table() -> None:
     filenames = _get_target_filenames()
     rows = _build_validation_rows(filenames)
     quarantined = st.session_state.get("file_loader_quarantined", set())
+    pending = st.session_state.get("file_loader_pending_quarantine")
 
-    styles.render_panel_open("")
-    _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
+    quarantine_error = st.session_state.pop("file_loader_quarantine_error", None)
+    if quarantine_error:
+        # Shown once, immediately after a failed real move (e.g. the file
+        # vanished from the archive between page load and confirming, or
+        # Flagged/ couldn't be created/written to) -- popped rather than
+        # left in session_state, so it doesn't keep reappearing on every
+        # unrelated rerun after the one that actually failed.
+        st.error(f"Could not quarantine: {quarantine_error}")
 
-    for idx, row in enumerate(rows):
-        striped = idx % 2 == 1
-        theme = styles.get_theme()
-        bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
+    with st.container(border=False):
+        _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
-        if row["status"] == "error":
-            # Flagged rows get a real inline Quarantine button, so they're
-            # laid out with st.columns (matching the header's proportions)
-            # instead of the static _render_table_row helper. Now scoped
-            # per-row across however many files are actually flagged, not
-            # hardcoded to a single known-bad sample row.
-            is_quarantined = row["file"] in quarantined
-            status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
+        for idx, row in enumerate(rows):
+            striped = idx % 2 == 1
+            theme = styles.get_theme()
+            bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
 
-            st.markdown(
-                f'<div style="background-color:{bg}; border-bottom:1px solid '
-                f'{theme["border-subtle"]}; padding:2px 0;">',
-                unsafe_allow_html=True,
-            )
-            col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
-            with col_file:
+            if row["status"] == "error":
+                # Flagged rows get a real inline Quarantine button, so they're
+                # laid out with st.columns (matching the header's proportions)
+                # instead of the static _render_table_row helper. Now scoped
+                # per-row across however many files are actually flagged, not
+                # hardcoded to a single known-bad sample row.
+                is_quarantined = row["file"] in quarantined
+                is_pending = row["file"] == pending
+                status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
+
                 st.markdown(
-                    f'<div style="padding-left:10px; font-size:10.5px; color:{theme["text-body"]}; '
-                    f'line-height:28px;">{row["file"]}</div>',
+                    f'<div style="background-color:{bg}; border-bottom:1px solid '
+                    f'{theme["border-subtle"]}; padding:2px 0;">',
                     unsafe_allow_html=True,
                 )
-            with col_issue:
-                st.markdown(
-                    f'<div style="font-size:10.5px; color:{theme["text-body"]}; '
-                    f'line-height:28px;">{row["issue"]}</div>',
-                    unsafe_allow_html=True,
+                col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
+                with col_file:
+                    st.markdown(
+                        f'<div style="padding-left:10px; font-size:10.5px; color:{theme["text-body"]}; '
+                        f'line-height:28px;">{row["file"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_issue:
+                    st.markdown(
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; '
+                        f'line-height:28px;">{row["issue"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_status:
+                    st.markdown(
+                        f'<div style="line-height:28px;">{styles.render_badge(status_label, "error")}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_action:
+                    if not is_quarantined:
+                        if is_pending:
+                            # FR-03 handoff step 4: confirmation before
+                            # quarantine, inline where the Quarantine button
+                            # was rather than a page-top banner -- keeps the
+                            # confirmation visually attached to the specific
+                            # row it applies to, especially once several rows
+                            # can be flagged at once. "Continue" / "Cancel"
+                            # per explicit naming request (not "Confirm").
+                            if st.button(
+                                "Continue", key=f"confirm_quarantine_{row['file']}",
+                                type="primary", use_container_width=True,
+                            ):
+                                _quarantine_file(row["file"])
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                            if st.button(
+                                "Cancel", key=f"cancel_quarantine_{row['file']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                        else:
+                            if st.button(
+                                "Quarantine", key=f"quarantine_{row['file']}", use_container_width=True
+                            ):
+                                _request_quarantine(row["file"])
+                                st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                if is_pending:
+                    # Confirmation copy updated for step 5: this now describes
+                    # a real, irreversible-from-the-UI action (a real
+                    # shutil.move(), not just session state) -- the earlier
+                    # "this doesn't do anything yet" dev note is gone now that
+                    # it's no longer true; don't reintroduce it without also
+                    # reverting the move_to_quarantine() call above.
+                    st.markdown(
+                        f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
+                        f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
+                        f'{theme["border-subtle"]};">Quarantine {row["file"]}? This moves the file '
+                        f"out of the active archive into <code>Flagged/</code> immediately -- "
+                        f"undoing it means manually moving the file back on disk.</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                badge = styles.render_badge("OK", "ok")
+                _render_table_row(
+                    [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
+                    striped=striped,
                 )
-            with col_status:
-                st.markdown(
-                    f'<div style="line-height:28px;">{styles.render_badge(status_label, "error")}</div>',
-                    unsafe_allow_html=True,
-                )
-            with col_action:
-                if not is_quarantined:
-                    if st.button("Quarantine", key=f"quarantine_{row['file']}", use_container_width=True):
-                        _quarantine_file(row["file"])
-                        st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _read_display_header_fields(path) -> dict[str, str]:
+    """Best-effort, direct-from-FITS-header values for the header-fields
+    table's 9 priority columns (build spec §7, page 02).
+
+    Deliberately reads the file's own HDU headers via astropy directly,
+    INDEPENDENT of fits_ingest.ingest_fits_file()'s clc/load_file.py
+    wrapper. Why bypass the loader: this project doesn't have
+    clc/load_file.py's real source -- utils/fits_ingest.py's own
+    docstring documents that loader's *behavior* (which KeyError fires
+    when), not its *output* dict's actual field names. Building this
+    display table on top of the loader's dict would mean building on a
+    guess layered on a guess. Reading headers directly and verifying the
+    mapping below against real good.fits/faulty.fits (done directly, not
+    assumed) is the more defensible source for a display-only table --
+    matches the same independent-header-read pattern
+    utils/source_browser_logic.py already uses for its own
+    OBJECT/RESTFREQ/DATE-OBS reads.
+
+    Field mapping, CONFIRMED against real good.fits/faulty.fits headers
+    (both files inspected directly, not just one):
+      Vlsr      <- HDU0 SPVLSR
+      LCP/RCP   <- HDU3 ("Chart") TSYS1 / TSYS2 -- varies per scan/weather
+                   in both real files (e.g. 62.2/84.4K vs 157.0/107.1K),
+                   matching the spec sample's paired, varying "X.X/Y.YK"
+                   format
+      HPBW      <- HDU1 (feed HDU, named e.g. "04.5S") HPBW
+      Date      <- HDU0 DATE-OBS, falling back to DATE
+      Object    <- HDU0 OBJECT
+      Focus     <- HDU0 FOCUS
+      Humidity  <- HDU0 HUMIDITY
+
+    Two fields are BEST-EFFORT, NOT fully confirmed -- flagged here and
+    to the team rather than silently picked:
+      Tsys    <- HDU1 NOMTSYS ("nominal Tsys"). Real good.fits/faulty.fits
+                 both have NOMTSYS=45.0 (IDENTICAL across both files) --
+                 plausible as a fixed per-receiver-config nominal value,
+                 but the build spec's own sample rows show Tsys VARYING
+                 per row (47.6K/48.1K/48.9K), which a constant wouldn't
+                 reproduce. TODO: confirm against design -- is "Tsys"
+                 really NOMTSYS, or some other per-scan-varying value?
+      Focus units <- displayed with "mm" per the spec sample's format,
+                 but no TUNIT-style keyword confirms FOCUS is actually in
+                 mm in the real header (it's a bare HDU0 keyword, not a
+                 table column with an associated unit field). Real
+                 observed values (~4.6) are plausible in mm but unverified.
+      RA/Dec  <- NOT AVAILABLE. Neither loader nor any header here exposes
+                 source RA/Dec, only telescope LONGITUD/LATITUDE (pointing,
+                 not source coordinates) -- fits_ingest.py's own docstring
+                 is explicit about this gap. Shown as "pending" rather
+                 than silently substituting telescope pointing.
+
+    Never raises -- a file whose header can't be read at all, or is
+    missing a given keyword, gets "pending" for the fields it's missing
+    rather than crashing the page.
+    """
+    fields = {col: "pending" for col in HEADER_FIELDS_COLUMNS}
+    try:
+        with fits.open(path) as hdul:
+            h0 = hdul[0].header
+            h1 = hdul[1].header if len(hdul) > 1 else {}
+            h3 = hdul[3].header if len(hdul) > 3 else {}
+
+            if "SPVLSR" in h0:
+                fields["Vlsr"] = f"{h0['SPVLSR']:.1f} km/s"
+            if "TSYS1" in h3 and "TSYS2" in h3:
+                fields["LCP/RCP"] = f"{h3['TSYS1']:.1f}/{h3['TSYS2']:.1f}K"
+            if "HPBW" in h1:
+                fields["HPBW"] = f"{h1['HPBW']:.3f}\u00b0"
+            if "NOMTSYS" in h1:  # best-effort -- see docstring
+                fields["Tsys"] = f"{h1['NOMTSYS']:.1f}K"
+            date_val = h0.get("DATE-OBS") or h0.get("DATE")
+            if date_val:
+                date_str = str(date_val)
+                fields["Date"] = date_str[5:10] if len(date_str) >= 10 else date_str
+            if "OBJECT" in h0:
+                fields["Object"] = str(h0["OBJECT"])
+            if "FOCUS" in h0:  # units best-effort -- see docstring
+                fields["Focus"] = f"{h0['FOCUS']:.1f}mm"
+            if "HUMIDITY" in h0:
+                fields["Humidity"] = f"{h0['HUMIDITY']:.0f}%"
+    except Exception:
+        pass  # every field stays "pending" -- never crash the page over a display table
+    return fields
+
+
+# --------------------------------------------------------------------------
+# Auto/Manual column-mapping (FR-02, confirmed 2026-08-30). "Auto" is the
+# best-effort fixed mapping above (_read_display_header_fields). "Manual"
+# lets the user override which raw header keyword feeds each column, for
+# receiver configs / non-standard headers Auto's fixed mapping doesn't
+# handle -- confirmed scope, from the actual answer this was built against:
+#   - Manual mapping only affects THIS display table, not clc's real
+#     ingestion (clc/load_file.py and load_file2.py are off-limits to
+#     modify, and there's nowhere else for an override to plug into).
+#   - Limited to the same 9 confirmed priority columns, not the full 30+
+#     field set -- that list still isn't documented anywhere, so manual
+#     mapping can't be built for fields whose names aren't known yet.
+#   - "LCP/RCP" gets TWO source-field pickers, not one, since it's an
+#     explicitly combined column (build spec §7: "LCP and RCP are
+#     combined into one ... column -- reproduce this ... exactly").
+#   - RA/Dec: Auto mode still never auto-substitutes telescope pointing
+#     for source coordinates (that rule is unchanged). Manual mode lets a
+#     user deliberately point RA/Dec at LONGITUD/LATITUDE (or anything
+#     else) if they choose to -- a conscious human choice via the picker,
+#     not a silent substitution by the code, which is a different thing.
+# --------------------------------------------------------------------------
+
+# Pure FITS-standard structural bookkeeping (binary layout, not
+# observation metadata) -- excluded from the Manual-mode header preview
+# and field picker so that UI is actually "browse the meaningful header
+# fields and pick one" rather than mostly TTYPE/TFORM/NAXIS noise.
+_STRUCTURAL_HEADER_KEYS = {
+    "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "XTENSION", "PCOUNT", "GCOUNT",
+    "TFIELDS", "EXTNAME", "COMMENT", "HISTORY", "",
+}
+_STRUCTURAL_KEY_PREFIXES = ("NAXIS", "TTYPE", "TFORM", "TDISP", "TUNIT")
+
+
+def _is_structural_key(key: str) -> bool:
+    if key in _STRUCTURAL_HEADER_KEYS:
+        return True
+    return any(key.startswith(prefix) and key[len(prefix):].isdigit() for prefix in _STRUCTURAL_KEY_PREFIXES)
+
+
+def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+    """Every non-plumbing header keyword across every HDU in a file, as
+    (qualified_key, hdu_label, formatted_value) tuples.
+
+    This IS the "header preview" Manual mode shows (per the confirmed
+    FR-02 answer), and also the pool of choices its per-column
+    selectboxes are populated from -- so what a user sees and what they
+    can pick from are the same list, not two things that could drift
+    apart. qualified_key (e.g. "HDU3:TSYS1") is the stable identifier
+    stored in session_state and resolved back to a value at display time.
+
+    Never raises -- an unreadable file returns an empty list rather than
+    crashing the Manual-mapping expander.
+    """
+    items: list[tuple[str, str, str]] = []
+    try:
+        with fits.open(path) as hdul:
+            for idx, hdu in enumerate(hdul):
+                hdu_label = hdu.name or f"HDU{idx}"
+                seen: set[str] = set()
+                for key in hdu.header.keys():
+                    if not key or key in seen or _is_structural_key(key):
+                        continue
+                    seen.add(key)
+                    value = hdu.header.get(key)
+                    items.append((f"HDU{idx}:{key}", hdu_label, str(value)))
+    except Exception:
+        pass
+    return items
+
+
+def _read_all_raw_fields(path) -> dict[str, str]:
+    """Every non-plumbing header keyword found in this file, as a flat
+    {display_name: value} dict -- included as extra columns in the
+    header-fields table, in BOTH Auto and Manual mode.
+
+    This is what the build spec's own "Search 30+ fields..." placeholder
+    text actually refers to: the 9 curated columns
+    (HEADER_FIELDS_COLUMNS) were a hand-picked PREVIEW subset, not the
+    full dataset -- real files inspected during this session have ~70
+    meaningful fields once FITS-standard plumbing (SIMPLE/BITPIX/TTYPEn/
+    etc.) is excluded, comfortably past "30+". Originally this only
+    surfaced inside Manual mode's header-preview expander; moved into the
+    main table directly (both modes) since hiding it there made it hard
+    to find and meant Auto mode couldn't be searched against it at all.
+
+    Disambiguates keys that repeat across multiple HDUs (e.g. TCAL1
+    appears in both the Spectra and Chart HDUs, sometimes with different
+    values) by appending the HDU label in brackets ONLY for those
+    specific repeated keys -- an unambiguous key keeps its plain name,
+    so most columns aren't cluttered with a qualifier they don't need.
+    """
+    items = _flatten_header_preview(path)  # (qualified_key, hdu_label, value)
+    bare_key_counts: dict[str, int] = {}
+    for qualified_key, _, _ in items:
+        bare_key = qualified_key.split(":", 1)[1]
+        bare_key_counts[bare_key] = bare_key_counts.get(bare_key, 0) + 1
+
+    fields: dict[str, str] = {}
+    for qualified_key, hdu_label, value in items:
+        bare_key = qualified_key.split(":", 1)[1]
+        display_name = bare_key if bare_key_counts[bare_key] == 1 else f"{bare_key} [{hdu_label}]"
+        fields[display_name] = value
+    return fields
+
+
+def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
+    """Look up one "HDU{n}:{key}" identifier's current value in a file.
+
+    Returns None (never raises) if the key is unset, the HDU index is out
+    of range for this particular file, or the file can't be read at all
+    -- callers treat None as "pending", the same convention used
+    everywhere else in this module for a value that couldn't be sourced.
+    """
+    if not qualified_key or ":" not in qualified_key:
+        return None
+    hdu_part, key = qualified_key.split(":", 1)
+    if not hdu_part.startswith("HDU"):
+        return None
+    try:
+        hdu_index = int(hdu_part[3:])
+    except ValueError:
+        return None
+    try:
+        with fits.open(path) as hdul:
+            if hdu_index >= len(hdul):
+                return None
+            value = hdul[hdu_index].header.get(key)
+            return None if value is None else str(value)
+    except Exception:
+        return None
+
+
+def _default_manual_mapping() -> dict:
+    """Seed the Manual mapping UI with the same fixed choices Auto mode
+    resolves, so a user only has to change what's actually wrong for
+    their receiver config rather than start from a blank slate. Mirrors
+    `_read_display_header_fields`'s own hardcoded choices -- if that
+    function's mapping ever changes, this needs to change with it.
+
+    No longer takes a `path` argument (this revision) -- see this
+    module's "GLOBAL MANUAL MAPPING" comment above `_render_manual_
+    mapping_card`. The defaults below were never actually file-specific
+    to begin with (they're fixed HDU/keyword names, not read from any
+    particular file), so the parameter was unused dead weight.
+
+    RA/Dec is deliberately None here, not guessed -- Auto mode never
+    picks a value for it either (see that function's docstring), and
+    seeding a default here would be exactly the silent substitution the
+    project has repeatedly ruled out elsewhere.
+    """
+    return {
+        "Vlsr": "HDU0:SPVLSR",
+        "LCP/RCP": ("HDU3:TSYS1", "HDU3:TSYS2"),
+        "HPBW": "HDU1:HPBW",
+        "Tsys": "HDU1:NOMTSYS",
+        "Date": "HDU0:DATE-OBS",
+        "Object": "HDU0:OBJECT",
+        "RA/Dec": None,
+        "Focus": "HDU0:FOCUS",
+        "Humidity": "HDU0:HUMIDITY",
+    }
+
+
+def _read_display_header_fields_manual(path, mapping: dict) -> dict[str, str]:
+    """Manual-mode counterpart to `_read_display_header_fields`.
+
+    Uses whichever qualified header key the user explicitly assigned to
+    each column, instead of the fixed best-effort mapping. Deliberately
+    shows the RAW value with no unit suffix or domain-specific formatting
+    (unlike Auto mode's "48.1K"/"0.23\u00b0" style) -- Auto's formatting
+    assumes a KNOWN field (it always appends "K" because it knows it
+    picked TSYS1 specifically), which doesn't hold for an arbitrary
+    user-chosen keyword. This trades some display polish for not
+    mislabeling units on a value the code doesn't actually know the
+    meaning of.
+    """
+    fields: dict[str, str] = {}
+    for column in HEADER_FIELDS_COLUMNS:
+        if column == "LCP/RCP":
+            lcp_key, rcp_key = mapping.get(column, (None, None))
+            lcp_val = _resolve_qualified_key(path, lcp_key)
+            rcp_val = _resolve_qualified_key(path, rcp_key)
+            fields[column] = f"{lcp_val}/{rcp_val}" if lcp_val is not None and rcp_val is not None else "pending"
         else:
-            badge = styles.render_badge("OK", "ok")
-            _render_table_row(
-                [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
-                striped=striped,
-            )
+            value = _resolve_qualified_key(path, mapping.get(column))
+            fields[column] = value if value is not None else "pending"
+    return fields
 
-    styles.render_panel_close()
+
+# --------------------------------------------------------------------------
+# GLOBAL MANUAL MAPPING (this revision, replaces per-file mapping)
+# --------------------------------------------------------------------------
+# Real reported problem with a 230+ file batch: Manual mode used to render
+# one full expander with its own ~10 selectboxes PER FILE
+# (`_render_manual_mapping_expander`, one call per filename in a loop) --
+# roughly 2,300 widgets for a 230-file load, re-rendered on every single
+# rerun. That's both the direct cause of the reported lag, and tedious in
+# its own right: assigning "Vlsr comes from SPVLSR" 230 times when every
+# file in a load comes from the same instrument/receiver configuration in
+# practice was never actually useful, just repetitive.
+#
+# Fix: ONE mapping card, ONE set of ~10 selectboxes total, applied to
+# EVERY loaded file at once -- not a full picker set per file. The picker
+# OPTIONS (which real header keywords are available to choose from) are
+# read from just the first file in the current selection; this is fine in
+# practice since files from one load share the same header schema, and
+# `_resolve_qualified_key()` already resolves per-file and degrades
+# gracefully to "pending" if a chosen key happens to be absent from some
+# other specific file's header -- it doesn't assume every file has it.
+#
+# Persisted as one flat dict at
+# st.session_state["file_loader_manual_mapping_global"], replacing the
+# old per-file dict-of-dicts at "file_loader_manual_mapping".
+# --------------------------------------------------------------------------
+
+def _render_manual_mapping_card(filenames: list[str]) -> dict:
+    """Single, file-agnostic 'Manual column mapping' card, with an
+    explicit Apply Mapping button (this revision).
+
+    Wrapped in `st.form()` rather than bare selectboxes -- outside a
+    form, EVERY individual selectbox change triggers its own full
+    Streamlit rerun immediately, which re-runs the header-fields table's
+    full per-file disk-read loop on every single field pick, not just
+    once you're done choosing. Inside a form, none of the selectboxes
+    trigger a rerun on their own; only clicking "Apply Mapping" (the
+    form's submit button) does, and it commits every field's choice
+    together in that one rerun. This also means a half-finished set of
+    picks (e.g. Vlsr assigned, Object not yet touched) never gets applied
+    to the table mid-edit -- the previously-applied mapping stays in
+    effect until Apply is actually clicked.
+
+    See the "GLOBAL MANUAL MAPPING" comment above for why this is one
+    shared card for every loaded file, not one per file. Returns the
+    currently APPLIED mapping dict -- NOT necessarily whatever is
+    currently live in the form's widgets, if Apply hasn't been clicked
+    since the last change.
+    """
+    none_option = "\u2014 none \u2014"
+    reference_filename = filenames[0] if filenames else None
+    preview_items: list[tuple[str, str, str]] = []
+    if reference_filename:
+        reference_path = fits_ingest.get_archive_root() / reference_filename
+        preview_items = _flatten_header_preview(reference_path)
+    options = [none_option] + [qk for qk, _, _ in preview_items]
+
+    applied = st.session_state.setdefault("file_loader_manual_mapping_global", _default_manual_mapping())
+
+    with st.expander("Manual column mapping (applies to every loaded file)", expanded=False):
+        if not preview_items:
+            st.caption("No files loaded yet \u2014 nothing to map.")
+            return applied
+
+        st.caption(
+            f"Field choices are read from {reference_filename}'s header. Pick your fields "
+            "below, then click Apply Mapping \u2014 the table only updates once you apply, "
+            "not on every individual selection."
+        )
+
+        with st.form(key="manual_mapping_form"):
+            pending: dict = {}
+            for column in HEADER_FIELDS_COLUMNS:
+                if column == "LCP/RCP":
+                    lcp_default, rcp_default = applied.get(column) or (None, None)
+                    lcp_col, rcp_col = st.columns(2)
+                    with lcp_col:
+                        lcp_choice = st.selectbox(
+                            "LCP source field", options=options,
+                            index=options.index(lcp_default) if lcp_default in options else 0,
+                            key="manual_map_global_LCP",
+                        )
+                    with rcp_col:
+                        rcp_choice = st.selectbox(
+                            "RCP source field", options=options,
+                            index=options.index(rcp_default) if rcp_default in options else 0,
+                            key="manual_map_global_RCP",
+                        )
+                    pending[column] = (
+                        None if lcp_choice == none_option else lcp_choice,
+                        None if rcp_choice == none_option else rcp_choice,
+                    )
+                else:
+                    default = applied.get(column)
+                    choice = st.selectbox(
+                        f"{column} source field", options=options,
+                        index=options.index(default) if default in options else 0,
+                        key=f"manual_map_global_{column}",
+                    )
+                    pending[column] = None if choice == none_option else choice
+
+            # No key= here -- st.form_submit_button() on this project's
+            # pinned streamlit==1.32.0 doesn't accept one (added in a
+            # later Streamlit release). Not needed anyway: a form can
+            # only have one submit button, already uniquely scoped by
+            # the form's own key ("manual_mapping_form" above).
+            submitted = st.form_submit_button("Apply Mapping", type="primary")
+
+        if submitted:
+            st.session_state["file_loader_manual_mapping_global"] = pending
+            applied = pending
+
+    return applied
 
 
 def _render_header_fields_table() -> None:
-    """UNCHANGED in this revision -- still static single-set sample data.
+    """Real per-file header-fields table (FR-03 handoff step 6).
 
-    The confirmed answer to the open design question ("one row per file")
-    applies here, but building that is explicitly FR-03 handoff step 6
-    (after quarantine's real shutil.move() wiring in steps 4-5) -- not
-    this step. Don't mistake this function's static content for an
-    oversight; it's deliberately deferred.
+    One row per active (non-quarantined) file, per the confirmed design
+    answer from earlier in the FR-03 handoff -- replaces the static
+    HEADER_FIELDS_ROWS sample data. Uses st.dataframe rather than the
+    hand-rolled _render_table_header/_render_table_row helpers, per the
+    build spec's own explicit guidance for this specific table ("clean
+    Pandas DataFrame ... st.dataframe()") -- the column-name search
+    filter (kept from before) doesn't need hand-rolled HTML the way the
+    Quarantine button's inline row layout does on the validation table.
+
+    Also doubles as the FR-02 "FITS extension viewer": per the confirmed
+    answer, that requirement IS a searchable metadata table via
+    st.dataframe() with no raw binary reaching the client -- exactly what
+    this function already is. No separate component was built for it.
+
+    REVISED after first real-world use: each row now shows the 9 curated
+    columns (HEADER_FIELDS_COLUMNS -- best-effort/Auto or user-assigned/
+    Manual, see below) PLUS every other real, non-plumbing header field
+    found in that file (`_read_all_raw_fields`), in BOTH Auto and Manual
+    mode. Originally the raw fields only showed inside a Manual-mode-only
+    "header preview" expander -- moved into the main table because (a)
+    that's genuinely what the build spec's "Search 30+ fields..."
+    placeholder was describing all along, not just a curated 9-column
+    preview, and (b) Auto mode couldn't be searched against any of that
+    data before, which defeated the point of the search box existing.
+    The search box now filters over the REAL full column set for
+    whichever file(s) are loaded, not a fixed 9-name list -- so which
+    columns are searchable can vary slightly by file (a field present in
+    one file's header but not another's still shows as a column, just
+    NaN for files that don't have it -- pandas handles that natively).
+
+    See `_read_display_header_fields`'s docstring for exactly which
+    curated Auto-mode fields are confirmed-real vs. best-effort/flagged
+    (Tsys, Focus units) vs. genuinely unavailable (RA/Dec, shown as
+    "pending"). Manual mode (`_render_manual_mapping_card` /
+    `_read_display_header_fields_manual`) lets a user override any
+    curated column's source field, applied to every loaded file at once
+    (see the "GLOBAL MANUAL MAPPING" comment above that function for why
+    this is no longer per-file); the raw columns are always a straight
+    dump regardless of mode, since they ARE the source data, not a
+    derived/mapped value.
     """
+    quarantined = st.session_state.get("file_loader_quarantined", set())
+    filenames = [f for f in _get_target_filenames() if f not in quarantined]
+
+    mode = st.radio(
+        "Column mapping mode",
+        options=["Auto", "Manual"],
+        key="file_loader_mapping_mode",
+        horizontal=True,
+    )
+
     search = st.text_input(
         "Search fields",
         placeholder="Search 30+ fields\u2026",
@@ -512,29 +1042,62 @@ def _render_header_fields_table() -> None:
         label_visibility="collapsed",
     )
 
-    if search:
-        visible_columns = [c for c in HEADER_FIELDS_COLUMNS if search.lower() in c.lower()]
-    else:
-        visible_columns = HEADER_FIELDS_COLUMNS
+    # The manual mapping card must render (and update session_state)
+    # BEFORE the rows below read that state -- a selectbox's new value
+    # from this rerun isn't in session_state until the widget itself has
+    # been instantiated. One card, applied to every file below -- not one
+    # per file (see "GLOBAL MANUAL MAPPING" comment above).
+    global_mapping = None
+    if mode == "Manual":
+        global_mapping = _render_manual_mapping_card(filenames)
 
-    styles.render_panel_open("")
-    if not visible_columns:
-        theme = styles.get_theme()
-        st.markdown(
-            f'<div style="color:{theme["text-muted"]}; font-size:11px;">'
-            "No matching fields among the 9 priority columns shown here. "
-            "The full 30+ field list isn't specified yet in the build spec -- "
-            "ask before adding more columns rather than inventing field names."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        col_width = f"{100 / len(visible_columns):.4f}%"
-        _render_table_header([(c, col_width) for c in visible_columns])
-        for idx, row in enumerate(HEADER_FIELDS_ROWS):
-            values = [row[HEADER_FIELDS_COLUMNS.index(c)] for c in visible_columns]
-            _render_table_row([(v, col_width) for v in values], striped=(idx % 2 == 1))
-    styles.render_panel_close()
+    with st.container(border=False):
+        if not filenames:
+            st.caption("No active files to show header fields for.")
+        else:
+            rows = []
+            for filename in filenames:
+                path = fits_ingest.get_archive_root() / filename
+                if mode == "Manual":
+                    curated_fields = _read_display_header_fields_manual(path, global_mapping)
+                else:
+                    curated_fields = _read_display_header_fields(path)
+                raw_fields = _read_all_raw_fields(path)
+
+                # Real bug found and fixed here: "HPBW" is the one curated
+                # column whose display name is literally identical (same
+                # case) to its actual raw FITS keyword -- every other
+                # curated column differs in case from its raw source
+                # ("Object" vs "OBJECT", "Focus" vs "FOCUS", "Humidity" vs
+                # "HUMIDITY", "Date" vs "DATE-OBS"), so only HPBW ever
+                # collided. Without this, row.update(raw_fields) below
+                # would silently overwrite whatever curated_fields (Auto
+                # OR Manual-mode-assigned) had just computed for "HPBW"
+                # with the raw dump's own value, making a Manual HPBW
+                # reassignment look like it had no effect even though it
+                # was computed correctly one line earlier.
+                raw_fields = {
+                    (f"{key} (raw)" if key in _CURATED_COLUMN_NAMES else key): value
+                    for key, value in raw_fields.items()
+                }
+
+                row = {"File": filename}
+                row.update(curated_fields)  # curated columns first, in HEADER_FIELDS_COLUMNS order
+                row.update(raw_fields)      # then every other real field found in this file
+                rows.append(row)
+
+            df = pd.DataFrame(rows).set_index("File")
+
+            if search:
+                matching_columns = [c for c in df.columns if search.lower() in c.lower()]
+                if not matching_columns:
+                    st.caption(f'No fields match "{search}" among this file set\'s real header fields.')
+                    df = None
+                else:
+                    df = df[matching_columns]
+
+            if df is not None:
+                st.dataframe(df, use_container_width=True)
 
 
 def main() -> None:
@@ -545,12 +1108,12 @@ def main() -> None:
     styles.inject_base_css()
 
     # Streamlit's own st.expander header ("Dev override: choose files
-    # manually" / "Load details") and widget labels (e.g. the "Dev
-    # override" text area's own label) are rendered as native chrome, not
-    # through unsafe_allow_html markdown -- there's no HTML string here we
-    # can wrap in a themed <div>, unlike the custom "Load details" content
-    # rows below. That native text falls back to Streamlit's own base theme
-    # from .streamlit/config.toml, which is static per server instance and
+    # manually") and widget labels (e.g. the "Dev override" text area's
+    # own label) are rendered as native chrome, not through unsafe_allow_html
+    # markdown -- there's no HTML string here we can wrap in a themed
+    # <div>, unlike the custom "Load details" content rows below. That
+    # native text falls back to Streamlit's own base theme from
+    # .streamlit/config.toml, which is static per server instance and
     # doesn't react to st.session_state["theme"] (see the Style Guide's
     # §5 note). inject_base_css() apparently doesn't already override this
     # -- unlike .stButton, which does work correctly (see
@@ -574,18 +1137,6 @@ def main() -> None:
         [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
         }}
-        /* Placeholder text (e.g. "Search 30+ fields...") needs its own
-           ::placeholder rule -- a plain color: on the input itself doesn't
-           reach it. text-faint is the Style Guide's dedicated placeholder
-           token (distinct from text-body/text-muted above). opacity:1
-           overrides browsers (Firefox in particular) that otherwise dim
-           ::placeholder by default, which would wash out the exact token
-           color. */
-        [data-testid="stTextInput"] input::placeholder,
-        [data-testid="stTextArea"] textarea::placeholder {{
-            color: {_theme['text-faint']} !important;
-            opacity: 1;
-        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -597,7 +1148,6 @@ def main() -> None:
         current_stage=STAGE_NUMBER,
         completed_stages=session_store.completed_count(),
     )
-
     _render_target_file_override()
     _render_load_progress()
     _render_validation_table()
@@ -607,6 +1157,21 @@ def main() -> None:
 
     if st.session_state.get("file_loader_load_done"):
         session_store.mark_stage_complete(STAGE_KEY)
+
+        # "Continue to X ->" pattern, matching Page 03's own button
+        # (see 03_Bandpass_Correction.py's "Continue to Baseline Block
+        # Editor ->"). Only shown once loading actually succeeded for at
+        # least one file -- same gate mark_stage_complete() above already
+        # uses, so this button can never appear ahead of the stage it's
+        # meant to follow. Styled as the primary CTA per the build spec's
+        # own description of Page 01's equivalent button ("Load into
+        # Pipeline ->" primary button) -- Page 03's current button doesn't
+        # set type="primary" and renders as secondary instead, which looks
+        # like a separate small inconsistency worth fixing there too, not
+        # copied here on purpose.
+        st.markdown(f"<div style='height:{styles.SECTION_GAP}px'></div>", unsafe_allow_html=True)
+        if st.button("Continue to Bandpass Correction →", type="primary", key="continue_to_bandpass"):
+            st.switch_page("pages/03_Bandpass_Correction.py")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,40 @@
 #   - Nothing is written to disk permanently here; only
 #     session_state["pipeline_data"] gets the filtered FITS paths, chosen
 #     source name, chosen frequency, and earliest observation date.
+#
+# --------------------------------------------------------------------------
+# QUARANTINE-RESURFACING FIX (this revision)
+# --------------------------------------------------------------------------
+# Real bug, reported after Page 02's FR-03 quarantine work went live: a
+# quarantined file (moved into `<archive_root>/Flagged/` by
+# fits_ingest.move_to_quarantine()) kept getting re-discovered by this
+# module's own directory scan on the very next Page 01 visit, since
+# `_scan_directory()` had no exclusion for that subdirectory and walks
+# every directory under the archive root. A re-discovered quarantined file
+# looks like any other selectable .fits file, so it could be re-selected,
+# handed to Page 02, fail to load again for the exact reason it was
+# quarantined in the first place, and -- if quarantined again -- collide
+# with its own already-suffixed name in Flagged/ (observed in the wild as
+# filenames like "..._G328.24-0.55__2__2.fits", i.e. the same file
+# suffix-collision-avoided twice across two separate accidental
+# re-quarantine cycles).
+#
+# Fix: `_scan_directory()` now skips descending into any directory named
+# `fits_ingest.QUARANTINE_DIRNAME` ("Flagged") entirely -- it's never
+# added as a DirectoryNode, so nothing inside it (files or further
+# subdirectories) can ever appear as a selectable source file again. This
+# reuses fits_ingest.py's own constant rather than a second hardcoded
+# "Flagged" string, so the two modules can't drift apart on the name.
+#
+# NOTE for anyone hitting this same symptom again after upgrading: this
+# fix only stops the problem going forward. It does NOT retroactively
+# clean an already-corrupted `pipeline_data["01_source_browser"]
+# ["selected_files"]` list sitting in a currently-open browser session or
+# an already-saved session JSON that references a "Flagged\..." path from
+# before this fix. If a session saved before this fix still errors, re-run
+# Page 01's selection (or start a fresh session) rather than assuming the
+# code fix alone repairs old, already-serialized selections.
+# --------------------------------------------------------------------------
 
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -160,6 +194,18 @@ def _scan_fits_file(path: Path) -> SourceFileEntry:
     )
 
 
+def _is_quarantine_directory(entry: Path) -> bool:
+    """True for any directory named after fits_ingest's quarantine target.
+
+    Case-insensitive on purpose -- Windows filesystems (this project's
+    deployment target for the dev/test machines hitting this bug) treat
+    directory names case-insensitively, so a stray "flagged"/"FLAGGED"
+    would otherwise slip past a case-sensitive comparison and reintroduce
+    the exact bug this function exists to prevent.
+    """
+    return entry.name.lower() == fits_ingest.QUARANTINE_DIRNAME.lower()
+
+
 def scan_fits_directory_tree(root_dir: Path, max_depth: int = 4) -> Optional[DirectoryNode]:
     """Recursively scan root_dir for .fits/.fit files, building a directory tree.
 
@@ -169,6 +215,12 @@ def scan_fits_directory_tree(root_dir: Path, max_depth: int = 4) -> Optional[Dir
 
     max_depth caps recursion to guard against a pathologically deep directory
     structure; symlinked subdirectories are not followed, to avoid cycles.
+
+    Never descends into the quarantine directory (fits_ingest.
+    QUARANTINE_DIRNAME, "Flagged") -- files moved there by FR-03's
+    quarantine action have been deliberately removed from the active
+    pipeline and must never resurface as selectable source files. See this
+    module's header comment for the real bug this prevents.
     """
     root_dir = Path(root_dir)
     if not root_dir.is_dir():
@@ -186,6 +238,8 @@ def _scan_directory(directory: Path, depth_remaining: int) -> DirectoryNode:
 
     for entry in entries:
         if entry.is_dir() and not entry.is_symlink():
+            if _is_quarantine_directory(entry):
+                continue  # quarantined files are off-limits to the browser -- see module header
             if depth_remaining > 0:
                 node.subdirectories.append(_scan_directory(entry, depth_remaining - 1))
             # else: stop descending silently — avoids runaway recursion.
