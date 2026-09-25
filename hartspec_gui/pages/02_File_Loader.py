@@ -497,6 +497,23 @@ def _quarantine_file(filename: str) -> None:
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
     st.session_state.pop("file_loader_quarantine_error", None)
+
+    # A file quarantined AFTER already loading successfully would otherwise
+    # leave a stale ok=True IngestResult cached under this filename's key --
+    # _render_load_progress()/_render_header_fields_table() already exclude
+    # quarantined files going forward, but downstream pages (e.g.
+    # 03_Bandpass_Correction.py's _successful_loaded_entries()) read the RAW
+    # Page 01 selected_files list and key off exactly this cache to decide
+    # whether a file is usable. Without clearing it here, a file quarantined
+    # mid-session could still flow into bandpass pairing/fitting even though
+    # it's been physically moved out of the active archive. Clearing all
+    # three per-file caches forces any later lookup to treat it as "not
+    # loaded" -- which is now true, since it no longer exists at its
+    # original path.
+    st.session_state.pop(f"file_loader_ingest_result::{filename}", None)
+    st.session_state.pop(f"file_loader_verify_result::{filename}", None)
+    st.session_state.pop(f"file_loader_load_elapsed_s::{filename}", None)
+
     session_store.log_event(f"{filename} quarantined -- moved to {dest_path}")
 
 
@@ -563,10 +580,25 @@ def _render_validation_table() -> None:
         # unrelated rerun after the one that actually failed.
         st.error(f"Could not quarantine: {quarantine_error}")
 
+    # Real problem with large batches (e.g. the 230-file case that also
+    # motivated the global manual-mapping redesign): with mostly-OK rows,
+    # finding the handful that are FLAGGED/QUARANTINED meant scrolling
+    # through everything. This checkbox hides OK rows entirely rather than
+    # adding a second search box -- the validation table only has three
+    # possible statuses, so a binary toggle is simpler than a text filter.
+    show_only_flagged = st.checkbox(
+        "Show only flagged files",
+        key="file_loader_show_only_flagged",
+        help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
+    )
+    display_rows = [row for row in rows if row["status"] == "error"] if show_only_flagged else rows
+    if show_only_flagged:
+        st.caption(f"Showing {len(display_rows)} of {len(rows)} file(s).")
+
     with st.container(border=False):
         _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(display_rows):
             striped = idx % 2 == 1
             theme = styles.get_theme()
             bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
