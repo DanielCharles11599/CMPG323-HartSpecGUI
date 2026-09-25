@@ -150,7 +150,7 @@ def render_compass_grid(theme: dict[str, str]) -> None:
         with column, st.container(border=True):
             st.markdown(f'<div class="hs-panel-title">{direction}</div>', unsafe_allow_html=True)
             fig = _pointing_scan_figure(direction, theme)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, theme=None)
 
 
 def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:

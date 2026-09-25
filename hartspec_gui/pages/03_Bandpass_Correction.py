@@ -410,7 +410,7 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
                 color=theme["text-body"],
             ),
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, theme = None)
 
         if len(common_range) == 2:
             st.caption(

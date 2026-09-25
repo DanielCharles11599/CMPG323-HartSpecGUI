@@ -198,12 +198,26 @@ def plotly_layout_theme(theme: dict[str, str] | None = None) -> dict:
     explicit ``title`` string) is safe to add afterward the same way --
     only pass the keys you need to change; everything else set here is
     preserved.
+
+    AXIS TITLE FIX (this revision): a page that later sets
+    ``xaxis=dict(title="Vlsr (km/s)")`` -- a plain string, the common
+    shorthand every page here uses -- causes Plotly to replace the whole
+    nested ``title`` object, including any ``font`` set only inside it.
+    The dict-level merge that keeps sibling keys (``linecolor``,
+    ``tickfont``, etc.) intact does NOT protect a property nested inside
+    a compound value that itself gets reassigned wholesale. Fixed by also
+    setting axis-level ``color`` here -- a sibling key to ``title``, not
+    nested inside it, so a later page-level title-only update can't wipe
+    it out. Plotly uses an axis's own ``color`` as the default for its
+    line, ticks, AND title text whenever a more specific font color isn't
+    set closer to that element, which is exactly the fallback needed here.
     """
     theme = theme or get_theme()
     axis_defaults = dict(
         showgrid=False,
         zeroline=False,
         linecolor=theme["border-subtle"],
+        color=theme["text-muted"],
         tickfont=dict(color=theme["text-muted"], family=CHART_FONT_FAMILY, size=10),
         title=dict(font=dict(color=theme["text-muted"], family=CHART_FONT_FAMILY, size=11)),
     )

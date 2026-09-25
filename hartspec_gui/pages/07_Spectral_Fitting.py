@@ -288,7 +288,7 @@ fig.update_layout(
     xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
     yaxis=dict(title="Intensity (K)", showgrid=False, zeroline=False, color=theme["text-muted"]),
 )
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False}, theme=None)
 styles.render_panel_close()
 
 # ---------------------------------------------------------------------
