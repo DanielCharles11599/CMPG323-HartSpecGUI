@@ -125,6 +125,7 @@ if latest_fit:
         name=f"Fit ({latest_fit['polarization']})",
     )
 
+fig.update_layout(**styles.plotly_layout_theme(theme))
 fig.update_layout(
     height=260, margin=dict(l=40, r=20, t=10, b=40),
     paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],

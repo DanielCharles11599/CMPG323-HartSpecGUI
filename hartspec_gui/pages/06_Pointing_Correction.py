@@ -8,6 +8,17 @@
 # st.container(border=True) -- the latter is the mechanism styles.inject_base_css
 # already targets via its [data-testid="stVerticalBlockBorderWrapper"] rule.
 #
+# CHART THEMING (this revision): _pointing_scan_figure() previously set
+# tickfont=dict(size=8) with no `color` key at all, which does NOT inherit
+# the figure's top-level layout.font color -- Plotly's default tick color
+# was left in place, effectively invisible against a dark bg-panel. Fixed
+# by calling styles.plotly_layout_theme(theme) first and layering the
+# panel-specific overrides (height, margins, no titles) on top of it,
+# rather than hand-rolling axis dicts here. See that helper's own
+# docstring in utils/styles.py for the full root-cause explanation --
+# this is the reference pattern every other chart-producing page should
+# follow too.
+#
 # Science note -- READ BEFORE TRUSTING THIS PAGE'S NUMBERS:
 #
 # 1. clc/Point_cor.py's `pointcor()` still uses `global hp` (set as a side effect
@@ -85,17 +96,14 @@ def _pointing_scan_figure(direction: str, theme: dict[str, str]) -> go.Figure:
         line=dict(color=theme["accent"], width=1.6),
         showlegend=False,
     )
+    # Shared theming (backgrounds, axis line color, tick/title/legend font
+    # color) first, panel-specific sizing/margins layered on top -- see
+    # plotly_layout_theme()'s docstring for why the ordering matters.
+    fig.update_layout(**styles.plotly_layout_theme(theme))
     fig.update_layout(
         height=160,
         margin=dict(l=8, r=8, t=8, b=8),
-        paper_bgcolor=theme["bg-panel"],
-        plot_bgcolor=theme["bg-panel"],
-        xaxis=dict(
-            showgrid=False, zeroline=False, linecolor=theme["border-subtle"], tickfont=dict(size=8)
-        ),
-        yaxis=dict(
-            showgrid=False, zeroline=False, linecolor=theme["border-subtle"], tickfont=dict(size=8)
-        ),
+        showlegend=False,
     )
     return fig
 

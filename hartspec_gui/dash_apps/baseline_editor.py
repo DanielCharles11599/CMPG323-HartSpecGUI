@@ -70,6 +70,7 @@ def _empty_figure(theme_name: str, height: int = 78) -> go.Figure:
     """Return a blank, theme-correct fit panel without inventing placeholder science."""
     theme = _theme_tokens(theme_name)
     fig = go.Figure()
+    fig.update_layout(**styles.plotly_layout_theme(theme))
     fig.update_layout(
         paper_bgcolor=theme["bg-panel"],
         plot_bgcolor=theme["bg-panel"],
@@ -133,6 +134,7 @@ def _spectrum_figure(state: Mapping[str, Any], rows: list[dict[str, Any]], theme
             layer="below",
         )
 
+    fig.update_layout(**styles.plotly_layout_theme(theme))
     fig.update_layout(
         paper_bgcolor=theme["bg-panel"],
         plot_bgcolor=theme["bg-panel"],
@@ -183,6 +185,7 @@ def _fit_panel_figure(
 
     if not panel_data:
         fig = _empty_figure(theme_name)
+        fig.update_layout(**styles.plotly_layout_theme(theme))
         fig.update_layout(
             title=dict(text=panel_identity.title, x=0.03, y=0.98, font=dict(size=11, color=theme["text-body"]))
         )
@@ -218,6 +221,7 @@ def _fit_panel_figure(
     else:
         title = f"{panel_identity.title}{selected_marker}"
 
+    fig.update_layout(**styles.plotly_layout_theme(theme))
     fig.update_layout(
         title=dict(text=title, x=0.03, y=0.98, font=dict(size=11, color=theme["text-body"])),
         paper_bgcolor=theme["bg-panel"],

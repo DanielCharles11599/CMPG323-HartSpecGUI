@@ -380,6 +380,7 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
                 annotation_position="top left",
             )
 
+        fig.update_layout(**styles.plotly_layout_theme(theme))
         fig.update_layout(
             paper_bgcolor=theme["bg-panel"],
             plot_bgcolor=theme["bg-panel"],

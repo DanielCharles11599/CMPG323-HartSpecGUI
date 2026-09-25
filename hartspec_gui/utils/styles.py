@@ -55,6 +55,8 @@ PROGRESS_BAR_HEIGHT = 8
 PROGRESS_BAR_RADIUS = 4
 TOTAL_STAGES = 8
 
+CHART_FONT_FAMILY = "Inter, -apple-system, 'Segoe UI', sans-serif"
+
 # --------------------------------------------------------------------------
 # Brand constants -- identical in both themes, never theme these.
 # --------------------------------------------------------------------------
@@ -164,6 +166,55 @@ def get_status_badges() -> dict[StatusName, tuple[str, str]]:
 def get_fit_line_color() -> str:
     """Return the dashed fit-overlay color for the active theme (see §4)."""
     return FIT_LINE_COLOR[get_theme_name()]
+
+
+def plotly_layout_theme(theme: dict[str, str] | None = None) -> dict:
+    """Return a complete Plotly ``update_layout`` kwargs dict for the active
+    theme, so every chart's background, axis lines, tick labels, axis
+    titles, and legend text all stay legible in both light and dark mode.
+
+    ROOT CAUSE this fixes: Plotly's own default template renders tick
+    labels, axis titles, and legend text in a fixed color regardless of
+    ``paper_bgcolor``/``plot_bgcolor``. A page that only sets those two
+    background colors -- or sets a top-level ``font=dict(color=...)`` but
+    leaves an axis's own ``tickfont``/``title`` unset -- can end up with
+    numbers that are effectively invisible once ``bg-panel`` is dark (or,
+    depending on Plotly's default gray, dim in light mode too).
+    ``06_Pointing_Correction.py``'s per-panel scan chart was a concrete
+    example: it set ``tickfont=dict(size=8)`` with no ``color`` key at
+    all, which does NOT inherit the figure's top-level ``layout.font``
+    color the way the legend/title text does.
+
+    Usage -- call this FIRST, then layer page-specific settings on top
+    (Plotly's ``update_layout`` merges nested dicts rather than replacing
+    them outright, so a later ``fig.update_layout(xaxis=dict(title=...))``
+    adds to this rather than discarding the color already set here):
+
+        theme = styles.get_theme()
+        fig.update_layout(**styles.plotly_layout_theme(theme))
+        fig.update_layout(height=320, margin=dict(...))  # page-specific after
+
+    Any additional per-axis property (a custom range, a log scale, an
+    explicit ``title`` string) is safe to add afterward the same way --
+    only pass the keys you need to change; everything else set here is
+    preserved.
+    """
+    theme = theme or get_theme()
+    axis_defaults = dict(
+        showgrid=False,
+        zeroline=False,
+        linecolor=theme["border-subtle"],
+        tickfont=dict(color=theme["text-muted"], family=CHART_FONT_FAMILY, size=10),
+        title=dict(font=dict(color=theme["text-muted"], family=CHART_FONT_FAMILY, size=11)),
+    )
+    return {
+        "paper_bgcolor": theme["bg-panel"],
+        "plot_bgcolor": theme["bg-panel"],
+        "font": dict(family=CHART_FONT_FAMILY, size=11, color=theme["text-body"]),
+        "legend": dict(font=dict(color=theme["text-body"], family=CHART_FONT_FAMILY, size=10)),
+        "xaxis": dict(**axis_defaults),
+        "yaxis": dict(**axis_defaults),
+    }
 
 
 def inject_base_css() -> None:
@@ -335,14 +386,7 @@ def inject_base_css() -> None:
            from .streamlit/config.toml, which is static per server
            instance and doesn't react to st.session_state["theme"] (see
            the Style Guide's §5 note) -- unlike .stButton, which does pick
-           up theme tokens correctly (see 03_Bandpass_Correction.py's own
-           comment on that contrast). In light mode this made the option
-           labels effectively invisible against a light background. Fixed
-           once here, system-wide, rather than per page -- same
-           !important-needed reasoning as the stExpander fix already in
-           02_File_Loader.py, since Streamlit's own radio CSS carries its
-           own specificity that a plain `color:` rule isn't reliably
-           guaranteed to beat. */
+           up theme tokens correctly. Fixed once here, system-wide. */
         [data-testid="stRadio"] label p,
         [data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {{
             color: {theme['text-body']} !important;

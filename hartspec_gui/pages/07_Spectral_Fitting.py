@@ -279,6 +279,7 @@ fig.add_scatter(
     name="Fit",
 )
 theme = styles.get_theme()
+fig.update_layout(**styles.plotly_layout_theme(theme))
 fig.update_layout(
     height=320, margin=dict(l=40, r=20, t=10, b=40),
     paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
