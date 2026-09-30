@@ -26,6 +26,7 @@ from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()  # same defense-in-depth reason fits_ingest.py does this
 
+
 def _default_sessions_dir() -> Path:
     """Resolve the sessions directory.
 

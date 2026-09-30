@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+import pytest
+
 # test_source_browser_logic.py — unit tests for utils/source_browser_logic.py
 # (FR-01 Source & Frequency Browser). Pure-Python logic only, so these run
 # without a Streamlit runtime, per pytest>=7.4 (see requirements.txt).
@@ -6,11 +11,6 @@
 # files to parse — these tests are about scan_fits_directory_tree()'s own
 # logic (tree structure, filtering, status handling), not astropy's FITS
 # parsing itself.
-
-import sys
-from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 

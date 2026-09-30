@@ -690,3 +690,4 @@ class TestStageSummary:
             summary["vlsr_range_kms"]
             == []
         )
+        

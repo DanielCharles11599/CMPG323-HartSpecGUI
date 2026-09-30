@@ -60,6 +60,7 @@ def _app_for(*filenames: str) -> AppTest:
 def _markdown_html(at: AppTest) -> str:
     return "\n".join(m.value for m in at.markdown if m.value)
 
+
 def _click_apply_mapping(at: AppTest) -> AppTest:
     """Click the manual-mapping form's submit button and rerun.
 
@@ -124,6 +125,7 @@ def test_page01_selection_is_picked_up_by_page02(fits_archive):
     assert ingest_result.ok
     assert ingest_result.convention == "date-obs"
 
+
 def test_page01_multiple_selected_files_all_processed(fits_archive):
     """The actual point of FR-03: page 01's selected_files is a list, and
     every file in it must be loaded + validated, not just the first."""
@@ -182,6 +184,7 @@ def test_dateobs_convention_file_falls_back_and_loads(fits_archive):
     assert ingest_result.ok
     assert ingest_result.convention == "date-obs"
 
+
 def test_unrecognized_file_fails_gracefully_without_exception(fits_archive, caplog):
     at = _app_for("unrecognized.fits")
     with caplog.at_level("WARNING"):
@@ -192,6 +195,7 @@ def test_unrecognized_file_fails_gracefully_without_exception(fits_archive, capl
     assert "flagged as unreadable" in caplog.text
     error_texts = "\n".join(e.value for e in at.error)
     assert "Could not load" not in error_texts
+
 
 def test_failed_load_does_not_mark_pipeline_stage_complete(fits_archive):
     at = _app_for("unrecognized.fits")
@@ -210,6 +214,7 @@ def test_successful_load_marks_pipeline_stage_complete(fits_archive):
     assert not at.exception
     assert "file_loader" in at.session_state["completed_stages"]
 
+
 def test_partial_failure_across_multiple_files_still_marks_complete(fits_archive, caplog):
     at = _app_for("good_date.fits", "unrecognized.fits")
     with caplog.at_level("WARNING"):
@@ -218,6 +223,7 @@ def test_partial_failure_across_multiple_files_still_marks_complete(fits_archive
     assert at.session_state["file_loader_load_done"] is True
     assert "file_loader" in at.session_state["completed_stages"]
     assert "1 of 2 file(s) flagged as unreadable" in caplog.text
+
 
 def test_successful_load_writes_audit_log_entry(fits_archive):
     at = _app_for("good_date.fits")
@@ -631,3 +637,4 @@ def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
     assert df.loc["good_date.fits", "HPBW"] == "0"
     # the raw dump must still be visible too, just relabeled
     assert "HPBW (raw)" in df.columns
+    

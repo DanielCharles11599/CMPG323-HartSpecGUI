@@ -95,3 +95,4 @@ def test_real_faulty_fits_diagnostic(real_fits_archive):
             "-- likely bad/NaN data values or something else a human judges, "
             "not byte-level corruption. Report this back before building FR-03 further."
         )
+        

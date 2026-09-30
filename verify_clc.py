@@ -1,5 +1,3 @@
-import os
-import sys
 import py_compile
 from pathlib import Path
 
@@ -26,6 +24,7 @@ EXPECTED_MODULES = {
     "plot_spec.py": "Generates, labels, and saves publication-quality spectra plots",
     "HARTRAO.py": "Main dispatcher option loop for pipeline modules"
 }
+
 
 def check_clc_modules():
     print("==================================================")
@@ -94,3 +93,4 @@ def check_clc_modules():
 
 if __name__ == "__main__":
     check_clc_modules()
+    
