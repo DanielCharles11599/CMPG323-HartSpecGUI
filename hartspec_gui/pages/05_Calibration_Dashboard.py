@@ -39,9 +39,6 @@ pss_window = None
 pss_averages = None
 pss_error = None
 
-calibrated_spectrum = None
-calibration_apply_error = None
-
 if loaded_spectrum is not None:
     try:
         atmospheric_result = calibration_logic.get_atmospheric_calibration(
@@ -86,25 +83,6 @@ if loaded_spectrum is not None:
         and pss_error is None
     )
 
-    # Actually apply ATcor + PSS to the baseline-flattened spectrum, rather
-    # than only ever computing/displaying them as metrics. Without this,
-    # st.session_state["calibrated_spectrum"] -- which Page 07/08 already
-    # check for as their first choice of spectrum -- was never written by
-    # anything, so calibration never reached spectral fitting. See
-    # calibration_logic.apply_calibration_to_spectrum()'s own docstring for
-    # the exact ATcor/PSS convention used and what to fix if it's wrong.
-    if page_complete:
-        try:
-            calibrated_spectrum = calibration_logic.apply_calibration_to_spectrum(
-                st.session_state.get("baseline_corrected_spectrum"),
-                atmospheric_result,
-                pss_averages["lcp"],
-                pss_averages["rcp"],
-            )
-        except Exception as exc:
-            calibration_apply_error = str(exc)
-            page_complete = False
-
     page_payload = {
         "complete": page_complete,
         "atmospheric": None,
@@ -147,13 +125,9 @@ if loaded_spectrum is not None:
     if pss_error is not None:
         page_payload["pss_error"] = pss_error
 
-    if calibration_apply_error is not None:
-        page_payload["calibration_apply_error"] = calibration_apply_error
-
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = page_payload
 
     if page_complete:
-        st.session_state["calibrated_spectrum"] = calibrated_spectrum
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
 
         if not was_page_complete:
@@ -166,11 +140,9 @@ if loaded_spectrum is not None:
             )
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-        st.session_state.pop("calibrated_spectrum", None)
 else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-    st.session_state.pop("calibrated_spectrum", None)
 
 styles.render_page_header(
     title=PAGE_TITLE,
@@ -217,8 +189,6 @@ with st.container(border=True):
         st.info("Load a spectrum before running atmospheric calibration.")
     elif atmospheric_error is not None:
         st.error(f"Atmospheric calibration could not be completed: {atmospheric_error}")
-    elif calibration_apply_error is not None:
-        st.error(f"Calibration could not be applied to the spectrum: {calibration_apply_error}")
 
     atmospheric_fig = go.Figure()
 

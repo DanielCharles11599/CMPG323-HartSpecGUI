@@ -36,17 +36,13 @@ PSS_HISTORY_FILES = {
 
 
 def _resolve_pss_file(filename):
-    """Locate one PSS file using the project's configured data path."""
+    """Locate one PSS file using configured, local, then bundled data paths."""
     configured_path = os.environ.get("PSS_DATA_PATH")
 
     if configured_path:
         candidate = Path(configured_path).expanduser() / filename
         if candidate.is_file():
             return candidate
-        raise FileNotFoundError(
-            f"PSS file {filename} was not found in configured PSS_DATA_PATH "
-            f"({configured_path})."
-        )
 
     default_candidate = Path("./data/pss") / filename
     if default_candidate.is_file():
@@ -56,8 +52,19 @@ def _resolve_pss_file(filename):
     if bundled_candidate.is_file():
         return bundled_candidate
 
+    searched_locations = []
+    if configured_path:
+        searched_locations.append(str(Path(configured_path).expanduser()))
+    searched_locations.extend(
+        [
+            "./data/pss",
+            str(Path(__file__).resolve().parents[2] / "clc"),
+        ]
+    )
+
     raise FileNotFoundError(
-        f"PSS file {filename} was not found in data/pss or the bundled CLC data."
+        f"PSS file {filename} was not found in any available PSS data location: "
+        + ", ".join(searched_locations)
     )
 
 
@@ -179,59 +186,4 @@ def get_atmospheric_calibration(spectrum):
         "nd_lcp": nd_lcp,
         "nd_rcp": nd_rcp,
         "optical_depth": optical_depth,
-    }
-
-
-def apply_calibration_to_spectrum(baseline_spectrum, atmospheric_result, pss_lcp_mean, pss_rcp_mean):
-    """Apply atmospheric (ATcor) and PSS flux calibration to a baseline-
-    flattened spectrum, producing the Vlsr/LCP/RCP arrays that
-    07_Spectral_Fitting.py and 08_Export_and_Session.py already look for
-    under st.session_state["calibrated_spectrum"] as their *first* choice
-    of spectrum to fit/export.
-
-    Before this function existed, nothing in the pipeline ever wrote that
-    key: 05_Calibration_Dashboard.py computed PWV/ATcor/PSS as display
-    metrics only and never applied them to any spectrum array. Spectral
-    fitting was silently running on the baseline-flattened (Page 4), not
-    calibrated, spectrum -- a real scientific gap, not just a plumbing one.
-
-    TODO: confirm against design. clc/Calibrate_PSS_PWR.py's own internal
-    application of atcor/PSS to a full spectrum (as opposed to the scalar
-    summary values PWR() returns) was not available to confirm against, so
-    this uses the two standard radio-astronomy conventions rather than
-    inventing a new one:
-      - ATcor as a straight multiplicative atmospheric-attenuation
-        correction: T_true = T_observed * atcor.
-      - PSS converting antenna temperature to flux density by
-        multiplication, per this project's own Technical Specifications
-        glossary ("PSS: Point Source Sensitivity ... flux density
-        calibration factor (Jy/K)"): Flux[Jy] = T_ant[K] * PSS[Jy/K].
-    If either convention is wrong for this instrument (e.g. division
-    instead of multiplication, or a different order of operations), this
-    is the one function to correct -- nothing else in the pipeline needs
-    to change, since Page 05 only ever calls this function, never
-    reimplements the arithmetic itself.
-
-    Raises:
-        ValueError: if the baseline spectrum is missing required arrays, or
-            atcor/PSS values needed to calibrate it are unavailable.
-    """
-    missing = [key for key in ("Vlsr", "LCP", "RCP") if key not in (baseline_spectrum or {})]
-    if missing:
-        raise ValueError(f"Baseline spectrum is missing required field(s): {', '.join(missing)}.")
-
-    atcor = (atmospheric_result or {}).get("atcor")
-    if atcor is None:
-        raise ValueError("Atmospheric calibration result has no ATcor value to apply.")
-    if pss_lcp_mean is None or pss_rcp_mean is None:
-        raise ValueError("PSS window means for both LCP and RCP are required to calibrate a spectrum.")
-
-    vlsr = np.asarray(baseline_spectrum["Vlsr"], dtype=float)
-    lcp = np.asarray(baseline_spectrum["LCP"], dtype=float)
-    rcp = np.asarray(baseline_spectrum["RCP"], dtype=float)
-
-    return {
-        "Vlsr": vlsr.tolist(),
-        "LCP": (lcp * float(atcor) * float(pss_lcp_mean)).tolist(),
-        "RCP": (rcp * float(atcor) * float(pss_rcp_mean)).tolist(),
     }
