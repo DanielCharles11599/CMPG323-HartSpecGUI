@@ -53,7 +53,9 @@ def render_sidebar(current_stage: int) -> None:
             if idx == current_stage:
                 st.markdown(
                     f'<div style="margin:2px 12px 2px; padding:8px 12px; border-radius:6px; '
-                    f'background-color:{theme["accent"]}; color:#FFFFFF; '#font-size:12px; '  Font size temporarily removed to standardizing the same size for selected vs not selected stages
+                    # font-size intentionally omitted here -- standardizes label size
+                    # between the active (filled pill) and inactive (button) nav items
+                    f'background-color:{theme["accent"]}; color:#FFFFFF; '
                     f'font-weight:600;">{label}</div>',
                     unsafe_allow_html=True,
                 )
@@ -100,4 +102,3 @@ def render_sidebar(current_stage: int) -> None:
         if st.button("Reset Session", key="session_reset", use_container_width=True):
             session_store.reset_session()
             st.rerun()
-

@@ -54,6 +54,13 @@ from clc import Point_cor
 from utils import session_store, sidebar, styles
 
 CURRENT_STAGE = 6
+# Follows the "0N_description" stage-key convention used by Pages 01/03/04/05/07
+# (see 01_source_browser, 03_bandpass_correction, 04_baseline_editor,
+# 05_calibration_dashboard, 07_spectral_fitting). Nothing downstream currently
+# gates on this key, but Page 06 previously had no key at all -- so it could
+# never be recorded complete, permanently capping the progress bar and leaving
+# no audit-log trace that pointing correction ever ran.
+PAGE_STAGE_KEY = "06_pointing_correction"
 DIRECTIONS = ["N", "S", "E", "W", "Centre"]  # left-to-right order per build spec §7 --
 # NOT a geographic cross layout, reproduce exactly.
 
@@ -181,18 +188,44 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
     )
 
 
+# Stages strictly before Page 6 -- used for the shared header progress bar, so
+# this page's own completion never counts toward its own "N/8 complete"
+# (Style Guide §4 / Build Spec §6; Page 04 does the same).
+UPSTREAM_STAGE_KEYS = (
+    "01_source_browser",
+    "file_loader",
+    "03_bandpass_correction",
+    "04_baseline_editor",
+    "05_calibration_dashboard",
+)
+
+
+def _completed_upstream_count() -> int:
+    """Count only stages strictly before Page 6 for the shared progress bar."""
+    completed = st.session_state["completed_stages"]
+    return sum(stage_key in completed for stage_key in UPSTREAM_STAGE_KEYS)
+
+
 def main() -> None:
     """Render the Pointing Correction page (FR-12/13)."""
     st.set_page_config(page_title="HARTSPEC -- Pointing Correction", layout="wide")
+    # Explicit, like every other page -- previously this page only got
+    # session state initialised as a side effect of render_sidebar().
+    session_store.init_session_state()
     sidebar.render_sidebar(current_stage=CURRENT_STAGE)
     styles.inject_base_css()
+
+    # Captured before recomputing below, so the audit log only records the
+    # first completion rather than on every Streamlit rerun (same pattern as
+    # 05_Calibration_Dashboard.py).
+    was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
 
     theme = styles.get_theme()
     styles.render_page_header(
         title="Pointing Correction",
         subtitle="FR-12 / 13 -- compass grid & offset calculation",
         current_stage=CURRENT_STAGE,
-        completed_stages=session_store.completed_count(),
+        completed_stages=_completed_upstream_count(),
     )
 
     render_compass_grid(theme)
@@ -203,8 +236,26 @@ def main() -> None:
     if offsets is not None:
         render_offset_table(offsets, theme)
 
-    # NOTE: no write-side session_store call here -- see prior TODO; still no
-    # confirmed method for persisting a stage's results into session_store.
+        # Recorded honestly as mock-derived: the half-power-point readings fed
+        # into pointcor() are still MOCK_SCAN_PEAKS (see module docstring, note
+        # 4), so a saved session must not read as a real pointing measurement.
+        # TODO: confirm against design -- drop this marker once real upstream
+        # scan extraction replaces the mock inputs.
+        st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
+            **offsets,
+            "input_source": "MOCK -- no real scan extraction yet",
+        }
+        session_store.mark_stage_complete(PAGE_STAGE_KEY)
+        if not was_page_complete:
+            session_store.log_event(
+                "Pointing correction computed (mock scan inputs) — "
+                f"NS {offsets['North-South offset']}, "
+                f"EW {offsets['East-West offset']}, "
+                f"correction factor {offsets['Pointing correction factor']}"
+            )
+    else:
+        st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+        st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
 
 
 if __name__ == "__main__":

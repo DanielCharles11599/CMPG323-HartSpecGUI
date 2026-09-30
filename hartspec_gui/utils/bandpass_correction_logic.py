@@ -363,7 +363,8 @@ def freq_switch_correct(
         vlsr1,
     )
 
-    # Copy each input dictionary before replacing the three science arrays so all FITS metadata remains available downstream.
+    # Copy each input dictionary before replacing the three science arrays so all FITS
+    # metadata remains available downstream.
     new_spec1 = spec1.copy()
     new_spec2 = spec2.copy()
 
@@ -549,9 +550,10 @@ def build_bandpass_result(
         "common_velocity_range_kms": common_velocity_range(spec1, spec2),
     }
 
-# Convert the successful correction into lightweight metadata that can safely be written to the session JSON.
 
-# Produce the compact JSON-safe summary stored under the Page 03 pipeline stage key.
+# Convert the successful correction into lightweight metadata that can safely be written
+# to the session JSON -- the compact JSON-safe summary stored under the Page 03 pipeline
+# stage key.
 def stage_summary(
     mode: str,
     corrected: SpectrumDict,

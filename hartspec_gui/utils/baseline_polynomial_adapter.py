@@ -185,7 +185,6 @@ def fit_polynomial_comparison(
     mask, mask2, vll, vrl = build_clc_masks(arrays["Vlsr"], block_rows)
 
     included_lcp = mask == 0
-    included_rcp = mask2 == 0
     minimum_points = max(POLYNOMIAL_ORDERS) + 1
     if int(np.count_nonzero(included_lcp)) < minimum_points:
         raise CLCBaselineIntegrationUnavailable(

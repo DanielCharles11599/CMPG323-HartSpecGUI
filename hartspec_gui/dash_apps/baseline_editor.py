@@ -461,10 +461,15 @@ def create_app() -> Dash:
             # Temporary fix: remember the fitted block set so rehydration does not clear a valid fit. - Faro
             result["blocks"] = normalized
         except CLCBaselineIntegrationUnavailable as exc:
+            # Capture the message into a plain local before the nested closure below --
+            # Python implicitly deletes the "as exc" binding at the end of this except
+            # block, so a closure referencing "exc" directly is undefined by the time it
+            # runs (pyflakes flags this as F821/F841 for exactly that reason).
+            error_message = str(exc)
             session_id = state.get("session_id")
             if session_id:
                 def _mutate(bridge_state):
-                    bridge_state["integration_error"] = str(exc)
+                    bridge_state["integration_error"] = error_message
                     bridge_state["fit_result"] = None
                     bridge_state["selected_orders"] = None
                     bridge_state["flattened_spectrum"] = None

@@ -38,15 +38,18 @@ from typing import Any, Mapping
 
 # NumPy is used to validate and compare spectrum arrays.
 import numpy as np
-# Astropy is used only to read the POSITION keyword directly from the second FITS file when the loaded spectrum dictionary does not contain it.
+# Astropy is used only to read the POSITION keyword directly from the second FITS file when the loaded spectrum
+# dictionary does not contain it.
 from astropy.io import fits
 # Plotly renders the interactive before/after spectrum chart required by FR-04.
 import plotly.graph_objects as go
 # Streamlit provides the page widgets, session state, navigation, and messages.
 import streamlit as st
 
-# Shared project utilities keep FITS paths, session persistence, sidebar state, and styling consistent with the other pages.
-from utils import fits_ingest, session_store, sidebar, styles
+# Shared project utilities keep FITS paths, session persistence, sidebar state, and styling consistent with the other
+# pages.
+from utils import baseline_editor_bridge, fits_ingest, session_store, sidebar, styles
+from utils.stage_invalidation import invalidate_baseline_dependents
 from utils.bandpass_correction_logic import (
     MODE_OPTIONS,
     THIS_STAGE_KEY,
@@ -99,7 +102,8 @@ def _target_filenames() -> list[str]:
     return [str(filename) for filename in fallback_files]
 
 
-# Read the two CLC metadata fields used to distinguish pointing scans from full integrations and to identify the switching mode.
+# Read the two CLC metadata fields used to distinguish pointing scans from full integrations and to identify the
+# switching mode.
 def _read_observation_metadata(filename: str) -> tuple[int | None, str]:
     try:
         path = fits_ingest.get_archive_root() / filename
@@ -118,7 +122,8 @@ def _read_observation_metadata(filename: str) -> tuple[int | None, str]:
         return None, ""
 
 
-# Rebuild Page 02's successful filename-to-spectrum handoff so Page 03 can associate each spectrum with its FITS metadata.
+# Rebuild Page 02's successful filename-to-spectrum handoff so Page 03 can associate each spectrum with its FITS
+# metadata.
 def _successful_loaded_entries() -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
 
@@ -158,7 +163,8 @@ def _detect_bandpass_pair() -> tuple[dict[str, Any], dict[str, Any]] | None:
     return full_integrations[0], full_integrations[1]
 
 
-# Suggest the switching mode from the second member of the detected full-integration pair, matching the original CLC convention.
+# Suggest the switching mode from the second member of the detected full-integration pair, matching the original CLC
+# convention.
 def _suggest_mode_from_metadata(pair2: Mapping[str, Any]) -> tuple[str, str]:
     position = str(pair2.get("position", "")).strip().upper()
 
@@ -233,6 +239,15 @@ def _clear_stage3_and_downstream() -> None:
         st.session_state["completed_stages"].discard(key)
         st.session_state["pipeline_data"].pop(key, None)
     st.session_state.pop("baseline_corrected_spectrum", None)
+    # Also clear the on-disk Page 4 bridge file, not just in-memory state --
+    # see baseline_editor_bridge.clear_bridge()'s own docstring for why this
+    # was a real staleness gap otherwise (Pages 7/8 read the bridge file
+    # directly and don't check spectrum_fingerprint themselves).
+    baseline_editor_bridge.clear_bridge(st.session_state["session_id"])
+    # And everything derived from that baseline further downstream
+    # (calibrated spectrum, saved fit, export marker) -- see
+    # utils/stage_invalidation.py.
+    invalidate_baseline_dependents(st.session_state)
 
 
 # Invalidate an already-applied result when the user switches mode and has not applied the new choice yet.
@@ -244,7 +259,8 @@ def _on_mode_change() -> None:
         _clear_stage3_and_downstream()
 
 
-# Save a successful correction into session state, update the JSON-safe stage summary, and invalidate stale downstream output.
+# Save a successful correction into session state, update the JSON-safe stage summary, and invalidate stale downstream
+# output.
 def _commit_result(mode: str, result: Mapping[str, Any]) -> None:
     corrected = _normalise_spectrum(result["corrected"], "Bandpass-corrected spectrum")
     previous = st.session_state.get("bandpass_corrected_spectrum")
@@ -254,6 +270,8 @@ def _commit_result(mode: str, result: Mapping[str, Any]) -> None:
             st.session_state["completed_stages"].discard(key)
             st.session_state["pipeline_data"].pop(key, None)
         st.session_state.pop("baseline_corrected_spectrum", None)
+        baseline_editor_bridge.clear_bridge(st.session_state["session_id"])
+        invalidate_baseline_dependents(st.session_state)
         session_store.log_event(
             "Bandpass output changed — Baseline Block Editor state invalidated"
         )

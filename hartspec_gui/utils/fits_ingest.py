@@ -110,7 +110,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from astropy.io import fits
+from astropy.io import fits  # noqa: E402 -- must follow matplotlib.use("Agg") above
 
 # Windows quarantine-delete fix -- see this module's header comment for
 # the full diagnosis. Setting this BEFORE `clc/load_file.py` /
@@ -124,7 +124,7 @@ from astropy.io import fits
 # keeps a memory mapping open afterward.
 fits.conf.use_memmap = False
 
-from utils.env import load_dotenv_if_present
+from utils.env import load_dotenv_if_present  # noqa: E402 -- must follow fits.conf.use_memmap above
 
 load_dotenv_if_present()
 

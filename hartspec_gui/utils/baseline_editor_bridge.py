@@ -72,6 +72,33 @@ def write_bridge(session_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def clear_bridge(session_id: str) -> None:
+    """Delete the on-disk bridge document for a session, if one exists.
+
+    03_Bandpass_Correction.py calls this whenever it invalidates Page 4's
+    completion (bandpass mode changed, or a newly-applied correction differs
+    from the previous one). Without this, only the in-memory
+    st.session_state["baseline_corrected_spectrum"] key was being cleared --
+    the bridge JSON file on disk kept the old flattened spectrum. Page 4
+    itself already guards against exactly this via spectrum_fingerprint
+    matching in _sync_dash_state_into_streamlit(), but only when Page 4 is
+    actually visited: 07_Spectral_Fitting.py and 08_Export_and_Session.py
+    both call read_bridge() directly and trust flattened_spectrum without
+    any fingerprint check, so a user who changes bandpass mode and then
+    jumps straight to Page 7/8 (skipping Page 4) would otherwise silently
+    get fit results computed against a stale, pre-mode-change baseline.
+    Deleting the file means read_bridge() correctly returns None afterward,
+    so those pages fall through to their next best available spectrum
+    instead of trusting stale data.
+    """
+    path = _bridge_path(session_id)
+    with _LOCK:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def update_bridge(session_id: str, mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
     """Read-modify-write the bridge under one in-process lock."""
     with _LOCK:

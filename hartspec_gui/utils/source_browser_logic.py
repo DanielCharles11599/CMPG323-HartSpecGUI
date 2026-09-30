@@ -122,9 +122,16 @@ def default_fits_directory() -> str:
 class SourceFileEntry:
     """A single FITS file discovered under the browsed directory.
 
-    source_name/frequency_mhz/observation_date are Optional because they
-    come from a header read that can legitimately fail or be missing the
-    relevant keyword — this shouldn't fabricate header data it couldn't read.
+    source_name/frequency_mhz/observation_date/position are Optional because
+    they come from a header read that can legitimately fail or be missing
+    the relevant keyword — this shouldn't fabricate header data it couldn't
+    read.
+
+    position is the raw HPN/HPS/HPE/HPW/ON/OFF pointing-position tag (HDU 2's
+    POSITION keyword) shown for the user's own information only. It is NOT
+    File_check.py's real observation-block sorting — see
+    run_file_check_placeholder()'s docstring for why that stateful grouping
+    algorithm is deliberately not reimplemented here.
     """
 
     path: Path
@@ -134,6 +141,7 @@ class SourceFileEntry:
     source_name: Optional[str] = None
     frequency_mhz: Optional[float] = None
     observation_date: Optional[str] = None
+    position: Optional[str] = None
 
 
 @dataclass
@@ -149,38 +157,57 @@ class DirectoryNode:
 # ---------------------------------------------------------------------------
 # Live directory scanning
 #
-# TODO: confirm against design. OBJECT (source name) is close to universal in
-# FITS headers; RESTFREQ (rest frequency, standard unit Hz per the FITS/WCS
-# convention) is also a standard keyword — but clc/File_check.py or
-# clc/load_file.py almost certainly already knows HARTSPEC's exact header
-# conventions, and should be treated as the source of truth over this
-# best-effort read if they differ.
+# CONFIRMED against clc/File_check.py's own (commented-out) reference
+# implementation: OBJECT and RESTFREQ are both read from hdulist[0] (the
+# primary header), exactly as this module already does. POSITION comes from
+# hdulist[2] -- the same HDU 03_Bandpass_Correction.py's own
+# _read_observation_metadata() already reads it from -- so position below
+# reuses that same convention rather than guessing a different one.
+#
+# DATE, however, is read from hdulist[0].header['DATE'] in that same
+# reference dict -- not DATE-OBS. fits_ingest.py's ingest_fits_file() exists
+# specifically because both conventions are real (load_file.py = DATE,
+# load_file2.py = DATE-OBS); a file using the older DATE-only convention was
+# silently landing in the "Unknown date" browse group and being excluded
+# from earliest/latest date calculations, since this function previously
+# only ever checked DATE-OBS. Fixed below to check both.
 # ---------------------------------------------------------------------------
 
 def _scan_fits_file(path: Path) -> SourceFileEntry:
-    """Header-only read of one FITS file (doesn't touch pixel data)."""
+    """Header-only read of one FITS file (never touches pixel/table data).
+
+    Opens the file once and reads two header blocks -- the primary HDU
+    (OBJECT, RESTFREQ, DATE/DATE-OBS) and, when present, HDU 2 (POSITION,
+    the HPN/HPS/HPE/HPW/ON/OFF pointing-position tag) -- rather than one
+    fits.getheader() call per HDU.
+    """
     size_mb = path.stat().st_size / (1024 * 1024)
+    position: Optional[str] = None
     try:
-        header = fits.getheader(path)
-        status = "OK"
+        with fits.open(path) as hdul:
+            primary_header = hdul[0].header
+            status = "OK"
+            if len(hdul) > 2:
+                raw_position = hdul[2].header.get("POSITION")
+                position = str(raw_position).strip().upper() if raw_position else None
     except Exception:
         # Real validation is FR-03's job downstream — flag here, don't crash
         # the browser.
-        header = {}
+        primary_header = {}
         status = "FLAGGED"
 
-    raw_source = header.get("OBJECT")
+    raw_source = primary_header.get("OBJECT")
     source_name = str(raw_source).strip() or None if raw_source else None
 
     frequency_mhz: Optional[float] = None
-    raw_freq_hz = header.get("RESTFREQ")
+    raw_freq_hz = primary_header.get("RESTFREQ")
     if raw_freq_hz is not None:
         try:
             frequency_mhz = round(float(raw_freq_hz) / 1e6, 3)
         except (TypeError, ValueError):
             frequency_mhz = None
 
-    raw_date = header.get("DATE-OBS")
+    raw_date = primary_header.get("DATE-OBS") or primary_header.get("DATE")
     observation_date = str(raw_date)[:10] if raw_date else None
 
     return SourceFileEntry(
@@ -191,6 +218,7 @@ def _scan_fits_file(path: Path) -> SourceFileEntry:
         source_name=source_name,
         frequency_mhz=frequency_mhz,
         observation_date=observation_date,
+        position=position,
     )
 
 
@@ -341,13 +369,27 @@ def earliest_observation_date(files: List[SourceFileEntry]) -> Optional[str]:
     return min(dates) if dates else None
 
 
+def latest_observation_date(files: List[SourceFileEntry]) -> Optional[str]:
+    """Latest observation date among a set of files, or None if unknown for all."""
+    dates = [f.observation_date for f in files if f.observation_date]
+    return max(dates) if dates else None
+
+
 def build_summary_text(
     filtered_files: List[SourceFileEntry],
     source_name: Optional[str],
     frequency_mhz: Optional[float],
     earliest_date: Optional[str],
+    latest_date: Optional[str] = None,
 ) -> str:
     """Text for the selection-summary panel.
+
+    Shows a date RANGE (earliest to latest), not just the earliest date, per
+    the FR-01 spec: "The UI displays a summary showing the filtered file
+    count and observation date range." latest_date defaults to None so
+    existing call sites passing only 4 args don't break; when it's None or
+    equal to earliest_date, only one date is shown rather than a redundant
+    "X to X" range.
 
     TODO: confirm against design. Build spec §7's example summary includes a
     declination ("Dec +12°34'"), which this deliberately does not add.
@@ -362,11 +404,16 @@ def build_summary_text(
     if not filtered_files:
         return "No matching FITS files for the current filters."
     freq_label = f"{frequency_mhz:.3f} MHz" if frequency_mhz is not None else "unknown frequency"
-    date_label = earliest_date or "date pending"
+
+    if earliest_date and latest_date and earliest_date != latest_date:
+        date_label = f"{earliest_date} to {latest_date}"
+    else:
+        date_label = earliest_date or latest_date or "date pending"
+
     plural = "s" if len(filtered_files) != 1 else ""
     return (
         f"{len(filtered_files)} file{plural} matched — {source_name} · {freq_label} · "
-        f"earliest observation {date_label}"
+        f"observed {date_label}"
     )
 
 
@@ -450,6 +497,20 @@ def run_file_check_placeholder(fits_paths: List[Path], workspace_dir: Path) -> P
 
     This stays as the explicit stand-in until the team decides how to
     handle it -- see the chat response for the options raised.
+
+    INDEPENDENTLY CONFIRMED against the real clc/File_check.py source (not
+    just inferred): the os.chdir()/os.system()/Interact.interaction()
+    concerns above are all real and present exactly as described. The
+    "identical elif guards" bug is also confirmed -- two branches, both
+    guarded by
+    `(file['position']=='ON' or file['position']=='OFF') and file['pointing']==0
+    and Pcount==0 and dirs!=Dates[0]`, appear back-to-back; the second is
+    unreachable dead code, not something to silently resolve one way or the
+    other on a guess. OBJECT/RESTFREQ/DATE/POSITION are all confirmed read
+    from the HDUs this module already assumes (see _scan_fits_file's own
+    header comment) -- that part of the pre-existing header-reading logic
+    needed no correction, only the DATE-OBS/DATE fallback fixed alongside
+    this note.
     """
     workspace_dir = Path(workspace_dir)
     workspace_dir.mkdir(parents=True, exist_ok=True)

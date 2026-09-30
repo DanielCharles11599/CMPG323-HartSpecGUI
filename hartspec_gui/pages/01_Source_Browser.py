@@ -45,6 +45,7 @@ from utils.source_browser_logic import (
     earliest_observation_date,
     filter_by_filename,
     group_files_by_month,
+    latest_observation_date,
     matching_files,
     run_file_check_placeholder,
     scan_fits_directory_tree,
@@ -275,13 +276,20 @@ with st.container(border=True):
         )
     else:
         for group_index, (group_label, group_files) in enumerate(group_files_by_month(filtered_files)):
-            with st.expander(f"{group_label} ({len(group_files)} file{'s' if len(group_files) != 1 else ''})",
-                              expanded=(group_index == 0)):
+            group_header = f"{group_label} ({len(group_files)} file{'s' if len(group_files) != 1 else ''})"
+            with st.expander(group_header, expanded=(group_index == 0)):
                 for source_file in group_files:
                     badge_html = styles.render_badge(source_file.status, status_css_class(source_file.status))
+                    # Position (HPN/HPS/HPE/HPW/ON/OFF, from HDU 2's POSITION
+                    # keyword) is shown for the user's own information only --
+                    # this is NOT File_check.py's real observation-block
+                    # sorting, just the same raw per-file tag
+                    # 03_Bandpass_Correction.py already reads independently.
+                    position_label = f" · {source_file.position}" if source_file.position else ""
                     st.markdown(
                         f'<div class="hs-file-name">{source_file.filename}</div>'
-                        f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB · {badge_html}</div>',
+                        f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB{position_label} · '
+                        f'{badge_html}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -290,15 +298,20 @@ with st.container(border=True):
 # Selection summary + "Load into Pipeline"
 # ---------------------------------------------------------------------------
 earliest_date = earliest_observation_date(filtered_files)
+latest_date = latest_observation_date(filtered_files)
 
 with st.container(border=True):
-    summary_text = build_summary_text(filtered_files, selected_source, selected_frequency, earliest_date)
+    summary_text = build_summary_text(filtered_files, selected_source, selected_frequency, earliest_date, latest_date)
     st.markdown(f'<div class="hs-summary-text">{summary_text}</div>', unsafe_allow_html=True)
 
-    # Non-blocking: bandpass_correction_logic.get_raw_pair() (Stage 3) raises
-    # if fewer than two spectra were loaded, since freq/pos-switch correction
-    # needs a pair. Warning here, where the user can still change filters,
-    # is more useful than letting them find out three pages later.
+    # Non-blocking: 03_Bandpass_Correction.py's own _detect_bandpass_pair()
+    # returns None (not a raise) when fewer than two full-integration spectra
+    # were loaded, since freq/pos-switch correction needs a pair. Warning
+    # here, where the user can still change filters, is more useful than
+    # letting them find out three pages later. (Corrected from an earlier
+    # version of this comment, which cited a bandpass_correction_logic.
+    # get_raw_pair() function that doesn't actually exist -- page 03 does
+    # this detection itself, as a page-local function, not via that module.)
     if len(filtered_files) == 1:
         st.markdown(
             '<div class="hs-file-caption">Bandpass correction (Stage 3) needs at least two '
