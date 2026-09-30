@@ -26,8 +26,35 @@ from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()  # same defense-in-depth reason fits_ingest.py does this
 
-SESSIONS_DIR = Path(os.environ.get("HARTSPEC_SESSIONS_DIR", "hartspec_gui/data/sessions"))
-#SESSIONS_DIR = Path("/data/sessions")
+
+def _default_sessions_dir() -> Path:
+    """Resolve the sessions directory.
+
+    Mirrors utils/source_browser_logic.py's default_fits_directory(): prefer
+    the documented SESSIONS_PATH env var (the name established across this
+    project's own docs and .env conventions), else the Technical
+    Specifications' production path ("/data/sessions") if it actually
+    exists on this machine, else a relative local-testing fallback --
+    "/data/sessions" isn't even a valid path on Windows.
+
+    Previously this read HARTSPEC_SESSIONS_DIR (a name that appears nowhere
+    in the project's Business Case / Functional / Technical Specifications)
+    and defaulted to "hartspec_gui/data/sessions" -- *inside* the app
+    directory, which the Technical Specifications' own directory-structure
+    section explicitly keeps separate from the app root. baseline_editor_bridge.py
+    imports SESSIONS_DIR directly, so this also fixes where the Page 4 Dash
+    bridge files land.
+    """
+    env_value = os.environ.get("SESSIONS_PATH")
+    if env_value:
+        return Path(env_value)
+    production_path = Path("/data/sessions")
+    if production_path.is_dir():
+        return production_path
+    return Path("./data/sessions")
+
+
+SESSIONS_DIR = _default_sessions_dir()
 
 
 def _ensure_sessions_dir() -> None:
@@ -72,6 +99,35 @@ def completed_count() -> int:
     return len(st.session_state["completed_stages"])
 
 
+# Stage keys in pipeline order (index 0 = Page 1). These are the keys each page
+# already passes to mark_stage_complete(); kept here so "how many stages come
+# before page N" has one definition instead of a hand-maintained tuple per page.
+STAGE_KEYS: tuple[str, ...] = (
+    "01_source_browser",
+    "file_loader",
+    "03_bandpass_correction",
+    "04_baseline_editor",
+    "05_calibration_dashboard",
+    "06_pointing_correction",
+    "07_spectral_fitting",
+    "08_export_and_session",
+)
+
+
+def completed_before(current_stage: int) -> int:
+    """Number of completed stages strictly before ``current_stage`` (1-indexed).
+
+    This is what the header progress bar should show: Build Spec section 6 /
+    Style Guide section 4 define "completed" as stages strictly before the
+    current page, with the current page counted as in-progress. Unlike
+    ``completed_count()`` it never counts the current page or later pages, so
+    Page 8 cannot read "8/8 complete" while it is still "Stage 8 of 8".
+    """
+    init_session_state()
+    completed = st.session_state["completed_stages"]
+    return sum(key in completed for key in STAGE_KEYS[: max(current_stage - 1, 0)])
+
+
 def save_session() -> Path:
     """Write the current session to ``/data/sessions/<id>.json``.
 
@@ -95,9 +151,20 @@ def save_session() -> Path:
 
 
 def list_sessions() -> list[Path]:
-    """Return saved session files, most recently modified first."""
+    """Return saved session files, most recently modified first.
+
+    Only real session files (``<session_id>.json``) are returned. This
+    directory is shared with sidecar files -- notably the Page 4 Dash bridge's
+    ``<session_id>.baseline_editor.json`` (utils/baseline_editor_bridge.py),
+    which Dash rewrites constantly and which therefore sorted to the top of
+    this list. Loading one of those replaced the whole session with an empty
+    one (it has no ``pipeline_data`` / ``completed_stages``), and it filled
+    Page 8's three-row session history with non-sessions. Session ids are
+    dot-free (``uuid4()[:8]``), so a dotted stem identifies a sidecar.
+    """
     _ensure_sessions_dir()
-    return sorted(SESSIONS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    sessions = [path for path in SESSIONS_DIR.glob("*.json") if "." not in path.stem]
+    return sorted(sessions, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def load_session(path: Path) -> None:

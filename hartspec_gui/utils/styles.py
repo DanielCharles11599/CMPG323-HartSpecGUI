@@ -111,7 +111,7 @@ THEMES: dict[ThemeName, dict[str, str]] = {
         # this overrides the style guide's original dark-mode-only sidebar
         # color (#16233D). Flagging the divergence here since it's a
         # deliberate deviation from that doc, not an oversight.
-        "bg-sidebar": "#395790",
+        "bg-sidebar": "#16233D",
         "bg-panel": "#1E293B",
         "bg-panel-alt": "#243044",
         "border-default": "#334155",
@@ -328,6 +328,25 @@ def inject_base_css() -> None:
             border-radius: {BUTTON_RADIUS}px !important;
             border-color: {theme['border-default']} !important;
         }}
+
+        /* Native st.radio option text (Page 02's Auto/Manual toggle,
+           Page 03's Bandpass mode, Page 07's Fit type, and any future
+           st.radio) falls back to Streamlit's own base theme text color
+           from .streamlit/config.toml, which is static per server
+           instance and doesn't react to st.session_state["theme"] (see
+           the Style Guide's §5 note) -- unlike .stButton, which does pick
+           up theme tokens correctly (see 03_Bandpass_Correction.py's own
+           comment on that contrast). In light mode this made the option
+           labels effectively invisible against a light background. Fixed
+           once here, system-wide, rather than per page -- same
+           !important-needed reasoning as the stExpander fix already in
+           02_File_Loader.py, since Streamlit's own radio CSS carries its
+           own specificity that a plain `color:` rule isn't reliably
+           guaranteed to beat. */
+        [data-testid="stRadio"] label p,
+        [data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {{
+            color: {theme['text-body']} !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -405,4 +424,3 @@ def render_page_header(title: str, subtitle: str, current_stage: int, completed_
         """,
         unsafe_allow_html=True,
     )
-

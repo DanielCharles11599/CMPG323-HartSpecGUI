@@ -18,6 +18,7 @@ from utils.baseline_editor_bridge import (
     spectrum_fingerprint,
 )
 from utils.baseline_editor_logic import THIS_STAGE_KEY, stage_payload
+from utils.stage_invalidation import invalidate_baseline_dependents
 
 CURRENT_STAGE = 4
 PAGE_STAGE_KEY = THIS_STAGE_KEY
@@ -73,10 +74,45 @@ def _normalise_handoff_spectrum(spectrum: Mapping[str, Any]) -> dict[str, np.nda
 
 
 def _clear_page4_completion() -> None:
-    """Remove stale Page 4 completion/output without altering upstream stages."""
+    """Remove stale Page 4 completion/output without altering upstream stages.
+
+    Also invalidates Page 5/7/8's baseline-derived state (calibrated
+    spectrum, saved fit, export marker) -- see utils/stage_invalidation.py.
+    Previously this only cleared Page 4's own keys, so a user who reached
+    Page 5+ before Page 4 became incomplete again (e.g. upstream changed,
+    or the spectrum fingerprint no longer matched) could still be looking at
+    a calibrated spectrum or saved fit computed from a baseline that no
+    longer exists.
+    """
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state.pop("baseline_corrected_spectrum", None)
+    invalidate_baseline_dependents(st.session_state)
+
+
+def _flattened_spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any] | None) -> bool:
+    """Compare two flattened-spectrum dicts for equality, array by array.
+
+    Mirrors 03_Bandpass_Correction.py's own _spectra_equal() -- same
+    dict-of-array-likes shape ({"Vlsr": [...], "LCP": [...], "RCP": [...]}),
+    same reason for existing (detect a genuine output change vs. an
+    identical rerun) -- kept as a page-local copy rather than a shared
+    utils function since this task's scope was Pages 3/4/5/6, not
+    introducing new shared modules for a two-line comparison.
+    """
+    if not left or not right:
+        return False
+    try:
+        return all(
+            np.array_equal(
+                np.asarray(left[key], dtype=float),
+                np.asarray(right[key], dtype=float),
+                equal_nan=True,
+            )
+            for key in _REQUIRED_ARRAY_KEYS
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _sync_dash_state_into_streamlit() -> None:
@@ -120,11 +156,22 @@ def _sync_dash_state_into_streamlit() -> None:
 
     flattened = bridge.get("flattened_spectrum")
     if payload["complete"] and flattened:
+        previous_flattened = st.session_state.get("baseline_corrected_spectrum")
+        if previous_flattened is not None and not _flattened_spectra_equal(previous_flattened, flattened):
+            # Page 4 is still complete, but a different block/order selection
+            # produced a genuinely different flattened spectrum -- Page 5/7/8
+            # derived state (calibrated spectrum, saved fit, export marker)
+            # was computed from the old one and is now stale.
+            invalidate_baseline_dependents(st.session_state)
+            session_store.log_event(
+                "Baseline output changed — downstream calibration/fit results invalidated"
+            )
         st.session_state["baseline_corrected_spectrum"] = flattened
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
     else:
         st.session_state.pop("baseline_corrected_spectrum", None)
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+        invalidate_baseline_dependents(st.session_state)
 
     seen_event_ids = set(
         st.session_state.setdefault("baseline_editor_seen_event_ids", [])

@@ -1,0 +1,10 @@
+2018d218_16h37m12s_Spec_sharmila_G328.24-0.55.fits HPN 1
+2018d218_16h38m27s_Spec_sharmila_G328.24-0.55.fits HPS 1
+2018d218_16h39m37s_Spec_sharmila_G328.24-0.55.fits HPE 1
+2018d218_16h40m47s_Spec_sharmila_G328.24-0.55.fits HPW 1
+2018d218_16h41m57s_Spec_sharmila_G328.24-0.55.fits ON 1
+2018d218_16h42m52s_Spec_sharmila_G328.24-0.55.fits ON 1
+2018d218_16h47m02s_Spec_sharmila_G328.24-0.55.fits ON 0
+2018d218_16h50m42s_Spec_sharmila_G328.24-0.55.fits ON 0
+2018d218_16h54m52s_Spec_sharmila_G328.24-0.55.fits ON 0
+2018d218_16h58m32s_Spec_sharmila_G328.24-0.55.fits ON 0
