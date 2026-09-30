@@ -145,4 +145,3 @@ if __name__ == "__main__":
     written = build_all(target)
     for name, path in written.items():
         print(f"{name} -> {path}")
-        

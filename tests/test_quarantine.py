@@ -109,4 +109,3 @@ def test_move_to_quarantine_reports_flagged_dir_creation_failure(isolated_fits_a
 
     with pytest.raises(QuarantineError, match="could not create/access"):
         move_to_quarantine("good_date.fits")
-        

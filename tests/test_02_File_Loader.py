@@ -637,4 +637,3 @@ def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
     assert df.loc["good_date.fits", "HPBW"] == "0"
     # the raw dump must still be visible too, just relabeled
     assert "HPBW (raw)" in df.columns
-    

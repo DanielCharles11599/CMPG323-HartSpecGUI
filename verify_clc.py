@@ -61,7 +61,7 @@ def check_clc_modules():
                 py_compile.compile(str(file_path), doraise=True)
                 syntax_ok = "✅ PASS"
                 passed_count += 1
-            except py_compile.PyCompileError as e:
+            except py_compile.PyCompileError:
                 syntax_ok = "❌ FAIL"
                 syntax_error_count += 1
             except Exception:
@@ -77,12 +77,12 @@ def check_clc_modules():
     print("========================= SUMMARY =========================")
     print(f"Total Required Modules Checked : {len(EXPECTED_MODULES)}")
     print(f"Successfully Located & Parsed  : {passed_count}")
-    
+
     if missing_count > 0:
         print(f"❌ Missing Modules             : {missing_count} (Check your Google Drive download!)")
     if syntax_error_count > 0:
         print(f"❌ Syntax/Compilation Failures  : {syntax_error_count} (Incompatible with current environment)")
-        
+
     print("==================================================")
 
     if missing_count == 0 and syntax_error_count == 0:
@@ -91,6 +91,6 @@ def check_clc_modules():
     else:
         print("⚠️  ACTION REQUIRED: Please verify and resolve the issues flagged above.")
 
+
 if __name__ == "__main__":
     check_clc_modules()
-    
