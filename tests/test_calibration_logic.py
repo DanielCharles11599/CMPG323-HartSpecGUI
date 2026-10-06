@@ -34,6 +34,34 @@ class TestPssWindow:
         assert result["days"] == 15
 
 
+class TestPssFileResolution:
+    def test_configured_pss_path_is_preferred(self, monkeypatch, tmp_path):
+        filename = "custom_pss.txt"
+        configured_file = tmp_path / filename
+        configured_file.write_text("test")
+
+        monkeypatch.setenv("PSS_DATA_PATH", str(tmp_path))
+
+        resolved = calibration_logic._resolve_pss_file(filename)
+
+        assert resolved == configured_file
+
+    def test_missing_configured_file_falls_back_to_bundled_clc(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setenv("PSS_DATA_PATH", str(tmp_path))
+
+        resolved = calibration_logic._resolve_pss_file(
+            "PSS_6668_Hydra_LCP.txt"
+        )
+
+        assert resolved.is_file()
+        assert resolved.name == "PSS_6668_Hydra_LCP.txt"
+        assert resolved.parent.name == "clc"
+
+
 class TestPssHistory:
     def test_loads_lcp_and_rcp_series_for_supported_frequency(
         self,

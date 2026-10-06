@@ -30,6 +30,31 @@ styles.inject_base_css()
 
 _theme = styles.get_theme()
 
+# Page 05 uses native bordered Streamlit containers and metric widgets.
+# Keep them aligned with the shared HartSpec light/dark theme without
+# modifying the application-wide stylesheet.
+st.markdown(
+    f"""
+    <style>
+    [data-testid="stVerticalBlockBorderWrapper"] {{
+        background-color: {_theme["bg-panel"]} !important;
+        border-color: {_theme["border-subtle"]} !important;
+    }}
+
+    [data-testid="stMetricLabel"] p,
+    [data-testid="stMetricLabel"] div {{
+        color: {_theme["text-muted"]} !important;
+    }}
+
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricValue"] * {{
+        color: {_theme["text-heading"]} !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 loaded_spectrum = st.session_state.get("loaded_spectrum")
 atmospheric_result = None
 atmospheric_error = None
@@ -38,9 +63,6 @@ pss_history = None
 pss_window = None
 pss_averages = None
 pss_error = None
-
-calibrated_spectrum = None
-calibration_apply_error = None
 
 if loaded_spectrum is not None:
     try:
@@ -86,25 +108,6 @@ if loaded_spectrum is not None:
         and pss_error is None
     )
 
-    # Actually apply ATcor + PSS to the baseline-flattened spectrum, rather
-    # than only ever computing/displaying them as metrics. Without this,
-    # st.session_state["calibrated_spectrum"] -- which Page 07/08 already
-    # check for as their first choice of spectrum -- was never written by
-    # anything, so calibration never reached spectral fitting. See
-    # calibration_logic.apply_calibration_to_spectrum()'s own docstring for
-    # the exact ATcor/PSS convention used and what to fix if it's wrong.
-    if page_complete:
-        try:
-            calibrated_spectrum = calibration_logic.apply_calibration_to_spectrum(
-                st.session_state.get("baseline_corrected_spectrum"),
-                atmospheric_result,
-                pss_averages["lcp"],
-                pss_averages["rcp"],
-            )
-        except Exception as exc:
-            calibration_apply_error = str(exc)
-            page_complete = False
-
     page_payload = {
         "complete": page_complete,
         "atmospheric": None,
@@ -147,13 +150,9 @@ if loaded_spectrum is not None:
     if pss_error is not None:
         page_payload["pss_error"] = pss_error
 
-    if calibration_apply_error is not None:
-        page_payload["calibration_apply_error"] = calibration_apply_error
-
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = page_payload
 
     if page_complete:
-        st.session_state["calibrated_spectrum"] = calibrated_spectrum
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
 
         if not was_page_complete:
@@ -166,11 +165,9 @@ if loaded_spectrum is not None:
             )
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-        st.session_state.pop("calibrated_spectrum", None)
 else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-    st.session_state.pop("calibrated_spectrum", None)
 
 styles.render_page_header(
     title=PAGE_TITLE,
@@ -217,92 +214,6 @@ with st.container(border=True):
         st.info("Load a spectrum before running atmospheric calibration.")
     elif atmospheric_error is not None:
         st.error(f"Atmospheric calibration could not be completed: {atmospheric_error}")
-    elif calibration_apply_error is not None:
-        st.error(f"Calibration could not be applied to the spectrum: {calibration_apply_error}")
-
-    atmospheric_fig = go.Figure()
-
-    if atmospheric_result is not None:
-        atmospheric_fig.add_trace(
-            go.Bar(
-                x=["PWV"],
-                y=[atmospheric_result["pwv"]],
-                name="PWV",
-                hovertemplate="PWV %{y:.3f} mm<extra></extra>",
-            )
-        )
-
-        atmospheric_fig.add_trace(
-            go.Bar(
-                x=["ATcor"],
-                y=[atmospheric_result["atcor"]],
-                name="ATcor",
-                yaxis="y2",
-                hovertemplate="ATcor %{y:.4f}<extra></extra>",
-            )
-        )
-
-        atmospheric_fig.update_layout(
-            paper_bgcolor=_theme["bg-panel"],
-            plot_bgcolor=_theme["bg-panel"],
-            margin=dict(l=48, r=48, t=28, b=40),
-            height=300,
-            bargap=0.5,
-            showlegend=False,
-            xaxis=dict(
-                title="Current observation",
-            ),
-            yaxis=dict(
-                title="PWV (mm)",
-                rangemode="tozero",
-            ),
-            yaxis2=dict(
-                title="ATcor",
-                overlaying="y",
-                side="right",
-                rangemode="tozero",
-            ),
-            font=dict(
-                family="Inter, -apple-system, 'Segoe UI', sans-serif",
-                size=11,
-                color=_theme["text-body"],
-            ),
-        )
-    else:
-        atmospheric_fig.add_annotation(
-            text="Atmospheric calibration data will appear here",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-            font=dict(
-                family="Inter, -apple-system, 'Segoe UI', sans-serif",
-                size=13,
-                color=_theme["text-muted"],
-            ),
-        )
-
-        atmospheric_fig.update_layout(
-            paper_bgcolor=_theme["bg-panel"],
-            plot_bgcolor=_theme["bg-panel"],
-            margin=dict(l=48, r=16, t=20, b=40),
-            height=300,
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False),
-            font=dict(
-                family="Inter, -apple-system, 'Segoe UI', sans-serif",
-                size=11,
-                color=_theme["text-body"],
-            ),
-        )
-
-    st.plotly_chart(
-        atmospheric_fig,
-        use_container_width=True,
-        config={"displayModeBar": False},
-        theme=None
-    )
 
 
 # PSS calibration
@@ -350,7 +261,7 @@ with st.container(border=True):
                 y=pss_history["lcp"]["pss"],
                 mode="lines",
                 name="LCP",
-                line=dict(color="#1F77B4"),
+                line=dict(color=styles.LCP_COLOR, width=1.8),
                 hovertemplate="MJD %{x:.3f}<br>LCP %{y:.4f}<extra></extra>",
             )
         )
@@ -361,7 +272,7 @@ with st.container(border=True):
                 y=pss_history["rcp"]["pss"],
                 mode="lines",
                 name="RCP",
-                line=dict(color="#FF7F0E"),
+                line=dict(color=styles.RCP_COLOR, width=1.8),
                 hovertemplate="MJD %{x:.3f}<br>RCP %{y:.4f}<extra></extra>",
             )
         )
@@ -369,18 +280,22 @@ with st.container(border=True):
         pss_fig.add_vrect(
             x0=pss_window["start_mjd"],
             x1=pss_window["end_mjd"],
-            opacity=0.12,
+            fillcolor=_theme["accent"],
+            opacity=0.10,
             line_width=0,
             layer="below",
             annotation_text="±15 day window",
             annotation_position="top left",
+            annotation_font_color=_theme["text-muted"],
         )
 
         pss_fig.add_vline(
             x=pss_window["observation_mjd"],
             line_dash="dash",
+            line_color=_theme["text-muted"],
             annotation_text="Observation",
             annotation_position="top",
+            annotation_font_color=_theme["text-muted"],
         )
 
         pss_fig.update_layout(
@@ -394,9 +309,21 @@ with st.container(border=True):
                     pss_window["start_mjd"],
                     pss_window["end_mjd"],
                 ],
+                showgrid=True,
+                gridcolor=_theme["border-subtle"],
+                linecolor=_theme["border-subtle"],
+                tickfont=dict(color=_theme["text-body"]),
+                title_font=dict(color=_theme["text-body"]),
+                zeroline=False,
             ),
             yaxis=dict(
                 title="PSS",
+                showgrid=True,
+                gridcolor=_theme["border-subtle"],
+                linecolor=_theme["border-subtle"],
+                tickfont=dict(color=_theme["text-body"]),
+                title_font=dict(color=_theme["text-body"]),
+                zeroline=False,
             ),
             legend=dict(
                 orientation="h",
@@ -404,6 +331,7 @@ with st.container(border=True):
                 y=1.02,
                 xanchor="right",
                 x=1,
+                font=dict(color=_theme["text-body"]),
             ),
             font=dict(
                 family="Inter, -apple-system, 'Segoe UI', sans-serif",
@@ -444,5 +372,4 @@ with st.container(border=True):
         pss_fig,
         use_container_width=True,
         config={"displayModeBar": False},
-        theme=None
     )
