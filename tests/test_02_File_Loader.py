@@ -141,7 +141,14 @@ def test_page01_multiple_selected_files_all_processed(fits_archive):
     assert "good_date.fits" in markdown_html
     assert "good_dateobs.fits" in markdown_html
     assert "unrecognized.fits" in markdown_html
-    assert "Loaded 2 of 3 file" in markdown_html
+    # Progress bar now always reaches 100% once scanning finishes ("N of N
+    # files processed"), paired with an explicit Valid/Flagged badge
+    # breakdown underneath -- see the "LOAD-PROGRESS UI PATTERN CHANGE"
+    # note in 02_File_Loader.py's module docstring for why "Loaded X of Y"
+    # was replaced.
+    assert "3 of 3 files processed" in markdown_html
+    assert "2 Valid (Loaded)" in markdown_html
+    assert "1 Flagged" in markdown_html
 
 
 def test_standalone_override_still_works_without_page01(fits_archive):

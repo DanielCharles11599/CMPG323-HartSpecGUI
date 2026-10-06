@@ -301,6 +301,7 @@ with st.container(border=True):
         atmospheric_fig,
         use_container_width=True,
         config={"displayModeBar": False},
+        theme=None
     )
 
 
@@ -443,4 +444,5 @@ with st.container(border=True):
         pss_fig,
         use_container_width=True,
         config={"displayModeBar": False},
+        theme=None
     )

@@ -11,7 +11,37 @@ An earlier revision recreated those two helpers as page-local private
 functions so the tables kept working -- untouched by this revision.
 
 --------------------------------------------------------------------------
-LOAD-PROGRESS UI CLEANUP (this revision)
+LOAD-PROGRESS UI PATTERN CHANGE (this revision)
+--------------------------------------------------------------------------
+Real UX problem reported: with (say) 30 files selected and 10 of them
+FLAGGED (not yet quarantined -- see FR-03's confirm step below), the old
+final state read "Loaded 20 of 30 files". That reads as an INCOMPLETE
+scan -- like 10 files are still pending -- when the true state is that
+all 30 were fully scanned and accounted for; 10 of them just failed
+validation. "Loaded X of Y" conflates "how many files exist" with "how
+many passed", and shouldn't.
+
+Fixed with a two-part display, per the agreed UI pattern:
+1. The progress bar/label always reaches 100% once scanning finishes --
+   "N of N files processed" -- confirming every candidate file was
+   scanned and accounted for, not that every file succeeded.
+2. An explicit status breakdown renders directly below it:
+   "{ok_count} Valid (Loaded)" as an OK/green badge,
+   "{flagged_count} Flagged" as an error/red badge (`styles.render_badge`,
+   same `#FEE2E2`/`#991B1B` light-mode pair as the validation table below
+   it -- one badge vocabulary, not a second ad-hoc color).
+   Deliberately labeled "Flagged", not "Flagged (Quarantined)": at this
+   point in the flow nothing has actually been moved to Flagged/ yet --
+   that only happens after the explicit per-row Quarantine confirm in
+   `_render_validation_table()` below -- so calling it "Quarantined" here
+   would misstate the file's real status ahead of that action.
+
+See `_render_status_breakdown()` (new) and the tail of
+`_render_load_progress()` (changed) below.
+--------------------------------------------------------------------------
+
+--------------------------------------------------------------------------
+LOAD-PROGRESS UI CLEANUP (earlier revision)
 --------------------------------------------------------------------------
 Two things removed from `_render_load_progress()` after real browser
 feedback:
@@ -187,6 +217,26 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
     )
 
 
+def _render_status_breakdown(ok_count: int, flagged_count: int) -> None:
+    """Explicit Valid/Flagged badge row shown directly under the now-always-
+    100% load-progress bar. See this module's "LOAD-PROGRESS UI PATTERN
+    CHANGE" docstring above for why this replaced the old "Loaded X of Y"
+    single-number readout, and why it says "Flagged" rather than
+    "Flagged (Quarantined)".
+
+    Reuses `styles.render_badge()` -- the same OK/error badge pair the
+    validation table below already renders -- rather than inventing a
+    second color scheme for the same two states.
+    """
+    badges = [styles.render_badge(f"{ok_count} Valid (Loaded)", "ok")]
+    if flagged_count:
+        badges.append(styles.render_badge(f"{flagged_count} Flagged", "error"))
+    st.markdown(
+        f'<div style="display:flex; gap:8px; margin-top:10px;">{"".join(badges)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_target_file_override() -> None:
     """Manual filename override -- lets you pick which file(s) this page
     loads directly in the browser, without going through Page 01 first.
@@ -308,6 +358,13 @@ def _render_load_progress() -> None:
     multi-file UI question. Ordering is also confirmed: load ALL files
     first here; validation (including FR-03 verify) happens afterward in
     `_render_validation_table()`, not interleaved into this loop.
+
+    Final state (this revision): the bar/label always reach 100% --
+    "N of N files processed" -- once scanning finishes, with an explicit
+    Valid/Flagged badge breakdown rendered underneath via
+    `_render_status_breakdown()`. See the "LOAD-PROGRESS UI PATTERN
+    CHANGE" note at the top of this module for why "Loaded X of Y" was
+    replaced.
     """
     theme = styles.get_theme()
     filenames = _get_target_filenames()
@@ -375,12 +432,20 @@ def _render_load_progress() -> None:
         elapsed_total = time.perf_counter() - start_all
 
         ok_count = sum(1 for r in results.values() if r.ok)
+        flagged_count = n - ok_count
         plural = "s" if n != 1 else ""
+        # Always 100% here: every candidate file was scanned and accounted
+        # for. "Loaded {ok_count} of {n}" (the old label) is exactly the
+        # confusing "looks unfinished" reading this revision fixes -- see
+        # the module-level docstring note. The split between valid and
+        # flagged renders separately, right below, via
+        # _render_status_breakdown().
         _draw(
-            f"Loaded {ok_count} of {n} file{plural}",
+            f"{n} of {n} file{plural} processed",
             1.0,
             f"{elapsed_total:.2f}s elapsed \u00b7 {n} file{plural} \u00b7 100%",
         )
+        _render_status_breakdown(ok_count, flagged_count)
 
         # Aggregate failure reporting is server-side only -- the end user
         # still sees exactly which files failed and why in the validation
@@ -432,6 +497,23 @@ def _quarantine_file(filename: str) -> None:
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
     st.session_state.pop("file_loader_quarantine_error", None)
+
+    # A file quarantined AFTER already loading successfully would otherwise
+    # leave a stale ok=True IngestResult cached under this filename's key --
+    # _render_load_progress()/_render_header_fields_table() already exclude
+    # quarantined files going forward, but downstream pages (e.g.
+    # 03_Bandpass_Correction.py's _successful_loaded_entries()) read the RAW
+    # Page 01 selected_files list and key off exactly this cache to decide
+    # whether a file is usable. Without clearing it here, a file quarantined
+    # mid-session could still flow into bandpass pairing/fitting even though
+    # it's been physically moved out of the active archive. Clearing all
+    # three per-file caches forces any later lookup to treat it as "not
+    # loaded" -- which is now true, since it no longer exists at its
+    # original path.
+    st.session_state.pop(f"file_loader_ingest_result::{filename}", None)
+    st.session_state.pop(f"file_loader_verify_result::{filename}", None)
+    st.session_state.pop(f"file_loader_load_elapsed_s::{filename}", None)
+
     session_store.log_event(f"{filename} quarantined -- moved to {dest_path}")
 
 
@@ -498,10 +580,25 @@ def _render_validation_table() -> None:
         # unrelated rerun after the one that actually failed.
         st.error(f"Could not quarantine: {quarantine_error}")
 
+    # Real problem with large batches (e.g. the 230-file case that also
+    # motivated the global manual-mapping redesign): with mostly-OK rows,
+    # finding the handful that are FLAGGED/QUARANTINED meant scrolling
+    # through everything. This checkbox hides OK rows entirely rather than
+    # adding a second search box -- the validation table only has three
+    # possible statuses, so a binary toggle is simpler than a text filter.
+    show_only_flagged = st.checkbox(
+        "Show only flagged files",
+        key="file_loader_show_only_flagged",
+        help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
+    )
+    display_rows = [row for row in rows if row["status"] == "error"] if show_only_flagged else rows
+    if show_only_flagged:
+        st.caption(f"Showing {len(display_rows)} of {len(rows)} file(s).")
+
     with st.container(border=False):
         _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(display_rows):
             striped = idx % 2 == 1
             theme = styles.get_theme()
             bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]

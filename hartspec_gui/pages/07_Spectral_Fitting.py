@@ -117,6 +117,7 @@ if result.ok:
         name="Fit" if not result.fell_back else f"Fit ({result.fit_type_used})",
     )
 theme = styles.get_theme()
+fig.update_layout(**styles.plotly_layout_theme(theme))
 fig.update_layout(
     height=320, margin=dict(l=40, r=20, t=10, b=40),
     paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
@@ -125,7 +126,7 @@ fig.update_layout(
     xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
     yaxis=dict(title=f"Intensity ({unit})", showgrid=False, zeroline=False, color=theme["text-muted"]),
 )
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False}, theme=None)
 styles.render_panel_close()
 
 # ---------------------------------------------------------------------

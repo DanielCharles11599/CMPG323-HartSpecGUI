@@ -104,6 +104,7 @@ elif latest_fit:
         f"({latest_fit.get('spectrum_source', 'unknown source')}) and is not overlaid. Re-run and save it on Page 07."
     )
 
+fig.update_layout(**styles.plotly_layout_theme(theme))
 fig.update_layout(
     height=260, margin=dict(l=40, r=20, t=10, b=40),
     paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
@@ -112,7 +113,7 @@ fig.update_layout(
     xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
     yaxis=dict(title=f"Intensity ({unit})", showgrid=False, zeroline=False, color=theme["text-muted"]),
 )
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False}, theme=None)
 styles.render_panel_close()
 
 # ---------------------------------------------------------------------
