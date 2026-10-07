@@ -299,6 +299,34 @@ def main() -> None:
         scrolling=False,
     )
 
+    # Keep the next pipeline action directly below the embedded editor so the
+    # user does not have to return to the sidebar after finishing FR-05/06/07.
+    # Clicking the button triggers a normal Streamlit rerun first, which means
+    # _sync_dash_state_into_streamlit() at the top of main() has already pulled
+    # the latest Dash bridge state before this readiness check is evaluated.
+    st.markdown(
+        f"<div style='height:{styles.SECTION_GAP}px'></div>",
+        unsafe_allow_html=True,
+    )
+
+    baseline_ready = (
+        PAGE_STAGE_KEY in st.session_state["completed_stages"]
+        and st.session_state.get("baseline_corrected_spectrum") is not None
+    )
+
+    if st.button(
+        "Continue to Calibration Dashboard →",
+        type="primary",
+        key="continue_to_calibration_dashboard",
+    ):
+        if baseline_ready:
+            st.switch_page("pages/05_Calibration_Dashboard.py")
+        else:
+            st.warning(
+                "Complete the baseline block selection and polynomial fit before continuing. "
+                "Once the editor has produced a valid flattened spectrum, click Continue again."
+            )
+
 
 if __name__ == "__main__":
     main()
