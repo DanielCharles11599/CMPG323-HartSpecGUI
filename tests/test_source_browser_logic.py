@@ -25,7 +25,6 @@ from utils.source_browser_logic import (  # noqa: E402
     earliest_observation_date,
     flatten_files,
     matching_files,
-    run_file_check_placeholder,
     scan_fits_directory_tree,
     status_css_class,
 )
@@ -306,20 +305,4 @@ class TestBuildSelectedFiles:
     def test_empty_list_returns_empty_list(self, monkeypatch):
         monkeypatch.setenv("FITS_ARCHIVE_PATH", "/whatever")
         assert build_selected_files([]) == []
-
-
-class TestRunFileCheckPlaceholder:
-    def test_writes_a_block_file_listing_the_given_paths(self, tmp_path):
-        workspace_dir = tmp_path / "workspace"
-        fits_paths = [tmp_path / "a.fits", tmp_path / "b.fits"]
-
-        block_file = run_file_check_placeholder(fits_paths, workspace_dir)
-
-        assert block_file.exists()
-        content = block_file.read_text().splitlines()
-        assert content == [str(p) for p in fits_paths]
-
-    def test_creates_workspace_directory_if_missing(self, tmp_path):
-        workspace_dir = tmp_path / "nested" / "workspace"
-        run_file_check_placeholder([], workspace_dir)
-        assert workspace_dir.is_dir()
+        

@@ -7,9 +7,8 @@
 # Figma-mockup-only reading of this page):
 #   - CLC modules replaced: Interact.py (terminal menu — naturally superseded
 #     by real Streamlit widgets, no source needed) and File_check.py (file
-#     sorting — see run_file_check_placeholder() below, which is NOT yet the
-#     real integration; clc/File_check.py's actual signature wasn't available
-#     when this was written).
+#     sorting — now REAL: see run_observation_block_sort() below, which calls
+#     clc/File_check.py's run_file_check() after its Phase 0 revision).
 #   - Only raw FITS files (.fits / .fit) under a user-editable directory path
 #     are in scope — no PSS files on this page.
 #   - Source Name and Frequency are filter dropdowns populated from what's
@@ -18,7 +17,13 @@
 #     flat checkbox list.
 #   - Nothing is written to disk permanently here; only
 #     session_state["pipeline_data"] gets the filtered FITS paths, chosen
-#     source name, chosen frequency, and earliest observation date.
+#     source name, chosen frequency, and earliest observation date. (The one
+#     exception is File_check's observation-block files, written into the
+#     session's own workspace folder -- never into the read-only FITS archive.)
+#
+# UAT-feedback revision: adds list_subdirectories()/count_fits_files()/
+# parent_directory() for the in-page folder navigator, and replaces
+# run_file_check_placeholder() with the real clc.File_check integration.
 #
 # --------------------------------------------------------------------------
 # QUARANTINE-RESURFACING FIX (this revision)
@@ -54,6 +59,9 @@
 # code fix alone repairs old, already-serialized selections.
 # --------------------------------------------------------------------------
 
+import re
+import shutil
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -467,53 +475,161 @@ def build_selected_files(filtered_files: List[SourceFileEntry]) -> List[str]:
     return [_relative_to_archive(f.path, archive_root) for f in filtered_files]
 
 
-def run_file_check_placeholder(fits_paths: List[Path], workspace_dir: Path) -> Path:
-    """NOT the real clc.File_check integration -- see the chat response for
-    the full writeup.
+# ---------------------------------------------------------------------------
+# Folder navigator helpers (UAT feedback: pick the FITS folder with a button
+# instead of typing the path). Streamlit has no native folder picker, and a
+# tkinter dialog would open on the *server*, not the user's browser, so the
+# page renders its own navigator over the server-visible filesystem using
+# these pure helpers.
+# ---------------------------------------------------------------------------
 
-    The real clc/File_check.py has now been reviewed, and it can't be wired
-    in as a simple function call the way clc.load_file / clc.load_file2 are
-    in fits_ingest.py. As written, File_check.py is a bare top-level
-    script, not a function:
-      - It calls Interact.interaction() to prompt for Observation/Frequency
-        via terminal input() -- the same blocking-input problem the
-        Phase-0 fix already removed from Option.py, apparently not yet
-        applied here.
-      - It calls os.chdir() into a working directory it builds itself --
-        an unsafe global side effect in a shared Streamlit server process.
-      - It shells out via os.system('ls *.fits > ...') and reads/writes
-        several files relative to that chdir'd cwd, rather than an
-        explicit workspace_dir passed in.
-      - Its file-to-block sorting (grouping FITS files into observation
-        blocks by 'position'/'pointing' header values -- HPN/HPS/HPE/HPW/
-        ON/OFF) is a real, fairly intricate state machine, not incidental
-        GUI plumbing -- reimplementing it here would mean reinterpreting
-        domain-specific observational logic, which the "never modify the
-        underlying scientific algorithms" rule says not to do without
-        asking first. It also appears to contain a bug (two `elif`
-        branches with an identical guard condition, the second
-        unreachable) -- not something to silently "fix" one way or the
-        other on a guess.
+MAX_LISTED_SUBDIRECTORIES = 300
 
-    This stays as the explicit stand-in until the team decides how to
-    handle it -- see the chat response for the options raised.
 
-    INDEPENDENTLY CONFIRMED against the real clc/File_check.py source (not
-    just inferred): the os.chdir()/os.system()/Interact.interaction()
-    concerns above are all real and present exactly as described. The
-    "identical elif guards" bug is also confirmed -- two branches, both
-    guarded by
-    `(file['position']=='ON' or file['position']=='OFF') and file['pointing']==0
-    and Pcount==0 and dirs!=Dates[0]`, appear back-to-back; the second is
-    unreachable dead code, not something to silently resolve one way or the
-    other on a guess. OBJECT/RESTFREQ/DATE/POSITION are all confirmed read
-    from the HDUs this module already assumes (see _scan_fits_file's own
-    header comment) -- that part of the pre-existing header-reading logic
-    needed no correction, only the DATE-OBS/DATE fallback fixed alongside
-    this note.
+def parent_directory(path: Path) -> Path:
+    """Parent of `path`; a filesystem root is its own parent (so "Up" can disable itself)."""
+    path = Path(path)
+    return path.parent
+
+
+def list_subdirectories(directory: Path, limit: int = MAX_LISTED_SUBDIRECTORIES) -> Tuple[List[Path], bool]:
+    """Visible subdirectories of `directory`, sorted case-insensitively.
+
+    Hidden folders and the quarantine folder (fits_ingest.QUARANTINE_DIRNAME) are left out, for the same reason
+    scan_fits_directory_tree() skips the latter. Returns (subdirectories, truncated); unreadable folders yield
+    ([], False) rather than raising, so a permission error never takes the page down.
     """
-    workspace_dir = Path(workspace_dir)
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    block_file = workspace_dir / "observation_block_001.txt"
-    block_file.write_text("\n".join(str(p) for p in fits_paths))
-    return block_file
+    try:
+        subs = [
+            p for p in Path(directory).iterdir()
+            if p.is_dir() and not p.name.startswith(".") and not _is_quarantine_directory(p)
+        ]
+    except OSError:
+        return [], False
+    subs.sort(key=lambda p: p.name.lower())
+    return subs[:limit], len(subs) > limit
+
+
+def count_fits_files(directory: Path) -> int:
+    """Number of .fits/.fit files directly inside `directory` (not recursive)."""
+    try:
+        return sum(1 for p in Path(directory).iterdir() if p.is_file() and p.suffix.lower() in FITS_EXTENSIONS)
+    except OSError:
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Real clc/File_check.py integration (replaces run_file_check_placeholder)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FileCheckOutcome:
+    """What File_check produced for one "Load into Pipeline" click."""
+
+    work_dir: Path
+    blocks: Dict[str, List[str]] = field(default_factory=dict)  # block file name -> FITS filenames, in order
+    discarded_files: List[str] = field(default_factory=list)  # File_check's Bad_data list (corrupt/superseded)
+    not_linked: List[str] = field(default_factory=list)  # selected files skipped (duplicate basename)
+
+
+def safe_path_component(text: object) -> str:
+    """Filesystem-safe folder name from a source name / frequency (e.g. "W3(OH)" -> "W3_OH")."""
+    cleaned = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(text)).strip("._")
+    return cleaned or "unknown"
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    """Expose `source` inside the workspace without duplicating up-to-500MB files where possible.
+
+    Order: symlink -> hardlink -> copy (Windows dev machines often can't symlink without privileges).
+    The FITS archive itself is never modified.
+    """
+    try:
+        destination.symlink_to(source.resolve())
+        return
+    except (OSError, NotImplementedError):
+        pass
+    try:
+        destination.hardlink_to(source.resolve())
+        return
+    except (OSError, NotImplementedError, AttributeError):
+        pass
+    shutil.copy2(source, destination)
+
+
+def prepare_file_check_workspace(
+    files: List[SourceFileEntry],
+    workspace_dir: Path,
+    observation: str,
+    frequency: str,
+) -> Tuple[Path, List[str]]:
+    """Build a fresh `<workspace>/<observation>/<frequency>/` folder holding links to the selected files.
+
+    File_check works on a folder of FITS files and writes its block files next to them, so the (read-only) archive
+    can't be used directly. Any previous run's folder for this observation is deleted first, so a re-click never
+    sorts stale files. Returns (work_dir, filenames_not_linked); a file is not linked only when another selected
+    file already uses the same basename (File_check identifies files by name and reads the date from its first
+    8 characters, so renaming isn't an option).
+    """
+    observation_dir = Path(workspace_dir) / safe_path_component(observation)
+    if observation_dir.exists():
+        shutil.rmtree(observation_dir)  # removes links/copies only; never follows symlinks into the archive
+    work_dir = observation_dir / safe_path_component(frequency)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    not_linked: List[str] = []
+    for entry in files:
+        destination = work_dir / entry.filename
+        if destination.exists() or destination.is_symlink():
+            not_linked.append(str(entry.path))
+            continue
+        _link_or_copy(Path(entry.path), destination)
+    return work_dir, not_linked
+
+
+def _import_run_file_check():
+    """Import clc.File_check.run_file_check lazily, so this module stays importable (and testable) without clc."""
+    try:
+        from clc.File_check import run_file_check
+    except ImportError:
+        # clc/ modules use flat sibling imports (the original CLI style); make that work too.
+        clc_dir = Path(__file__).resolve().parent.parent / "clc"
+        if str(clc_dir) not in sys.path:
+            sys.path.append(str(clc_dir))
+        from File_check import run_file_check  # type: ignore
+    return run_file_check
+
+
+def _read_lines(path: Path) -> List[str]:
+    try:
+        return [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def run_observation_block_sort(
+    files: List[SourceFileEntry],
+    workspace_dir: Path,
+    observation: str,
+    frequency_mhz: Optional[float],
+) -> FileCheckOutcome:
+    """Run the real clc.File_check over the selected files and parse what it wrote.
+
+    Raises whatever File_check raises (e.g. a file missing a header keyword); the page catches it and offers
+    "continue without block sorting" instead of failing the whole hand-off. The scientific sorting logic lives
+    entirely in clc/File_check.py and is not reimplemented here.
+    """
+    frequency_label = f"{frequency_mhz:.3f}" if frequency_mhz is not None else "unknown"
+    work_dir, not_linked = prepare_file_check_workspace(files, workspace_dir, observation, frequency_label)
+
+    result = _import_run_file_check()(
+        safe_path_component(observation), safe_path_component(frequency_label), str(Path(workspace_dir)),
+    )
+
+    blocks = {Path(p).name: _read_lines(Path(p)) for p in result["block_files"]}
+    return FileCheckOutcome(
+        work_dir=work_dir,
+        blocks=blocks,
+        discarded_files=_read_lines(Path(result["bad_data_file"])),
+        not_linked=not_linked,
+    )

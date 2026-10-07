@@ -1,10 +1,9 @@
 # 01_Source_Browser.py — FR-01: Source & Frequency Browser.
 #
 # Replaces clc's Interact.py (terminal menu — naturally superseded by real
-# Streamlit widgets) and clc's File_check.py (file sorting — see the
-# run_file_check_placeholder() call below, which is NOT yet the real
-# integration; clc/File_check.py's actual signature wasn't available when
-# this was written).
+# Streamlit widgets) and runs clc's File_check.py (observation-block sorting)
+# for real on "Load into Pipeline" — see run_observation_block_sort() in
+# utils/source_browser_logic.py and File_check.run_file_check().
 #
 # Flow: a user-editable FITS directory path -> a live directory-tree scan
 # (FITS-only, .fits/.fit) -> Source Name / Frequency filter dropdowns
@@ -12,9 +11,20 @@
 # matching files -> on "Load into Pipeline", the filtered FITS paths, chosen
 # source name, chosen frequency, and earliest observation date are written to
 # st.session_state (via utils/session_store.py's pipeline_data) — nothing is
-# written to disk permanently by this page itself, aside from the (currently
-# placeholder) File_check.py-driven observation-block files in the session's
-# workspace folder.
+# written to disk permanently by this page itself, aside from the File_check.py
+# observation-block files in the session's workspace folder.
+#
+# UAT-feedback revision (system owners):
+#   1. The FITS directory can now be picked with a "Browse…" button that
+#      opens an in-page folder navigator (Up / open subfolder / "Select this
+#      folder"); the chosen path is written into the text box automatically.
+#      The text box still works for pasting a path.
+#   2. The Source Browser panel is a fixed-height, scrollable panel, so the
+#      selection summary and "Load into Pipeline" stay reachable on a large
+#      archive.
+#   3. "Load into Pipeline" runs the real clc.File_check (Phase 0 revision)
+#      instead of the placeholder. If File_check fails, the page says so and
+#      offers "Continue without block sorting" rather than blocking the hand-off.
 #
 # 2026-08-28 fix: "Load into Pipeline" used to write the selected files only
 # under the "fits_file_paths" key. 02_File_Loader.py reads a "selected_files"
@@ -30,6 +40,7 @@
 #                                 mark_stage_complete(), completed_count(),
 #                                 SESSIONS_DIR
 
+import html
 from pathlib import Path
 
 import streamlit as st
@@ -39,6 +50,7 @@ from utils.source_browser_logic import (
     THIS_STAGE_KEY,
     build_selected_files,
     build_summary_text,
+    count_fits_files,
     default_fits_directory,
     distinct_frequencies_mhz,
     distinct_source_names,
@@ -46,8 +58,10 @@ from utils.source_browser_logic import (
     filter_by_filename,
     group_files_by_month,
     latest_observation_date,
+    list_subdirectories,
     matching_files,
-    run_file_check_placeholder,
+    parent_directory,
+    run_observation_block_sort,
     scan_fits_directory_tree,
     status_css_class,
 )
@@ -64,6 +78,16 @@ CURRENT_STAGE = 1  # 1-indexed — matches sidebar.STAGES order and styles.rende
 # "Stage 1 of 8".
 PAGE_TITLE = "Source Browser"
 PAGE_SUBTITLE = "FR-01 — source & frequency browser"
+
+# Scrollable panel heights (px). TODO: confirm against design — build spec §7 gives the whole Sources & Frequencies
+# panel as 380px tall (title + list); 320 leaves room for the panel title inside that.
+BROWSER_PANEL_HEIGHT = 320
+FOLDER_LIST_HEIGHT = 240
+
+# session_state keys for the folder navigator and the File_check error hand-off
+KEY_BROWSE_OPEN = "source_browser_browse_open"
+KEY_BROWSE_PATH = "source_browser_browse_path"
+KEY_SORT_ERROR = "source_browser_file_check_error"
 
 st.set_page_config(page_title="HARTSPEC — Source Browser", layout="wide", initial_sidebar_state="expanded")
 
@@ -104,6 +128,10 @@ st.markdown(
     }}
     [data-testid="stVerticalBlockBorderWrapper"] {{
         margin-bottom: {styles.SECTION_GAP}px;
+    }}
+    /* Scrollable containers nested inside a bordered panel shouldn't add a second gap. */
+    [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlockBorderWrapper"] {{
+        margin-bottom: 0;
     }}
     /* The month-grouped browse view (group_files_by_month()) renders one
        st.expander() per group. Both the header text and the panel border
@@ -155,16 +183,94 @@ styles.render_page_header(
 
 
 # ---------------------------------------------------------------------------
-# Directory path input
+# Directory path input + folder navigator
+#
+# Streamlit has no native folder picker, and a tkinter dialog would open on the
+# *server* (this runs on a headless intranet box), not in the user's browser. So
+# the "Browse…" button opens an in-page navigator over the server-visible
+# filesystem. Its callbacks (on_click) run *before* the script reruns, which is
+# the only point at which a widget's session_state key (the text box) may be
+# overwritten — that is how "Select this folder" fills the text box in.
 # ---------------------------------------------------------------------------
+def _toggle_folder_browser() -> None:
+    """Open/close the navigator, starting from the text box's current folder (or its nearest existing parent)."""
+    st.session_state[KEY_BROWSE_OPEN] = not st.session_state.get(KEY_BROWSE_OPEN, False)
+    start = Path(str(st.session_state.get("source_browser_fits_dir", "")).strip()).expanduser()
+    while not start.is_dir() and start != start.parent:
+        start = start.parent
+    st.session_state[KEY_BROWSE_PATH] = str(start)
+
+
+def _browse_to(path: str) -> None:
+    """Navigate the folder navigator to `path`."""
+    st.session_state[KEY_BROWSE_PATH] = path
+
+
+def _choose_folder(path: str) -> None:
+    """Write `path` into the FITS-directory text box and close the navigator."""
+    st.session_state["source_browser_fits_dir"] = path
+    st.session_state[KEY_BROWSE_OPEN] = False
+
+
+def _close_folder_browser() -> None:
+    st.session_state[KEY_BROWSE_OPEN] = False
+
+
+def _render_folder_browser() -> None:
+    """Fixed-height, scrollable folder list with Up / Select / Cancel controls."""
+    current = Path(st.session_state[KEY_BROWSE_PATH])
+    parent = parent_directory(current)
+    subdirectories, truncated = list_subdirectories(current)
+
+    with st.container(border=True):
+        st.markdown('<div class="hs-panel-title">Select FITS folder</div>', unsafe_allow_html=True)
+        fits_here = count_fits_files(current)
+        st.markdown(
+            f'<div class="hs-file-caption">{html.escape(str(current))} · '
+            f'{fits_here} FITS file{"s" if fits_here != 1 else ""} directly in this folder</div>',
+            unsafe_allow_html=True,
+        )
+        up_col, select_col, cancel_col, _spacer = st.columns([1, 2, 1, 4])
+        with up_col:
+            st.button("↑ Up", key="source_browser_up_btn", on_click=_browse_to, args=(str(parent),),
+                      disabled=(parent == current), use_container_width=True)
+        with select_col:
+            st.button("Select this folder", key="source_browser_select_btn", type="primary",
+                      on_click=_choose_folder, args=(str(current),), use_container_width=True)
+        with cancel_col:
+            st.button("Cancel", key="source_browser_cancel_btn", on_click=_close_folder_browser,
+                      use_container_width=True)
+
+        with st.container(height=FOLDER_LIST_HEIGHT):
+            if not subdirectories:
+                st.markdown('<div class="hs-file-caption">No subfolders here.</div>', unsafe_allow_html=True)
+            for index, subdirectory in enumerate(subdirectories):
+                st.button(f"{subdirectory.name}/", key=f"source_browser_nav_{index}", on_click=_browse_to,
+                          args=(str(subdirectory),), use_container_width=True)
+            if truncated:
+                st.markdown(
+                    '<div class="hs-file-caption">Only the first folders are listed — type the path above '
+                    'to go deeper.</div>',
+                    unsafe_allow_html=True,
+                )
+
+
 st.session_state.setdefault("source_browser_fits_dir", default_fits_directory())
 
 st.markdown('<div class="hs-eyebrow">FITS Directory</div>', unsafe_allow_html=True)
-fits_dir_str = st.text_input(
-    "FITS directory",
-    key="source_browser_fits_dir",
-    label_visibility="collapsed",
-)
+_dir_input_col, _browse_btn_col = st.columns([6, 1])
+with _dir_input_col:
+    fits_dir_str = st.text_input(
+        "FITS directory",
+        key="source_browser_fits_dir",
+        label_visibility="collapsed",
+    )
+with _browse_btn_col:
+    st.button("Browse…", key="source_browser_browse_btn", on_click=_toggle_folder_browser,
+              use_container_width=True)
+
+if st.session_state.get(KEY_BROWSE_OPEN):
+    _render_folder_browser()
 
 
 @st.cache_data(ttl=30, show_spinner="Scanning FITS directory…")
@@ -179,7 +285,7 @@ def _cached_scan(directory: str):
     return scan_fits_directory_tree(Path(directory))
 
 
-tree = _cached_scan(fits_dir_str)
+tree = _cached_scan(fits_dir_str.strip())
 
 if tree is None:
     st.markdown(
@@ -266,32 +372,39 @@ filtered_files = filter_by_filename(source_frequency_matches, filename_search)
 # design was for. Only the newest group starts expanded so the page isn't a
 # wall of files by default.
 # ---------------------------------------------------------------------------
+def _file_rows_html(group_files) -> str:
+    """One HTML block for a whole month group (one st.markdown per group, not per file — hundreds of files stay fast).
+
+    Position (HPN/HPS/HPE/HPW/ON/OFF, from HDU 2's POSITION keyword) is shown for the user's own information only —
+    this is NOT File_check.py's observation-block sorting, just the raw per-file tag.
+    """
+    rows = []
+    for source_file in group_files:
+        badge_html = styles.render_badge(source_file.status, status_css_class(source_file.status))
+        position_label = f" · {html.escape(source_file.position)}" if source_file.position else ""
+        rows.append(
+            f'<div class="hs-file-name">{html.escape(source_file.filename)}</div>'
+            f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB{position_label} · {badge_html}</div>'
+        )
+    return "".join(rows)
+
+
 with st.container(border=True):
     st.markdown('<div class="hs-panel-title">Source Browser — FR-01</div>', unsafe_allow_html=True)
 
-    if not filtered_files:
-        st.markdown(
-            '<div class="hs-file-caption">No files match the current filters/search.</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        for group_index, (group_label, group_files) in enumerate(group_files_by_month(filtered_files)):
-            group_header = f"{group_label} ({len(group_files)} file{'s' if len(group_files) != 1 else ''})"
-            with st.expander(group_header, expanded=(group_index == 0)):
-                for source_file in group_files:
-                    badge_html = styles.render_badge(source_file.status, status_css_class(source_file.status))
-                    # Position (HPN/HPS/HPE/HPW/ON/OFF, from HDU 2's POSITION
-                    # keyword) is shown for the user's own information only --
-                    # this is NOT File_check.py's real observation-block
-                    # sorting, just the same raw per-file tag
-                    # 03_Bandpass_Correction.py already reads independently.
-                    position_label = f" · {source_file.position}" if source_file.position else ""
-                    st.markdown(
-                        f'<div class="hs-file-name">{source_file.filename}</div>'
-                        f'<div class="hs-file-caption">{source_file.size_mb:.1f}MB{position_label} · '
-                        f'{badge_html}</div>',
-                        unsafe_allow_html=True,
-                    )
+    # Fixed height + internal scrolling (UAT feedback): the page itself no longer grows with the archive, so the
+    # selection summary and "Load into Pipeline" below stay in reach.
+    with st.container(height=BROWSER_PANEL_HEIGHT):
+        if not filtered_files:
+            st.markdown(
+                '<div class="hs-file-caption">No files match the current filters/search.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            for group_index, (group_label, group_files) in enumerate(group_files_by_month(filtered_files)):
+                group_header = f"{group_label} ({len(group_files)} file{'s' if len(group_files) != 1 else ''})"
+                with st.expander(group_header, expanded=(group_index == 0)):
+                    st.markdown(_file_rows_html(group_files), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -329,32 +442,74 @@ with st.container(border=True):
         key="load_into_pipeline_btn",
     )
 
-if load_clicked:
-    # TODO: NOT the real clc.File_check integration — see run_file_check_placeholder()'s
-    # own docstring in utils/source_browser_logic.py. Replace once clc/File_check.py's
-    # signature is confirmed.
-    workspace_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "workspace"
-    run_file_check_placeholder([f.path for f in filtered_files], workspace_dir)
+def _commit_and_continue(outcome, error_message) -> None:
+    """Write the hand-off to session state, mark Stage 1 complete, log it, and go to Page 02.
 
+    `outcome` is the FileCheckOutcome (or None if File_check failed / was skipped); `error_message` is the failure
+    text in that case. Page 02 only reads "selected_files"; the rest is recorded for the session JSON / audit trail.
+    """
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
         # Kept for anything else that may already read it (pages 04/06/07/08
         # weren't available to check against when this was fixed).
         "fits_file_paths": [str(f.path) for f in filtered_files],
         # "selected_files" is the key 02_File_Loader.py actually reads
-        # (`pipeline_data[SOURCE_BROWSER_STAGE_KEY]["selected_files"]`).
-        # This page used to only write "fits_file_paths" above, which
-        # nothing downstream ever read — so every file picked here was
-        # silently ignored, and Page 02 always fell back to loading its
-        # single-file dev default instead. This is the fix for that.
+        # (`pipeline_data[SOURCE_BROWSER_STAGE_KEY]["selected_files"]`) — see build_selected_files().
         "selected_files": build_selected_files(filtered_files),
         "source_name": selected_source,
         "frequency_mhz": selected_frequency,
         "earliest_observation_date": earliest_date,
+        # File_check results (empty when it failed/was skipped).
+        "observation_blocks": outcome.blocks if outcome else {},
+        "discarded_files": outcome.discarded_files if outcome else [],
+        "file_check_workspace": str(outcome.work_dir) if outcome else None,
+        "file_check_error": error_message,
     }
     session_store.mark_stage_complete(PAGE_STAGE_KEY)
 
     session_store.log_event(
         f"Loaded {len(filtered_files)} file(s) for {selected_source} at {selected_frequency:.3f} MHz"
     )
+    if outcome:
+        session_store.log_event(
+            f"File_check sorted {len(outcome.blocks)} observation block(s); "
+            f"{len(outcome.discarded_files)} file(s) discarded"
+        )
+    else:
+        session_store.log_event(f"File_check did not complete ({error_message}); continuing without block sorting")
 
+    st.session_state.pop(KEY_SORT_ERROR, None)
     st.switch_page("pages/02_File_Loader.py")
+
+
+selection_signature = tuple(str(f.path) for f in filtered_files)
+
+if load_clicked:
+    workspace_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "workspace"
+    try:
+        with st.spinner("Sorting observation blocks (File_check)…"):
+            sort_outcome = run_observation_block_sort(
+                filtered_files, workspace_dir, selected_source, selected_frequency
+            )
+    except Exception as exc:  # noqa: BLE001 — legacy clc code can raise anything (missing header keyword, etc.)
+        # Don't navigate away: the message would be lost. Park it with the selection it belongs to and let the
+        # user choose below.
+        st.session_state[KEY_SORT_ERROR] = {
+            "message": f"{type(exc).__name__}: {exc}",
+            "signature": selection_signature,
+        }
+    else:
+        _commit_and_continue(sort_outcome, None)
+
+pending_error = st.session_state.get(KEY_SORT_ERROR)
+if pending_error and pending_error["signature"] == selection_signature:
+    with st.container(border=True):
+        st.markdown(
+            styles.render_badge("Block sorting failed", "error")
+            + f'<div class="hs-summary-text">File_check could not sort the selected files into observation blocks: '
+            f'{html.escape(pending_error["message"])}</div>'
+            '<div class="hs-file-caption">Page 02 validates the files themselves; you can continue without block '
+            'sorting, or change the selection and try again.</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Continue without block sorting →", key="continue_without_sort_btn"):
+            _commit_and_continue(None, pending_error["message"])
