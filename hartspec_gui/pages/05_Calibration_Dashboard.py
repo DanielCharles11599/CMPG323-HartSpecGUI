@@ -373,3 +373,20 @@ with st.container(border=True):
         use_container_width=True,
         config={"displayModeBar": False},
     )
+
+st.markdown(
+    f"<div style='height:{styles.SECTION_GAP}px'></div>",
+    unsafe_allow_html=True,
+)
+
+if st.button(
+    "Continue to Pointing Correction →",
+    type="primary",
+    key="continue_to_pointing_correction",
+):
+    if PAGE_STAGE_KEY in st.session_state["completed_stages"]:
+        st.switch_page("pages/06_Pointing_Correction.py")
+    else:
+        st.warning(
+            "Complete the atmospheric and PSS calibration before continuing."
+        )
