@@ -62,6 +62,7 @@ atmospheric_error = None
 pss_history = None
 pss_window = None
 pss_averages = None
+pss_30day_stats = None
 pss_error = None
 
 if loaded_spectrum is not None:
@@ -83,6 +84,11 @@ if loaded_spectrum is not None:
         pss_averages = calibration_logic.get_pss_window_averages(
             pss_history,
             pss_window,
+        )
+        pss_30day_stats = calibration_logic.get_pss_trailing_statistics(
+            pss_history,
+            pss_window["observation_mjd"],
+            days=30,
         )
     except Exception as exc:
         pss_error = str(exc)
@@ -142,6 +148,20 @@ if loaded_spectrum is not None:
                 else float(pss_averages["rcp"])
             ),
             "source_files": dict(pss_history["source_files"]),
+            "trailing_30_day": (
+                None
+                if pss_30day_stats is None
+                else {
+                    "start_mjd": float(pss_30day_stats["start_mjd"]),
+                    "end_mjd": float(pss_30day_stats["end_mjd"]),
+                    "lcp_mean": pss_30day_stats["lcp"]["mean"],
+                    "lcp_std": pss_30day_stats["lcp"]["std"],
+                    "lcp_count": pss_30day_stats["lcp"]["count"],
+                    "rcp_mean": pss_30day_stats["rcp"]["mean"],
+                    "rcp_std": pss_30day_stats["rcp"]["std"],
+                    "rcp_count": pss_30day_stats["rcp"]["count"],
+                }
+            ),
         }
 
     if atmospheric_error is not None:
@@ -176,12 +196,39 @@ styles.render_page_header(
     completed_stages=session_store.completed_count(),
 )
 
+st.markdown(
+    f"""
+    <div style="
+        background:
+            color-mix(
+                in srgb,
+                {_theme["accent"]} 10%,
+                {_theme["bg-panel"]}
+            );
+        border-left: 4px solid {_theme["accent"]};
+        color: {_theme["text-body"]};
+        padding: 12px 16px;
+        border-radius: 6px;
+        margin-bottom: 14px;
+        line-height: 1.5;
+        font-size: 0.92rem;
+    ">
+        Review the atmospheric calibration metrics and PSS history for the
+        loaded observation. The shaded region marks the ±15-day PSS window,
+        while the dashed vertical line marks the observation date. This stage
+        completes automatically when the atmospheric calibration and both LCP
+        and RCP PSS values are available.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # Atmospheric calibration
 
 with st.container(border=True):
     st.markdown(
-        '<div class="hs-panel-title">Atmospheric calibration</div>',
+        '<div class="hs-panel-title" style="font-size:0.92rem; font-weight:600;">Atmospheric calibration</div>',
         unsafe_allow_html=True,
     )
 
@@ -211,7 +258,28 @@ with st.container(border=True):
         st.metric("ATcor", atcor_value)
 
     if loaded_spectrum is None:
-        st.info("Load a spectrum before running atmospheric calibration.")
+        st.markdown(
+            f"""
+            <div style="
+                background:
+                    color-mix(
+                        in srgb,
+                        {_theme["accent"]} 8%,
+                        {_theme["bg-panel"]}
+                    );
+                border-left: 3px solid {_theme["accent"]};
+                color: {_theme["text-body"]};
+                padding: 10px 12px;
+                border-radius: 6px;
+                margin-top: 8px;
+                line-height: 1.4;
+                font-size: 0.90rem;
+            ">
+                Load a spectrum before running atmospheric calibration.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     elif atmospheric_error is not None:
         st.error(f"Atmospheric calibration could not be completed: {atmospheric_error}")
 
@@ -220,7 +288,7 @@ with st.container(border=True):
 
 with st.container(border=True):
     st.markdown(
-        '<div class="hs-panel-title">PSS calibration</div>',
+        '<div class="hs-panel-title" style="font-size:0.92rem; font-weight:600;">PSS calibration</div>',
         unsafe_allow_html=True,
     )
 
@@ -248,7 +316,28 @@ with st.container(border=True):
         st.metric("RCP ±15-day mean", rcp_mean_value)
 
     if loaded_spectrum is None:
-        st.info("Load a spectrum to view PSS calibration history.")
+        st.markdown(
+            f"""
+            <div style="
+                background:
+                    color-mix(
+                        in srgb,
+                        {_theme["accent"]} 8%,
+                        {_theme["bg-panel"]}
+                    );
+                border-left: 3px solid {_theme["accent"]};
+                color: {_theme["text-body"]};
+                padding: 10px 12px;
+                border-radius: 6px;
+                margin-top: 8px;
+                line-height: 1.4;
+                font-size: 0.90rem;
+            ">
+                Load a spectrum to view PSS calibration history.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     elif pss_error is not None:
         st.error(f"PSS calibration history could not be loaded: {pss_error}")
 
@@ -259,10 +348,14 @@ with st.container(border=True):
             go.Scatter(
                 x=pss_history["lcp"]["mjd"],
                 y=pss_history["lcp"]["pss"],
-                mode="lines",
+                mode="markers",
                 name="LCP",
-                line=dict(color=styles.LCP_COLOR, width=1.8),
-                hovertemplate="MJD %{x:.3f}<br>LCP %{y:.4f}<extra></extra>",
+                marker=dict(
+                    color=styles.LCP_COLOR,
+                    size=7,
+                    opacity=0.85,
+                ),
+                hovertemplate="MJD %{x:.3f}<br>LCP PSS %{y:.4f}<extra></extra>",
             )
         )
 
@@ -270,10 +363,14 @@ with st.container(border=True):
             go.Scatter(
                 x=pss_history["rcp"]["mjd"],
                 y=pss_history["rcp"]["pss"],
-                mode="lines",
+                mode="markers",
                 name="RCP",
-                line=dict(color=styles.RCP_COLOR, width=1.8),
-                hovertemplate="MJD %{x:.3f}<br>RCP %{y:.4f}<extra></extra>",
+                marker=dict(
+                    color=styles.RCP_COLOR,
+                    size=7,
+                    opacity=0.85,
+                ),
+                hovertemplate="MJD %{x:.3f}<br>RCP PSS %{y:.4f}<extra></extra>",
             )
         )
 
@@ -373,3 +470,145 @@ with st.container(border=True):
         use_container_width=True,
         config={"displayModeBar": False},
     )
+
+    st.markdown(
+        '<div class="hs-panel-title" style="font-size:0.92rem; font-weight:600;">Previous 30-day PSS variability</div>',
+        unsafe_allow_html=True,
+    )
+
+    variability_fig = go.Figure()
+    variability_available = False
+
+    if pss_30day_stats is not None:
+        for label, key, color in (
+            ("LCP", "lcp", styles.LCP_COLOR),
+            ("RCP", "rcp", styles.RCP_COLOR),
+        ):
+            stats = pss_30day_stats[key]
+
+            if stats["mean"] is None:
+                continue
+
+            variability_available = True
+            std_value = stats["std"]
+            std_text = (
+                f"σ = {std_value:.4f}"
+                if std_value is not None
+                else "σ unavailable"
+            )
+
+            error_kwargs = {
+                "type": "data",
+                "array": [std_value if std_value is not None else 0.0],
+                "visible": std_value is not None,
+                "color": color,
+                "thickness": 1.6,
+                "width": 6,
+            }
+
+            variability_fig.add_trace(
+                go.Scatter(
+                    x=[label],
+                    y=[stats["mean"]],
+                    mode="markers+text",
+                    name=label,
+                    marker=dict(
+                        color=color,
+                        size=10,
+                    ),
+                    error_y=error_kwargs,
+                    text=[std_text],
+                    textposition="top center",
+                    textfont=dict(color=_theme["text-body"]),
+                    hovertemplate=(
+                        f"{label}<br>"
+                        "30-day mean %{y:.4f}<br>"
+                        + std_text
+                        + f"<br>Measurements: {stats['count']}"
+                        + "<extra></extra>"
+                    ),
+                )
+            )
+
+    if variability_available:
+        variability_fig.update_layout(
+            paper_bgcolor=_theme["bg-panel"],
+            plot_bgcolor=_theme["bg-panel"],
+            margin=dict(l=48, r=16, t=28, b=42),
+            height=230,
+            showlegend=False,
+            xaxis=dict(
+                showgrid=False,
+                linecolor=_theme["border-subtle"],
+                tickfont=dict(color=_theme["text-body"]),
+                zeroline=False,
+            ),
+            yaxis=dict(
+                title="PSS",
+                showgrid=True,
+                gridcolor=_theme["border-subtle"],
+                linecolor=_theme["border-subtle"],
+                tickfont=dict(color=_theme["text-body"]),
+                title_font=dict(color=_theme["text-body"]),
+                zeroline=False,
+            ),
+            font=dict(
+                family="Inter, -apple-system, 'Segoe UI', sans-serif",
+                size=11,
+                color=_theme["text-body"],
+            ),
+        )
+
+        st.plotly_chart(
+            variability_fig,
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+        st.markdown(
+            f"""
+            <div style="
+                color: {_theme["text-body"]};
+                opacity: 0.78;
+                font-size: 0.82rem;
+                margin-top: 2px;
+                margin-bottom: 4px;
+            ">
+                Error bars show ±1 sample standard deviation of the available
+                PSS measurements from the 30 days preceding the observation.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif loaded_spectrum is not None and pss_error is None:
+        st.markdown(
+            f"""
+            <div style="
+                color: {_theme["text-body"]};
+                opacity: 0.78;
+                font-size: 0.82rem;
+                margin-top: 4px;
+            ">
+                Not enough historical PSS measurements are available in the
+                previous 30 days to calculate variability.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+st.markdown(
+    f"<div style='height:{styles.SECTION_GAP}px'></div>",
+    unsafe_allow_html=True,
+)
+
+if st.button(
+    "Continue to Pointing Correction →",
+    type="primary",
+    key="continue_to_pointing_correction",
+):
+    if PAGE_STAGE_KEY in st.session_state["completed_stages"]:
+        st.switch_page("pages/06_Pointing_Correction.py")
+    else:
+        st.warning(
+            "Complete the atmospheric and PSS calibration before continuing."
+        )
