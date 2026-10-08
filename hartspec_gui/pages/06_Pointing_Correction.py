@@ -1,165 +1,158 @@
-# 06_Pointing_Correction.py -- FR-12/13: compass-grid pointing scans + offset
-# calculation.
+# 06_Pointing_Correction.py — FR-12/13: compass-grid pointing scans (user-picked peaks) + offset calculation.
 #
-# Runs off the shared utils/styles.py and utils/sidebar.py only -- no page-local
-# theme tokens, CSS, or table markup are (re)invented here.
+# How it works (UAT feedback: "black points that you click / enter values"):
+#   1. clc/File_check.py (run from Page 01) sorted the selected files into observation blocks. A pointing scan is the
+#      HPN / HPS / HPE / HPW files plus the on-source ON file (SPPOINT = 1) of a block -- utils/pointing_logic finds
+#      them, using the spectra Page 02 already loaded (no FITS file is re-read here).
+#   2. Each of the five compass panels shows that file's LCP and RCP spectra with a BLACK POINT on the peak. The point
+#      starts on the strongest channel; the user moves it by clicking the spectrum (only if the optional
+#      `streamlit-plotly-events` package is installed -- Streamlit 1.32 has no native Plotly click events) or by
+#      typing a velocity. Either way it snaps to a real channel.
+#   3. The five picked powers (mean of LCP and RCP at the channel) and the beam width from the FITS header go to the
+#      REAL clc.Point_cor.pointcor() -- via utils/pointing_logic.compute_pointing(), which leaves Point_cor.py
+#      untouched (see that module's header for the `global hp` / "../plots/" mitigation).
+#   4. Below the results, the (LCP + RCP) * Pointing Correction graph shows the correction applied to the spectrum.
 #
-# Layout note: five equal, edge-to-edge N/S/E/W/Centre panels use st.columns(5) +
-# st.container(border=True) -- the latter is the mechanism styles.inject_base_css
-# already targets via its [data-testid="stVerticalBlockBorderWrapper"] rule.
+# If the session has no complete pointing scan (File_check was skipped/failed, or the selection had none), the page
+# falls back to typing the five powers and the beam width by hand -- real inputs only, never mock values.
 #
-# CHART THEMING (this revision): _pointing_scan_figure() previously set
-# tickfont=dict(size=8) with no `color` key at all, which does NOT inherit
-# the figure's top-level layout.font color -- Plotly's default tick color
-# was left in place, effectively invisible against a dark bg-panel. Fixed
-# by calling styles.plotly_layout_theme(theme) first and layering the
-# panel-specific overrides (height, margins, no titles) on top of it,
-# rather than hand-rolling axis dicts here. See that helper's own
-# docstring in utils/styles.py for the full root-cause explanation --
-# this is the reference pattern every other chart-producing page should
-# follow too.
-#
-# Science note -- READ BEFORE TRUSTING THIS PAGE'S NUMBERS:
-#
-# 1. clc/Point_cor.py's `pointcor()` still uses `global hp` (set as a side effect
-#    inside pointcor(), read by gaussf() during curve_fit). The project prompt
-#    states this global-variable conflict was already fixed in Phase 0 -- the
-#    file as delivered says otherwise. In a Streamlit server, that global is
-#    shared across every concurrent session in the process, so two users running
-#    this page at once could race on it mid-fit. NOT worked around here --
-#    per the project prompt, a leftover that looks unfixed gets flagged and
-#    confirmed, not silently patched or silently trusted.
-#    # TODO: confirm against design -- is `hp` already guarded elsewhere (e.g. a
-#    process-level lock), or does this genuinely still need Phase 0 work?
-#
-# 2. pointcor() returns (correction_factor, ns_offset_deg, ew_offset_deg) -- not
-#    the (Azimuth offset, Elevation offset, RMS residual) triple the build spec's
-#    sample table showed. NS/EW -> Elevation/Azimuth is a common telescope
-#    convention but not confirmed here, and pointcor() never computes an RMS
-#    residual (it discards curve_fit's covariance matrix). The table below shows
-#    exactly what the function returns, correctly labeled, rather than forcing it
-#    into the build spec's field names.
-#    # TODO: confirm against design -- the real FR-12/13 field mapping, and
-#    whether RMS residual should come from a (Phase-0, GUI-integration-only)
-#    change to pointcor()'s return value, a separate calculation, or be dropped.
-#
-# 3. pointcor() also writes a matplotlib PDF to a hardcoded relative path
-#    ("../plots/...", outside the mandated /data/ layout) and uses pyplot's
-#    global current-figure state, which has its own thread-safety caveats in a
-#    multi-user server. Not modified here; the call below is wrapped so a
-#    missing ../plots/ directory doesn't crash the page, but the underlying
-#    behavior is unchanged.
-#
-# 4. Real per-direction scan *peak* readings (the single power values pointcor()
-#    actually needs at each half-power point) aren't sourced from anywhere yet --
-#    nothing upstream in this pipeline currently extracts them. The illustrative
-#    scan curves in each compass panel and the values fed into pointcor() below
-#    are both clearly-marked mock data pending that plumbing.
+# Science notes (unchanged from the earlier revision; still need owner confirmation):
+#   # TODO: confirm against design -- NS/EW offsets are reported as returned by pointcor(); mapping them to
+#   # Azimuth/Elevation (the build spec's sample table) is not confirmed, and pointcor() computes no RMS residual.
+#   # TODO: confirm against design -- using the LCP/RCP mean as "the" peak power is our reading; pointcor() takes one
+#   # value per direction.
 from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from clc import Point_cor
-from utils import session_store, sidebar, styles
+from utils import baseline_editor_bridge, fitting_inputs, pointing_logic, session_store, sidebar, spectrum_resolution
+from utils import styles
+
+try:  # optional: click-to-pick support; typed entry always works without it
+    from streamlit_plotly_events import plotly_events
+except ImportError:  # pragma: no cover -- depends on the deployment
+    plotly_events = None
 
 CURRENT_STAGE = 6
-# Follows the "0N_description" stage-key convention used by Pages 01/03/04/05/07
-# (see 01_source_browser, 03_bandpass_correction, 04_baseline_editor,
-# 05_calibration_dashboard, 07_spectral_fitting). Nothing downstream currently
-# gates on this key, but Page 06 previously had no key at all -- so it could
-# never be recorded complete, permanently capping the progress bar and leaving
-# no audit-log trace that pointing correction ever ran.
 PAGE_STAGE_KEY = "06_pointing_correction"
-DIRECTIONS = ["N", "S", "E", "W", "Centre"]  # left-to-right order per build spec §7 --
-# NOT a geographic cross layout, reproduce exactly.
-
-# Mock half-power-point readings + beam width, standing in for real scan data.
-# HPBW matches the sample value already used on page 02 ("0.23°") for consistency.
-# TODO: confirm against design -- replace with real values once upstream scan
-# extraction exists.
-MOCK_SCAN_PEAKS = {"north": 0.92, "south": 0.87, "east": 0.90, "west": 0.85, "cen": 1.00}
-MOCK_HPBW_DEG = 0.23
-MOCK_DIRNAME = "spectrum_002.fits"
+SOURCE_BROWSER_STAGE_KEY = "01_source_browser"
+NEXT_PAGE = "pages/07_Spectral_Fitting.py"
+DIRECTIONS = list(pointing_logic.ROLES)  # N, S, E, W, Centre -- left-to-right per build spec §7
+RESULT_CACHE_KEY = "pointing_result_cache"
+LOGGED_SIGNATURE_KEY = "pointing_logged_signature"
 
 
-def _pointing_scan_figure(direction: str, theme: dict[str, str]) -> go.Figure:
-    """Build an illustrative pointing-scan plot (amplitude vs. angular offset).
+# ---------------------------------------------------------------------------
+# Data access
+# ---------------------------------------------------------------------------
+def _loaded_spectra_by_basename() -> dict[str, dict[str, Any]]:
+    """Spectra Page 02 loaded for the Page 01 selection, keyed by file basename (File_check's block entries)."""
+    selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    spectra: dict[str, dict[str, Any]] = {}
+    for relative_name in selection.get("selected_files", []) or []:
+        result = st.session_state.get(f"file_loader_ingest_result::{relative_name}")
+        if result is not None and getattr(result, "ok", False) and result.spectrum is not None:
+            spectra[Path(relative_name).name] = result.spectrum
+    return spectra
 
-    # TODO: confirm against design. This is a full mock scan curve for display
-    # only -- it is NOT the same data pointcor() consumes (which only needs the
-    # single half-power-point readings in MOCK_SCAN_PEAKS, not a full curve).
-    """
-    offsets = np.linspace(-5, 5, 41)
-    mock_peak_offset = {"N": 0.3, "S": -0.2, "E": 0.1, "W": -0.4, "Centre": 0.0}[direction]
-    amplitude = np.exp(-((offsets - mock_peak_offset) ** 2) / (2 * 1.4**2))
 
+def _find_scans(spectra: dict[str, dict[str, Any]]) -> list[pointing_logic.PointingScan]:
+    blocks = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {}).get("observation_blocks") or {}
+    return pointing_logic.find_pointing_scans(blocks, spectra.get)
+
+
+def _as_positive_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) and number > 0 else None
+
+
+# ---------------------------------------------------------------------------
+# Compass panels
+# ---------------------------------------------------------------------------
+def _panel_figure(spectrum: dict[str, Any], pick_index: int, theme: dict[str, str]) -> go.Figure:
+    """LCP/RCP (fixed polarisation colours) with the black pick point on the LCP/RCP mean at the picked channel."""
+    vlsr = np.asarray(spectrum["Vlsr"], dtype=float)
+    lcp = np.asarray(spectrum["LCP"], dtype=float)
+    rcp = np.asarray(spectrum["RCP"], dtype=float)
     fig = go.Figure()
-    fig.add_scatter(
-        x=offsets,
-        y=amplitude,
-        mode="lines",
-        line=dict(color=theme["accent"], width=1.6),
-        showlegend=False,
-    )
-    # Shared theming (backgrounds, axis line color, tick/title/legend font
-    # color) first, panel-specific sizing/margins layered on top -- see
-    # plotly_layout_theme()'s docstring for why the ordering matters.
+    fig.add_scatter(x=vlsr, y=lcp, mode="lines", line=dict(color=styles.LCP_COLOR, width=1.0), showlegend=False,
+                    hoverinfo="x+y")
+    fig.add_scatter(x=vlsr, y=rcp, mode="lines", line=dict(color=styles.RCP_COLOR, width=1.0), showlegend=False,
+                    hoverinfo="x+y")
+    # Black with a white rim so it stays visible on the dark theme's dark panel too.
+    fig.add_scatter(x=[vlsr[pick_index]], y=[pointing_logic.power_at_channel(lcp, rcp, pick_index)], mode="markers",
+                    marker=dict(color="#000000", size=10, line=dict(color="#FFFFFF", width=1.5)), showlegend=False,
+                    hoverinfo="skip")
+    # Shared theming first, panel-specific sizing on top (see plotly_layout_theme()'s docstring for why).
     fig.update_layout(**styles.plotly_layout_theme(theme))
-    fig.update_layout(
-        height=160,
-        margin=dict(l=8, r=8, t=8, b=8),
-        showlegend=False,
-    )
+    fig.update_layout(height=160, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
     return fig
 
 
-def _run_pointing_correction() -> dict[str, str] | None:
-    """Call the real clc.Point_cor.pointcor() with mock half-power-point inputs.
+def _render_direction_panel(role: str, spectrum: dict[str, Any], scan_key: str, theme: dict[str, str]) -> float:
+    """One compass panel; returns the power picked on it (mean of LCP and RCP at the chosen channel)."""
+    vlsr = np.asarray(spectrum["Vlsr"], dtype=float)
+    lcp, rcp = spectrum["LCP"], spectrum["RCP"]
+    pick_key = f"pointing_pick::{scan_key}::{role}"
+    if pick_key not in st.session_state:
+        st.session_state[pick_key] = float(vlsr[pointing_logic.default_peak_index(vlsr, lcp, rcp)])
 
-    Returns:
-        A dict of display-ready fields matching pointcor()'s ACTUAL return
-        contract (correction factor, NS offset, EW offset) -- not the build
-        spec's assumed Azimuth/Elevation/RMS fields, per the module docstring
-        above. None if the call raised (e.g. the hardcoded "../plots/" save
-        path doesn't exist in this environment).
-    """
-    peaks = MOCK_SCAN_PEAKS
-    try:
-        correction_factor, ns_offset_deg, ew_offset_deg = Point_cor.pointcor(
-            north=peaks["north"],
-            south=peaks["south"],
-            east=peaks["east"],
-            west=peaks["west"],
-            cen=peaks["cen"],
-            hpbw=MOCK_HPBW_DEG,
-            dirname=MOCK_DIRNAME,
-        )
-    except Exception as exc:  # noqa: BLE001 -- surfaced to the user below, not swallowed
-        st.warning(
-            "clc.Point_cor.pointcor() raised while computing the pointing correction "
-            f"(likely its hardcoded `../plots/` save path): {exc}"
-        )
-        return None
+    st.markdown(f'<div class="hs-panel-title">{role}</div>', unsafe_allow_html=True)
+    # The figure must be drawn from the CURRENT pick, but a click is only known after the chart renders -- so apply a
+    # new click to session_state first (before the number_input below is created, which is the only legal moment).
+    figure = _panel_figure(spectrum, pointing_logic.nearest_channel(vlsr, st.session_state[pick_key]), theme)
+    if plotly_events is not None:
+        clicks = plotly_events(figure, click_event=True, override_height=170, key=f"pointing_click::{scan_key}::{role}")
+        seen_key = f"pointing_click_seen::{scan_key}::{role}"
+        if clicks and st.session_state.get(seen_key) != clicks[0]["x"]:
+            st.session_state[seen_key] = clicks[0]["x"]  # remember it so a later typed value isn't overridden
+            st.session_state[pick_key] = float(clicks[0]["x"])
+            st.rerun()
+    else:
+        st.plotly_chart(figure, use_container_width=True, theme=None, config={"displayModeBar": False})
 
-    return {
-        "North-South offset": f"{ns_offset_deg}°",
-        "East-West offset": f"{ew_offset_deg}°",
-        "Pointing correction factor": f"{correction_factor:.4f}",
-    }
+    st.number_input(
+        f"{role} peak velocity (km/s)", min_value=float(np.nanmin(vlsr)), max_value=float(np.nanmax(vlsr)),
+        step=0.1, format="%.2f", key=pick_key, label_visibility="collapsed",
+    )
+    channel = pointing_logic.nearest_channel(vlsr, st.session_state[pick_key])
+    power = pointing_logic.power_at_channel(lcp, rcp, channel)
+    st.markdown(
+        f'<div class="hs-file-caption">{vlsr[channel]:.2f} km/s · power {power:.4g} {spectrum.get("units", "")}</div>',
+        unsafe_allow_html=True,
+    )
+    return power
 
 
-def render_compass_grid(theme: dict[str, str]) -> None:
-    """Render the five equal N/S/E/W/Centre pointing-scan panels."""
-    columns = st.columns(5)
-    for column, direction in zip(columns, DIRECTIONS):
+def _render_manual_entry() -> tuple[dict[str, float], float]:
+    """Fallback when no pointing scan is available: type the five powers and the beam width."""
+    st.info(
+        "No complete pointing scan (HPN / HPS / HPE / HPW + ON) was found among the files loaded in this session, so "
+        "enter the five half-power-point powers and the beam width by hand. Complete Pages 01–02 with a pointing "
+        "observation selected to pick them from the spectra instead."
+    )
+    powers: dict[str, float] = {}
+    for column, role in zip(st.columns(5), DIRECTIONS):
         with column, st.container(border=True):
-            st.markdown(f'<div class="hs-panel-title">{direction}</div>', unsafe_allow_html=True)
-            fig = _pointing_scan_figure(direction, theme)
-            st.plotly_chart(fig, use_container_width=True, theme=None)
+            st.markdown(f'<div class="hs-panel-title">{role}</div>', unsafe_allow_html=True)
+            powers[role] = st.number_input(f"{role} power", min_value=0.0, value=0.0, step=0.01, format="%.4f",
+                                           key=f"pointing_manual::{role}", label_visibility="collapsed")
+    hpbw = st.number_input("Half-power beam width (deg)", min_value=0.0, value=0.0, step=0.01, format="%.4f",
+                           key="pointing_manual::hpbw")
+    return powers, float(hpbw)
 
 
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
 def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
     """Render the pointing-correction results table using the shared table tokens."""
     rows_html = ""
@@ -167,21 +160,17 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
         stripe = theme["bg-panel"] if index % 2 == 0 else theme["bg-panel-alt"]
         rows_html += (
             f'<tr style="height:{styles.TABLE_ROW_HEIGHT}px; background-color:{stripe};">'
-            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:60%;">'
-            f"{metric}</td>"
-            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:40%;">'
-            f"{value}</td>"
+            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:60%;">{metric}</td>'
+            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:40%;">{value}</td>'
             "</tr>"
         )
-
     st.markdown(
         f"""
         <div style="background-color:{theme['bg-panel']}; border:1px solid {theme['border-subtle']};
                     border-radius:{styles.PANEL_RADIUS}px; overflow:hidden;">
             <table style="width:100%; border-collapse:collapse;">
                 <thead>
-                    <tr style="height:{styles.TABLE_HEADER_HEIGHT}px;
-                               background-color:{theme['table-header-bg']};">
+                    <tr style="height:{styles.TABLE_HEADER_HEIGHT}px; background-color:{theme['table-header-bg']};">
                         <th style="text-align:left; padding:10px; font-size:10px; font-weight:600;
                                    color:{theme['table-header-text']}; width:60%;">Metric</th>
                         <th style="text-align:left; padding:10px; font-size:10px; font-weight:600;
@@ -196,74 +185,143 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
     )
 
 
-# Stages strictly before Page 6 -- used for the shared header progress bar, so
-# this page's own completion never counts toward its own "N/8 complete"
-# (Style Guide §4 / Build Spec §6; Page 04 does the same).
-UPSTREAM_STAGE_KEYS = (
-    "01_source_browser",
-    "file_loader",
-    "03_bandpass_correction",
-    "04_baseline_editor",
-    "05_calibration_dashboard",
-)
+def _compute(powers: dict[str, float], hpbw: Optional[float], scan_key: str, dirname: str) -> dict[str, Any]:
+    """pointcor() on the picked values, cached per input signature so a rerun doesn't redo the fit and the PDF save."""
+    signature = (scan_key, tuple(round(powers[r], 9) for r in DIRECTIONS), None if hpbw is None else round(hpbw, 9))
+    cache = st.session_state.get(RESULT_CACHE_KEY)
+    if cache and cache["signature"] == signature:
+        return cache
+    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None}
+    try:
+        plot_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "plots"
+        entry["result"] = pointing_logic.compute_pointing(powers, hpbw, dirname, plot_dir=plot_dir)
+    except Exception as exc:  # noqa: BLE001 -- legacy fit code can fail in several ways; shown to the user below
+        entry["error"] = f"{type(exc).__name__}: {exc}"
+    st.session_state[RESULT_CACHE_KEY] = entry
+    return entry
 
 
-def _completed_upstream_count() -> int:
-    """Count only stages strictly before Page 6 for the shared progress bar."""
-    completed = st.session_state["completed_stages"]
-    return sum(stage_key in completed for stage_key in UPSTREAM_STAGE_KEYS)
+def _render_pointing_product_graph(pointing_factor: float, theme: dict[str, str]) -> None:
+    """(LCP + RCP) * Pointing Correction on the current spectrum (owner-requested graph)."""
+    resolved = spectrum_resolution.resolve_spectrum(
+        st.session_state,
+        read_bridge=baseline_editor_bridge.read_bridge,
+        fingerprint=baseline_editor_bridge.spectrum_fingerprint,
+    )
+    with st.container(border=True):
+        st.markdown('<div class="hs-panel-title">(LCP + RCP) × Pointing Correction</div>', unsafe_allow_html=True)
+        if resolved.is_placeholder:
+            st.info("No real spectrum is available in this session yet, so this graph can't be drawn. "
+                    "Complete the earlier pipeline stages first.")
+            return
+        product = fitting_inputs.pointing_product(resolved.channels["LCP"], resolved.channels["RCP"], pointing_factor)
+        fig = go.Figure()
+        fig.add_scatter(x=resolved.vlsr, y=product, mode="lines", line=dict(color=theme["accent"], width=1.6),
+                        name="(LCP + RCP) × Pointing Correction")
+        fig.update_layout(**styles.plotly_layout_theme(theme))
+        fig.update_layout(
+            height=280, margin=dict(l=40, r=20, t=10, b=40), showlegend=False,
+            xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
+            yaxis=dict(title=f"Intensity ({resolved.intensity_unit})", showgrid=False, zeroline=False,
+                       color=theme["text-muted"]),
+        )
+        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.caption(f"Spectrum source: {resolved.source_label}")
 
 
 def main() -> None:
     """Render the Pointing Correction page (FR-12/13)."""
     st.set_page_config(page_title="HARTSPEC -- Pointing Correction", layout="wide")
-    # Explicit, like every other page -- previously this page only got
-    # session state initialised as a side effect of render_sidebar().
     session_store.init_session_state()
     sidebar.render_sidebar(current_stage=CURRENT_STAGE)
     styles.inject_base_css()
-
-    # Captured before recomputing below, so the audit log only records the
-    # first completion rather than on every Streamlit rerun (same pattern as
-    # 05_Calibration_Dashboard.py).
-    was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
 
     theme = styles.get_theme()
     styles.render_page_header(
         title="Pointing Correction",
         subtitle="FR-12 / 13 -- compass grid & offset calculation",
         current_stage=CURRENT_STAGE,
-        completed_stages=_completed_upstream_count(),
+        # strictly-before-this-page count (Build Spec §6); replaces the hand-kept stage tuple this page used to carry
+        completed_stages=session_store.completed_before(CURRENT_STAGE),
     )
 
-    render_compass_grid(theme)
+    spectra = _loaded_spectra_by_basename()
+    scans = _find_scans(spectra)
+
+    powers: dict[str, float] = {}
+    hpbw: Optional[float] = None
+    scan_key, dirname, input_source = "manual", "manual", "manual entry"
+
+    if scans:
+        index = 0
+        if len(scans) > 1:
+            index = st.selectbox("Pointing scan", range(len(scans)), format_func=lambda i: scans[i].label)
+        scan = scans[index]
+        scan_key, dirname, input_source = scan.key, scan.block, f"pointing scan: {scan.label}"
+        st.caption(
+            "Click a spectrum (if click-to-pick is installed) or type a velocity to move the black point onto the "
+            "peak. Each panel's value is the mean of LCP and RCP at that channel."
+        )
+        for column, role in zip(st.columns(5), DIRECTIONS):
+            with column, st.container(border=True):
+                powers[role] = _render_direction_panel(role, spectra[scan.files[role]], scan_key, theme)
+        hpbw = _as_positive_float(spectra[scan.files["Centre"]].get("HPBW"))
+        if hpbw is None:
+            st.warning("The beam width (HPBW) could not be read from the on-source file's header. Enter it below.")
+            hpbw = _as_positive_float(st.number_input("Half-power beam width (deg)", min_value=0.0, value=0.0,
+                                                      step=0.01, format="%.4f", key=f"pointing_hpbw::{scan_key}"))
+    else:
+        powers, hpbw_entered = _render_manual_entry()
+        hpbw = hpbw_entered if hpbw_entered > 0 else None
 
     st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
 
-    offsets = _run_pointing_correction()
-    if offsets is not None:
+    entry: Optional[dict[str, Any]] = None
+    if hpbw is not None and all(powers.get(role, 0) > 0 for role in DIRECTIONS):
+        entry = _compute(powers, hpbw, scan_key, dirname)
+    else:
+        st.caption("Enter a positive power for all five directions and a beam width to calculate the correction.")
+
+    result = entry["result"] if entry else None
+    if entry and entry["error"]:
+        st.warning(f"clc.Point_cor.pointcor() could not compute the correction: {entry['error']}")
+
+    if result is not None:
+        offsets = {
+            "North-South offset": f"{result.ns_offset_deg}°",
+            "East-West offset": f"{result.ew_offset_deg}°",
+            "Pointing correction factor": f"{result.correction_factor:.4f}",
+            "Half-power beam width used": f"{result.hpbw_deg:g}°",
+        }
         render_offset_table(offsets, theme)
 
-        # Recorded honestly as mock-derived: the half-power-point readings fed
-        # into pointcor() are still MOCK_SCAN_PEAKS (see module docstring, note
-        # 4), so a saved session must not read as a real pointing measurement.
-        # TODO: confirm against design -- drop this marker once real upstream
-        # scan extraction replaces the mock inputs.
         st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
+            # Numeric values are what Pages 07/08 read (fitting_inputs.pointing_factor_from_pipeline).
+            "correction_factor": result.correction_factor,
+            "ns_offset_deg": result.ns_offset_deg,
+            "ew_offset_deg": result.ew_offset_deg,
+            "hpbw_deg": result.hpbw_deg,
+            "peak_powers": result.powers,
+            "input_source": input_source,
             **offsets,
-            "input_source": "MOCK -- no real scan extraction yet",
         }
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
-        if not was_page_complete:
+        if st.session_state.get(LOGGED_SIGNATURE_KEY) != entry["signature"]:
+            st.session_state[LOGGED_SIGNATURE_KEY] = entry["signature"]
             session_store.log_event(
-                "Pointing correction computed (mock scan inputs) — "
-                f"NS {offsets['North-South offset']}, "
-                f"EW {offsets['East-West offset']}, "
-                f"correction factor {offsets['Pointing correction factor']}"
+                f"Pointing correction computed ({input_source}) — NS {result.ns_offset_deg}°, "
+                f"EW {result.ew_offset_deg}°, correction factor {result.correction_factor:.4f}"
             )
+
+        st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
+        _render_pointing_product_graph(result.correction_factor, theme)
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
         st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+
+    if st.button("Continue to Spectral Fitting →", type="primary", disabled=result is None,
+                 key="pointing_next_btn"):
+        st.switch_page(NEXT_PAGE)
 
 
 if __name__ == "__main__":
