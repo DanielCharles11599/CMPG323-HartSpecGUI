@@ -1,44 +1,43 @@
-# 08_Export_and_Session.py — FR-18/19/20: spectrum export (CSV/PDF/FITS),
-# session history navigator, and the running observation log.
+# 08_Export_and_Session.py — FR-18/19/20: spectrum export (CSV + graphs PDF), session history navigator, and the
+# running observation log.
 #
-# Filename matches utils/sidebar.py's STAGES list exactly
-# ("pages/08_Export_and_Session.py") -- sidebar.py uses st.switch_page(),
-# which only validates its target at click time, so a mismatched filename
-# here would silently 404 the moment someone clicked "08" in the sidebar
-# rather than failing at import time.
+# System-owner changes in this revision:
+#   * CSV is the only data export (FITS and TXT removed). It carries BOTH polarisations (LCP and RCP), the pair
+#     average, Graph 3, the fit and the metadata as constant columns -- everything readable back from the one file.
+#   * The PDF is graphs only (no tables, parameter values or log text).
+#   * The observation log panel has a fixed height and scrolls, so the end of the page stays reachable.
+#   # TODO: confirm against design -- the owners' extra CSV column list is still pending; see utils/export_logic.py.
+#
+# Filename matches utils/sidebar.py's STAGES list exactly ("pages/08_Export_and_Session.py") -- sidebar.py uses
+# st.switch_page(), which only validates its target at click time, so a mismatched filename here would silently 404.
 #
 # Wired against the utils/ modules actually in the repo:
-#   utils/session_store.py -- session_id, pipeline_data, audit_log (list of
-#                              {"ts", "message"} dicts, not plain strings),
-#                              mark_stage_complete / completed_before,
-#                              save_session / list_sessions / load_session
-#                              (Save/Load/Reset are already rendered in the
-#                              sidebar by utils/sidebar.py -- this page's own
-#                              "Session history" panel is the separate FR-19
-#                              on-page navigator, reusing the same functions)
-#   utils/styles.py         -- theme tokens, inject_base_css, page header,
-#                              LCP_COLOR/RCP_COLOR
-#   utils/sidebar.py        -- render_sidebar (1-indexed current_stage)
-#   utils/spectrum_resolution.py -- the shared "which spectrum is current?" chain, also used by Page 07
-#                              (was a page-local copy here that could drift from Page 07's)
+#   utils/session_store.py        -- session_id, pipeline_data, audit_log ({"ts","message"} dicts), stage completion,
+#                                    save_session / list_sessions / load_session (FR-19 on-page navigator)
+#   utils/styles.py               -- theme tokens, inject_base_css, page header, LCP_COLOR/RCP_COLOR
+#   utils/sidebar.py              -- render_sidebar (1-indexed current_stage)
+#   utils/spectrum_resolution.py  -- the shared "which spectrum is current?" chain, also used by Pages 06 and 07
+#   utils/fitting_inputs.py       -- PSS / pointing correction / Graph 3 arithmetic, shared with Page 07
+#   utils/export_logic.py         -- CSV and PDF builders (pure, unit-tested)
 from __future__ import annotations
 
-import io
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
-import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from astropy.io import fits
 
-from utils import baseline_editor_bridge, session_store, spectrum_resolution, styles
+from utils import baseline_editor_bridge, export_logic, fitting_inputs, session_store, spectrum_resolution, styles
 from utils.sidebar import render_sidebar
 
 THIS_STAGE_KEY = "08_export_and_session"
 CURRENT_STAGE = 8  # 1-indexed, per utils/sidebar.py + utils/styles.py convention
+LOG_PANEL_HEIGHT = 240  # px; the log scrolls inside this (UAT feedback: limit the log panel's height)
+FIT_STAGE_KEY = "07_spectral_fitting"
 
 st.set_page_config(page_title="HARTSPEC — Export & Session", layout="wide")
 session_store.init_session_state()
@@ -51,7 +50,11 @@ styles.render_page_header(
     # strictly-before-this-page count, per Build Spec section 6: this page must not read 8/8 while it is 8 of 8
     session_store.completed_before(CURRENT_STAGE),
 )
+theme = styles.get_theme()
 
+# ---------------------------------------------------------------------
+# Resolve everything that goes into the export
+# ---------------------------------------------------------------------
 resolved = spectrum_resolution.resolve_spectrum(
     st.session_state,
     read_bridge=baseline_editor_bridge.read_bridge,
@@ -60,107 +63,173 @@ resolved = spectrum_resolution.resolve_spectrum(
 vlsr = resolved.vlsr
 lcp, rcp = resolved.channels["LCP"], resolved.channels["RCP"]
 unit = resolved.intensity_unit
+pipeline_data = st.session_state.get("pipeline_data", {})
+pss = fitting_inputs.pss_from_pipeline(pipeline_data)
+pointing_factor = fitting_inputs.pointing_factor_from_pipeline(pipeline_data)
+average, overall_mean = fitting_inputs.pair_average(lcp, rcp)
+
 # Exporting or "completing" the pipeline on synthetic data would put fabricated numbers in a file / audit trail.
 export_blocked = resolved.is_placeholder
 
+# Graph 3 only from the pre-calibration spectrum with real PSS + pointing inputs (same rule as Page 07).
+graph3_ready = pss is not None and pointing_factor is not None and not resolved.is_placeholder \
+    and not resolved.is_calibrated
+graph3 = fitting_inputs.graph3(lcp, rcp, pss.value, pointing_factor) if graph3_ready else None
+source_key = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing_factor) if graph3_ready else ""
+
+# A saved fit is only used if it was computed on exactly this Graph 3 (same spectrum, PSS and pointing correction).
+latest_fit = st.session_state.get("latest_fit")
+fit_matches = bool(graph3_ready and latest_fit and latest_fit.get("spectrum_source") == source_key
+                   and len(latest_fit.get("fit_curve", [])) == vlsr.size)
+fit_curve = np.asarray(latest_fit["fit_curve"], dtype=float) if fit_matches else None
+fit_summary = pipeline_data.get(FIT_STAGE_KEY) if fit_matches else None
+
 # ---------------------------------------------------------------------
-# Final calibrated spectrum panel
+# Notices
 # ---------------------------------------------------------------------
 st.caption(f"Spectrum source: {resolved.source_label}")
 for note in resolved.notes:
     st.warning(note)
 if export_blocked:
     st.error(
-        "No real spectrum is available in this session -- the chart below is synthetic placeholder data. "
+        "No real spectrum is available in this session -- the charts below are synthetic placeholder data. "
         "Export and completion are disabled; complete the earlier pipeline stages first."
     )
-elif not resolved.is_calibrated:
+if not graph3_ready and not export_blocked:
     st.warning(
-        f"This spectrum is not calibrated (units: {unit}). Complete Page 5 (Calibration Dashboard) before "
-        "exporting a final spectrum."
+        "Graph 3 (and its fit) is not included in the export: it needs the PSS from Page 05 and the pointing "
+        "correction from Page 06, applied to the pre-calibration spectrum."
     )
+elif latest_fit and not fit_matches and graph3_ready:
+    st.caption("The fit saved on Page 07 was computed on different data and is not included. Re-run and save it on "
+               "Page 07.")
 
-# The panel is only titled "Final calibrated spectrum" when it actually is one.
-styles.render_panel_open("Final calibrated spectrum" if resolved.is_calibrated else "Spectrum (not calibrated)")
-theme = styles.get_theme()
-fig = go.Figure()
-fig.add_scatter(x=vlsr, y=lcp, mode="lines", line=dict(color=styles.LCP_COLOR, width=1.6), name="LCP")
-fig.add_scatter(x=vlsr, y=rcp, mode="lines", line=dict(color=styles.RCP_COLOR, width=1.6), name="RCP")
 
-latest_fit = st.session_state.get("latest_fit")
-if latest_fit and latest_fit.get("spectrum_source") == resolved.source_key:
-    # Optional overlay of the fit Page 07 last saved, if any — purely a
-    # display convenience, doesn't change what gets exported below.
-    fig.add_scatter(
-        x=latest_fit["vlsr"], y=latest_fit["fit_curve"], mode="lines",
-        line=dict(color=styles.get_fit_line_color(), width=1.6, dash="dash"),
-        name=f"Fit ({latest_fit['polarization']})",
+# ---------------------------------------------------------------------
+# Charts (these are the graphs the PDF contains)
+# ---------------------------------------------------------------------
+def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: str, height: int = 260) -> None:
+    """Themed full-width panel with one chart; backgrounds follow bg-panel (Plotly doesn't inherit them)."""
+    styles.render_panel_open(title)
+    fig = go.Figure()
+    for name, x, y, color, dash in traces:
+        fig.add_scatter(x=x, y=y, mode="lines", line=dict(color=color, width=1.6, dash=dash), name=name)
+    fig.update_layout(**styles.plotly_layout_theme(theme))
+    fig.update_layout(
+        height=height, margin=dict(l=40, r=20, t=10, b=40),
+        paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
+        font=dict(color=theme["text-body"]),
+        legend=dict(orientation="h", y=-0.25),
+        xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
+        yaxis=dict(title=y_title, showgrid=False, zeroline=False, color=theme["text-muted"]),
     )
-elif latest_fit:
-    # Overlaying a fit computed on a different spectrum (e.g. saved before calibration was applied) would draw
-    # a curve on the wrong intensity scale, so it is withheld rather than shown misleadingly.
-    st.caption(
-        "The fit saved on Page 07 was computed on a different spectrum "
-        f"({latest_fit.get('spectrum_source', 'unknown source')}) and is not overlaid. Re-run and save it on Page 07."
-    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
+    styles.render_panel_close()
 
-fig.update_layout(**styles.plotly_layout_theme(theme))
-fig.update_layout(
-    height=260, margin=dict(l=40, r=20, t=10, b=40),
-    paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
-    font=dict(color=theme["text-body"]),
-    legend=dict(orientation="h", y=-0.25),
-    xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
-    yaxis=dict(title=f"Intensity ({unit})", showgrid=False, zeroline=False, color=theme["text-muted"]),
+
+_chart("LCP and RCP", [("LCP", vlsr, lcp, styles.LCP_COLOR, "solid"), ("RCP", vlsr, rcp, styles.RCP_COLOR, "solid")],
+       f"Intensity ({unit})")
+if graph3 is not None:
+    traces = [("Graph 3", vlsr, graph3, theme["accent"], "solid")]
+    if fit_curve is not None:
+        traces.append((f"Fit ({latest_fit['fit_type']})", vlsr, fit_curve, styles.get_fit_line_color(), "dash"))
+    _chart("Final spectrum — [(LCP + RCP) × PSS] + Pointing Correction", traces,
+           f"Intensity ({fitting_inputs.GRAPH3_UNIT})")
+
+
+# ---------------------------------------------------------------------
+# Export buttons — CSV (all numbers) and PDF (graphs only) (FR-18)
+# ---------------------------------------------------------------------
+def _cached_bytes(kind: str, signature_parts: list[Any], build: Callable[[], bytes]) -> bytes:
+    """Build once per distinct input and keep the bytes in session_state.
+
+    st.download_button needs its data up front on every rerun; rebuilding a PDF each time would make every click on
+    the page wait for matplotlib. The signature hashes the actual numbers, so any change rebuilds it.
+    """
+    digest = hashlib.md5()
+    for part in signature_parts:
+        digest.update(np.asarray(part).tobytes() if isinstance(part, np.ndarray) else repr(part).encode())
+    key, cache = digest.hexdigest(), st.session_state.setdefault("export_cache", {})
+    entry = cache.get(kind)
+    if not entry or entry[0] != key:
+        cache[kind] = (key, build())
+    return cache[kind][1]
+
+
+metadata = export_logic.build_metadata(
+    spectrum=st.session_state.get("loaded_spectrum"),
+    spectrum_source=resolved.source_key,
+    intensity_unit=unit,
+    pss=pss,
+    pointing_factor=pointing_factor,
+    fit_summary=fit_summary,
 )
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False}, theme=None)
-styles.render_panel_close()
+csv_bytes = export_logic.build_export_csv(
+    vlsr=vlsr, lcp=lcp, rcp=rcp, average=average, unit=unit, calibrated=graph3, fit_curve=fit_curve,
+    metadata=metadata,
+)
 
-# ---------------------------------------------------------------------
-# Export buttons — CSV / PDF / FITS (FR-18)
-# ---------------------------------------------------------------------
-col_csv, col_pdf, col_fits, _ = st.columns([1, 1, 1, 3])
 
-with col_csv:
-    # Column names carry the real unit (K before calibration, Jy after) -- they used to be hardcoded "_K".
-    df = pd.DataFrame({"Vlsr_kms": vlsr, f"LCP_{unit}": lcp, f"RCP_{unit}": rcp})
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-    if st.download_button(
-        "Export CSV", csv_bytes, file_name="hartspec_spectrum.csv",
-        mime="text/csv", type="secondary", use_container_width=True, disabled=export_blocked,
-    ):
-        session_store.log_event(f"Spectrum exported — CSV ({resolved.source_key}, {unit})")
+def _graph_specs() -> list[export_logic.GraphSpec]:
+    """The graphs the PDF contains: the ones on Pages 06/07 (no numbers tables, no metadata)."""
+    specs = [
+        export_logic.GraphSpec("LCP", f"Intensity ({unit})", [export_logic.GraphTrace("LCP", vlsr, lcp,
+                                                                                     styles.LCP_COLOR)]),
+        export_logic.GraphSpec("RCP", f"Intensity ({unit})", [export_logic.GraphTrace("RCP", vlsr, rcp,
+                                                                                     styles.RCP_COLOR)]),
+        export_logic.GraphSpec("Average of each LCP/RCP pair — (LCP + RCP) / 2", f"Intensity ({unit})",
+                               [export_logic.GraphTrace("(LCP + RCP) / 2", vlsr, average, "#587BBD")],
+                               hline=overall_mean, hline_label="Overall average"),
+    ]
+    if pointing_factor is not None:
+        specs.append(export_logic.GraphSpec(
+            "(LCP + RCP) × Pointing Correction", f"Intensity ({unit})",
+            [export_logic.GraphTrace("(LCP + RCP) × PC", vlsr, fitting_inputs.pointing_product(lcp, rcp,
+                                                                                               pointing_factor),
+                                     "#587BBD")]))
+    if graph3 is not None:
+        graph3_unit = fitting_inputs.GRAPH3_UNIT
+        specs.append(export_logic.GraphSpec(
+            "Graph 3 — [(LCP + RCP) × PSS] + Pointing Correction", f"Intensity ({graph3_unit})",
+            [export_logic.GraphTrace("Graph 3", vlsr, graph3, "#587BBD")]))
+        if fit_curve is not None:
+            specs.append(export_logic.GraphSpec(
+                "Graph 4 — Fit of Graph 3", f"Intensity ({graph3_unit})",
+                [export_logic.GraphTrace("Graph 3", vlsr, graph3, "#587BBD"),
+                 export_logic.GraphTrace("Fit", vlsr, fit_curve, export_logic.FIT_COLOR_PRINT, dashed=True)]))
+    return specs
 
-with col_pdf:
-    # TODO: confirm against design
-    # No PDF-capable library is in the pinned requirements.txt (pandas /
-    # plotly / astropy / numpy / scipy only). Two real options: `kaleido`
-    # (static Plotly image export, then embed the PNG in a minimal PDF) or
-    # `reportlab` (build a text + plot report directly). Flagging instead of
-    # silently adding an unpinned dependency -- confirm which one with the
-    # team, then this button wires straight into that library.
-    if st.button("Export PDF", type="secondary", use_container_width=True, disabled=export_blocked):
-        st.warning(
-            "PDF export needs a library decision (kaleido vs reportlab) not "
-            "yet in requirements.txt — confirm with the team before wiring "
-            "this up. See the TODO in 08_Export_and_Session.py."
+
+pdf_bytes: Optional[bytes] = None
+pdf_error: Optional[str] = None
+if not export_blocked:
+    try:
+        pdf_bytes = _cached_bytes(
+            "pdf", [vlsr, lcp, rcp, graph3 if graph3 is not None else "", fit_curve if fit_curve is not None else "",
+                    pointing_factor, resolved.source_key, unit, metadata["source_name"]],
+            lambda: export_logic.build_graphs_pdf(_graph_specs(), "HARTSPEC — " + (metadata["source_name"] or
+                                                                                  "spectrum")),
         )
+    except ImportError:
+        pdf_error = "PDF export needs the `matplotlib` package, which is not in requirements.txt yet."
+    except Exception as exc:  # noqa: BLE001 -- shown to the user instead of crashing the page
+        pdf_error = f"The PDF could not be built: {exc}"
 
-with col_fits:
-    buf = io.BytesIO()
-    primary_hdu = fits.PrimaryHDU()
-    cols = fits.ColDefs([
-        fits.Column(name="VLSR", format="D", unit="km/s", array=vlsr),
-        fits.Column(name="LCP", format="D", unit=unit, array=lcp),
-        fits.Column(name="RCP", format="D", unit=unit, array=rcp),
-    ])
-    hdul = fits.HDUList([primary_hdu, fits.BinTableHDU.from_columns(cols)])
-    hdul.writeto(buf)
+col_csv, col_pdf, _ = st.columns([1, 1.3, 3])
+with col_csv:
     if st.download_button(
-        "Export FITS", buf.getvalue(), file_name="hartspec_spectrum.fits",
-        mime="application/fits", type="secondary", use_container_width=True, disabled=export_blocked,
+        "Export CSV", csv_bytes, file_name="hartspec_spectrum.csv", mime="text/csv", type="secondary",
+        use_container_width=True, disabled=export_blocked,
     ):
-        session_store.log_event(f"Spectrum exported — FITS ({resolved.source_key}, {unit})")
+        session_store.log_event(f"Spectrum exported — CSV ({resolved.source_key}, LCP + RCP, {unit})")
+with col_pdf:
+    if st.download_button(
+        "Export graphs (PDF)", pdf_bytes or b"", file_name="hartspec_graphs.pdf", mime="application/pdf",
+        type="secondary", use_container_width=True, disabled=export_blocked or pdf_bytes is None,
+    ):
+        session_store.log_event(f"Graphs exported — PDF ({resolved.source_key})")
+if pdf_error:
+    st.caption(pdf_error)
 
 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
@@ -171,25 +240,31 @@ st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 def _describe_session(payload: dict[str, Any]) -> str:
     """Best-effort one-line description of a saved session's contents.
 
-    session_store.save_session()'s payload has no free-text "label" field
-    (only session_id / saved_at / pipeline_data / completed_stages /
-    audit_log), so the mockup's descriptive rows (e.g. "W3(OH) — HI line
-    reduction") have to be assembled from whatever pipeline_data stage
-    summaries happen to be present, rather than read off a stored field.
-    Falls back to a plain session-id label when nothing usable is found.
+    save_session()'s payload has no free-text "label" field, so the mockup's descriptive rows (e.g. "W3(OH) — HI line
+    reduction") are assembled from whichever pipeline_data stage summaries are present. Falls back to a plain
+    session-id label when nothing usable is found.
     """
     pipeline_data = payload.get("pipeline_data", {})
-    # A damaged history entry must not crash the page before Load can validate it.
+
+    # A malformed history entry must not crash the history display.
     if not isinstance(pipeline_data, dict):
         pipeline_data = {}
+
     fitting = pipeline_data.get("07_spectral_fitting")
     if isinstance(fitting, dict) and fitting:
-        return f"{fitting.get('polarization', '')} — {fitting.get('fit_type', 'fit')} committed".strip(" —")
+        fit_type = fitting.get("fit_type", "fit")
+        polarization = fitting.get("polarization", "")
+        prefix = f"{polarization} — " if polarization else ""
+        return f"{prefix}{fit_type} committed (Graph 3)"
+
+    pointing = pipeline_data.get("06_pointing_correction")
+    if isinstance(pointing, dict) and pointing:
+        return "Pointing correction computed"
+
     bandpass = pipeline_data.get("03_bandpass_correction")
     if isinstance(bandpass, dict) and bandpass:
         return f"Bandpass — {bandpass.get('mode', 'correction')}"
-    source = pipeline_data.get("01_source_browser")
-    if source:
+    if pipeline_data.get("01_source_browser"):
         return "Source Browser selection saved"
     return f"Session {payload.get('session_id', '')}"
 
@@ -233,20 +308,20 @@ else:
 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Observation Log Panel (FR-20) — real audit trail, not static text.
-# audit_log entries are {"ts": "HH:MM:SS", "message": str} dicts, per
-# session_store.log_event() -- not plain strings.
+# Observation Log Panel (FR-20) — real audit trail, not static text. audit_log entries are
+# {"ts": "HH:MM:SS", "message": str} dicts, per session_store.log_event().
+# Fixed height + internal scrolling (UAT feedback) so a long log never pushes the end of the page out of reach.
 # ---------------------------------------------------------------------
 styles.render_panel_open("Observation Log Panel (FR-20)")
 audit_entries = st.session_state.get("audit_log", [])
 log_text = "\n".join(f"{entry['ts']} {entry['message']}" for entry in audit_entries)
-st.code(log_text or "No actions logged yet this session.", language=None)
+with st.container(height=LOG_PANEL_HEIGHT):
+    st.code(log_text or "No actions logged yet this session.", language=None)
 styles.render_panel_close()
 
 # ---------------------------------------------------------------------
-# Mark export stage complete — the last stage key, so the progress bar
-# reads 8/8 once this fires (on later pages/visits; this page's own header
-# counts only stages before it).
+# Mark export stage complete — the last stage key, so the progress bar reads 8/8 once this fires (on later
+# pages/visits; this page's own header counts only stages before it).
 # ---------------------------------------------------------------------
 if st.button("Mark export complete", type="primary", disabled=export_blocked):
     st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = {
