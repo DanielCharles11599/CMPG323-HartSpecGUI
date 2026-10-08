@@ -677,97 +677,45 @@ def _render_validation_table() -> None:
             theme = styles.get_theme()
 
             if row["status"] == "error":
-                # Flagged rows get a real inline Quarantine button, so they
-                # need actual Streamlit widgets, not the static HTML
-                # _render_table_row helper OK rows use. Each row is its own
-                # real st.container(border=True) -- NOT a raw HTML <div>
-                # opened in one st.markdown() call and "closed" in a later
-                # one. That earlier approach never worked: each st.markdown()
-                # call renders into its own isolated DOM node, so an
-                # intentionally-unclosed <div> from one call does not
-                # actually wrap the st.columns()/st.button() widgets
-                # rendered by later calls -- the browser just auto-closes it
-                # on the spot, same root cause already diagnosed for
-                # styles.render_panel_open()/render_panel_close() elsewhere
-                # in this project. The practical effect was that no border
-                # or background ever really applied, so consecutive flagged
-                # rows had no visual separation at all. st.container(border=
-                # True) is a real layout container -- everything called
-                # inside its `with` block genuinely nests inside it -- so
-                # each file now gets its own bordered box.
-                #
-                # Note this still won't be pixel-identical in height to an
-                # OK row: OK rows are plain HTML with a hard 28px height,
-                # while a flagged row contains real st.button() widgets,
-                # which carry their own native padding that a bare CSS
-                # height can't override in this Streamlit version. Flagging
-                # this honestly rather than claiming parity again.
+                # Flagged rows need real Streamlit widgets (the Quarantine
+                # buttons), so they can't be the static HTML row OK rows are.
+                # They used to be wrapped in st.container(border=True), but
+                # that renders Streamlit's own native bordered box, whose
+                # background comes from Streamlit's static base theme -- in
+                # dark mode it was a visibly different color from the themed
+                # OK rows, so flagged files looked like separate objects.
+                # Now the row is just st.columns(), and the row's
+                # background / stripe / bottom border are applied to that
+                # column block itself via the page-local
+                # `.hs-flagged-row-{0,1}` marker CSS in main() (0 = panel
+                # color, 1 = alternate stripe, same parity rule as
+                # _render_table_row), using the same theme tokens as OK rows.
                 is_quarantined = row["file"] in quarantined
                 is_pending = row["file"] == pending
                 status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
+                stripe_class = f"hs-flagged-row-{1 if striped else 0}"
 
-                with st.container(border=True):
-                    col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
-                    with col_file:
-                        st.markdown(
-                            f'<div style="font-size:10.5px; color:{theme["text-body"]};">{row["file"]}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    with col_issue:
-                        # Plain text again, same 10.5px size as the File
-                        # column, single line with an ellipsis + native hover
-                        # tooltip when it's too long to fit -- not a button.
-                        # The full text stays reachable via the native hover
-                        # tooltip (title attribute), one part per line:
-                        # "&#10;" is an HTML newline entity, inserted
-                        # between ";"-separated parts, each escaped so a
-                        # quote in an error message can't break the attribute.
-                        issue_parts = [part.strip() for part in row["issue"].split(";") if part.strip()]
-                        tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
-                        st.markdown(
-                            f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
-                            f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
-                            f'{row["issue"]}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    with col_status:
-                        st.markdown(styles.render_badge(status_label, "error"), unsafe_allow_html=True)
-                    with col_action:
-                        if not is_quarantined:
-                            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
-                            if is_pending:
-                                # FR-03 handoff step 4: confirmation before
-                                # quarantine, inline where the Quarantine
-                                # button was rather than a page-top banner --
-                                # keeps the confirmation visually attached to
-                                # the specific row it applies to, especially
-                                # once several rows can be flagged at once.
-                                # "Continue" / "Cancel" per explicit naming
-                                # request (not "Confirm").
-                                if st.button(
-                                    "Continue", key=f"confirm_quarantine_{row['file']}",
-                                    type="primary", use_container_width=True,
-                                ):
-                                    with st.spinner(f"Quarantining {row['file']}…"):
-                                        _quarantine_file(row["file"])
-                                    st.session_state["file_loader_pending_quarantine"] = None
-                                    st.rerun()
-                                st.markdown(
-                                    '<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True
-                                )
-                                if st.button(
-                                    "Cancel", key=f"cancel_quarantine_{row['file']}",
-                                    use_container_width=True,
-                                ):
-                                    st.session_state["file_loader_pending_quarantine"] = None
-                                    st.rerun()
-                            else:
-                                if st.button(
-                                    "Quarantine", key=f"quarantine_{row['file']}", use_container_width=True
-                                ):
-                                    _request_quarantine(row["file"])
-                                    st.rerun()
-
+                col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
+                with col_file:
+                    st.markdown(
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]};">{row["file"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_issue:
+                    # Same 10.5px size as the File column, single line with
+                    # an ellipsis. The full text is reachable via the native
+                    # hover tooltip (title attribute), one part per line:
+                    # "&#10;" is an HTML newline entity inserted between
+                    # ";"-separated parts, each escaped so a quote in an
+                    # error message can't break the attribute.
+                    issue_parts = [part.strip() for part in row["issue"].split(";") if part.strip()]
+                    tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
+                    st.markdown(
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
+                        f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
+                        f'{row["issue"]}</div>',
+                        unsafe_allow_html=True,
+                    )
                     if is_pending:
                         # Confirmation copy updated for step 5: this now
                         # describes a real, irreversible-from-the-UI action
@@ -775,11 +723,53 @@ def _render_validation_table() -> None:
                         # the earlier "this doesn't do anything yet" dev note
                         # is gone now that it's no longer true; don't
                         # reintroduce it without also reverting the
-                        # move_to_quarantine() call above.
+                        # move_to_quarantine() call above. Rendered inside
+                        # the Issue column so it stays within this row's
+                        # striped background.
                         st.caption(
                             f"Quarantine {row['file']}? This moves the file out of the active archive into "
                             "Flagged/ immediately — undoing it means manually moving the file back on disk."
                         )
+                with col_status:
+                    # The row marker rides in the same markdown call as the
+                    # badge so it adds no extra element (and no extra gap).
+                    st.markdown(
+                        f'<span class="{stripe_class}"></span>' + styles.render_badge(status_label, "error"),
+                        unsafe_allow_html=True,
+                    )
+                with col_action:
+                    if not is_quarantined:
+                        st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+                        if is_pending:
+                            # FR-03 handoff step 4: confirmation before
+                            # quarantine, inline where the Quarantine
+                            # button was rather than a page-top banner --
+                            # keeps the confirmation visually attached to
+                            # the specific row it applies to, especially
+                            # once several rows can be flagged at once.
+                            # "Continue" / "Cancel" per explicit naming
+                            # request (not "Confirm").
+                            if st.button(
+                                "Continue", key=f"confirm_quarantine_{row['file']}",
+                                type="primary", use_container_width=True,
+                            ):
+                                with st.spinner(f"Quarantining {row['file']}…"):
+                                    _quarantine_file(row["file"])
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+                            if st.button(
+                                "Cancel", key=f"cancel_quarantine_{row['file']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state["file_loader_pending_quarantine"] = None
+                                st.rerun()
+                        else:
+                            if st.button(
+                                "Quarantine", key=f"quarantine_{row['file']}", use_container_width=True
+                            ):
+                                _request_quarantine(row["file"])
+                                st.rerun()
             else:
                 badge = styles.render_badge("OK", "ok")
                 _render_table_row(
@@ -1394,6 +1384,24 @@ def main() -> None:
             opacity: 1 !important;
             transition: none !important;
         }}
+        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0,1}
+           marker) get the same background stripe, bottom border and left
+           padding as the plain-HTML OK rows (_render_table_row), using the
+           same theme tokens -- so every row in the validation table looks
+           like one object. Targets the column block itself via :has(), the
+           same sibling/descendant technique used for the compact buttons. */
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0),
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
+            border-bottom: 1px solid {_theme['border-subtle']};
+            padding: 2px 0 2px 10px;
+            align-items: center !important;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) {{
+            background-color: {_theme['bg-panel']};
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
+            background-color: {_theme['bg-panel-alt']};
+        }}
         .element-container:has(.hs-compact-btn-marker) + .element-container button {{
             padding: 2px 10px !important;
             font-size: 10px !important;
@@ -1441,4 +1449,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
