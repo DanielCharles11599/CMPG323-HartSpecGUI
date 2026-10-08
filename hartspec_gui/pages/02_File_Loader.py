@@ -268,9 +268,11 @@ def _render_target_file_override() -> None:
 
     with st.expander("Dev override: choose files manually", expanded=False):
         current = st.session_state.get("file_loader_target_filenames", [LOAD_FILENAME])
+        # Load/Reset may explicitly clear this control. Initialise only when
+        # absent; a competing value= argument would conflict with restored state.
+        st.session_state.setdefault("file_loader_manual_filenames_input", "\n".join(current))
         typed = st.text_area(
             "Filenames, one per line (relative to FITS_ARCHIVE_PATH)",
-            value="\n".join(current),
             key="file_loader_manual_filenames_input",
             height=100,
         )

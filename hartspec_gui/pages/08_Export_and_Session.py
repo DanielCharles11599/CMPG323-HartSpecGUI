@@ -179,11 +179,14 @@ def _describe_session(payload: dict[str, Any]) -> str:
     Falls back to a plain session-id label when nothing usable is found.
     """
     pipeline_data = payload.get("pipeline_data", {})
+    # A damaged history entry must not crash the page before Load can validate it.
+    if not isinstance(pipeline_data, dict):
+        pipeline_data = {}
     fitting = pipeline_data.get("07_spectral_fitting")
-    if fitting:
+    if isinstance(fitting, dict) and fitting:
         return f"{fitting.get('polarization', '')} — {fitting.get('fit_type', 'fit')} committed".strip(" —")
     bandpass = pipeline_data.get("03_bandpass_correction")
-    if bandpass:
+    if isinstance(bandpass, dict) and bandpass:
         return f"Bandpass — {bandpass.get('mode', 'correction')}"
     source = pipeline_data.get("01_source_browser")
     if source:
@@ -207,8 +210,10 @@ if not recent_sessions:
 else:
     for path in recent_sessions:
         try:
-            payload = json.loads(Path(path).read_text())
-        except (OSError, json.JSONDecodeError):
+            payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
             continue
         ts_label = _format_timestamp(payload.get("saved_at", ""))
         desc = _describe_session(payload)
@@ -216,9 +221,14 @@ else:
         c1.markdown(f'<span style="font-size:13px;">{ts_label}</span>', unsafe_allow_html=True)
         c2.markdown(f'<span style="font-size:13px;">{desc}</span>', unsafe_allow_html=True)
         if c3.button("Load", key=f"load_{path.name}", type="secondary"):
-            session_store.load_session(path)
-            session_store.log_event(f"Session loaded — {path.stem}")
-            st.rerun()
+            try:
+                # The shared action logs and navigates to the replay entry page
+                # on success, before this page can process the new session.
+                session_store.load_session(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                # The store validates before changing state; keep the current
+                # reduction usable when a saved file is damaged or not a session.
+                st.error(f"Could not load session; the current session is unchanged. {exc}")
 
 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 

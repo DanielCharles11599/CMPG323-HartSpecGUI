@@ -1,3 +1,4 @@
+# session_store.py — FR-19/20: JSON persistence and isolated Load/Reset transitions.
 """Minimal JSON-backed session persistence for the HARTSPEC GUI.
 
 Session state (parameter selections + an audit trail) is written to
@@ -14,11 +15,12 @@ regardless of which page the user lands on first.
 from __future__ import annotations
 
 import json
-import uuid
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, MutableMapping
 
 import streamlit as st
 
@@ -167,27 +169,202 @@ def list_sessions() -> list[Path]:
     return sorted(sessions, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def load_session(path: Path) -> None:
-    """Replace the current session state with a previously saved one.
+# These namespaces belong to the reduction, not to the browser's preferences or
+# optional authentication. Do not use st.session_state.clear(): it would also
+# remove theme/authentication/sidebar state owned by other components. Per-file
+# ingest and verification caches use dynamic keys, so exact-key cleanup alone
+# is insufficient. Add a namespace here when a new stage gains runtime state.
+_REDUCTION_STATE_PREFIXES = (
+    "source_browser_",
+    "file_loader_",
+    "manual_map_",
+    "bandpass_",
+    "baseline_",
+    "calibration_",
+    "pointing_",
+    "fit_",
+    "spectral_fitting_",
+    "export_",
+)
+_REDUCTION_STATE_KEYS = frozenset({
+    "loaded_spectrum",
+    "loaded_spectra",
+    "calibrated_spectrum",
+    "latest_fit",
+})
 
-    This "replays" a session per FR-19: every prior stage's parameters are
-    pre-filled from the loaded file, and pages re-read ``pipeline_data`` on
-    their next render.
+# Explicit defaults prevent still-mounted frontend controls from restoring the
+# previous reduction's choices. In particular, Auto hides the manual-mapping
+# form for the first render, so its old widget values cannot override new defaults.
+# No button state is assigned here (Streamlit buttons are transient).
+_DEFAULT_REDUCTION_CONTROLS = {
+    "source_browser_filename_search": "",
+    "file_loader_mapping_mode": "Auto",
+    "file_loader_field_search": "",
+    "file_loader_show_only_flagged": False,
+    "file_loader_manual_filenames_input": "",
+    "bandpass_mode": "Frequency Switch",
+    "fit_type": "1D Gaussian",
+    "fit_polarization": "LCP",
+}
+
+
+def _clear_reduction_runtime_state(state: MutableMapping[str, Any]) -> None:
+    """Remove this reduction's transient state, without touching saved files.
+
+    Args:
+        state: Streamlit session state, or a plain mapping in regression tests.
+
+    The four persistent session fields are replaced by the caller after this
+    cleanup. Snapshot keys before deleting, because the mapping changes size.
+    Process-wide caches and Dash sidecars are deliberately not cleared: other
+    users and saved reductions may still need them.
     """
-    data = json.loads(path.read_text())
-    st.session_state["session_id"] = data.get("session_id", st.session_state.get("session_id"))
-    st.session_state["pipeline_data"] = data.get("pipeline_data", {})
-    st.session_state["completed_stages"] = set(data.get("completed_stages", []))
-    st.session_state["audit_log"] = data.get("audit_log", [])
+    for key in list(state):
+        if isinstance(key, str) and (key in _REDUCTION_STATE_KEYS or key.startswith(_REDUCTION_STATE_PREFIXES)):
+            del state[key]
 
 
-def reset_session() -> None:
-    """Clear the current session's parameters and start a fresh session id.
+def _validate_session_payload(data: Any) -> dict[str, Any]:
+    """Validate the existing JSON envelope before changing the active session.
 
-    Deliberately does not touch ``st.session_state["theme"]`` -- resetting a
-    reduction session shouldn't also flip the user's display preference.
+    Args:
+        data: The decoded JSON object read from a saved session file.
+
+    Returns:
+        The original payload, unchanged; unknown stage metadata is preserved.
+
+    Raises:
+        ValueError: Not a session saved using the existing session-store schema.
+
+    This is an envelope check, not scientific validation. Older saves do not
+    need a new schema version. Dash sidecars lack this envelope and are rejected
+    instead of being treated as an empty session.
     """
-    st.session_state["session_id"] = str(uuid.uuid4())[:8]
+    if not isinstance(data, dict):
+        raise ValueError("Invalid session JSON: the root must be an object. The current session was not changed.")
+
+    required = {"session_id", "pipeline_data", "completed_stages", "audit_log"}
+    missing = sorted(required.difference(data))
+    if missing:
+        raise ValueError(
+            "Invalid session JSON: missing " + ", ".join(missing) + ". The current session was not changed."
+        )
+
+    session_id = data["session_id"]
+    if not isinstance(session_id, str) or re.fullmatch(r"[A-Za-z0-9_-]+", session_id) is None:
+        raise ValueError(
+            "Invalid session ID: expected a non-empty, filename-safe ID. The current session was not changed."
+        )
+    if not isinstance(data["pipeline_data"], dict):
+        raise ValueError("Invalid session JSON: pipeline_data must be an object. The current session was not changed.")
+    completed = data["completed_stages"]
+    if not isinstance(completed, list) or any(not isinstance(key, str) or not key for key in completed):
+        raise ValueError("Invalid session JSON: completed_stages must be a list of stage names. Session unchanged.")
+    audit = data["audit_log"]
+    if not isinstance(audit, list) or any(
+        not isinstance(entry, dict)
+        or not isinstance(entry.get("ts"), str)
+        or not isinstance(entry.get("message"), str)
+        for entry in audit
+    ):
+        raise ValueError("Invalid session JSON: audit_log must contain timestamped messages. Session unchanged.")
+    return data
+
+
+def _seed_reduction_controls(state: MutableMapping[str, Any], pipeline_data: Mapping[str, Any]) -> None:
+    """Reset controls, then seed only values with a known saved-parameter mapping.
+
+    Args:
+        state: The active session mapping, after old reduction state is cleared.
+        pipeline_data: The restored stage parameters, or an empty dict on Reset.
+
+    Call from a button callback or before the page's parameter widgets render.
+    File Loader's manual input uses setdefault
+    instead of a competing widget value argument (see Page 02).
+    """
+    state.update(_DEFAULT_REDUCTION_CONTROLS)
+    source = pipeline_data.get("01_source_browser", {})
+    if isinstance(source, Mapping):
+        if isinstance(source.get("source_name"), str):
+            state["source_browser_source_name"] = source["source_name"]
+        frequency = source.get("frequency_mhz")
+        if isinstance(frequency, (int, float)) and not isinstance(frequency, bool):
+            state["source_browser_frequency_mhz"] = frequency
+
+    bandpass = pipeline_data.get("03_bandpass_correction", {})
+    if isinstance(bandpass, Mapping) and bandpass.get("mode") in ("Frequency Switch", "Position Switch"):
+        state["bandpass_mode"] = bandpass["mode"]
+
+    fitting = pipeline_data.get("07_spectral_fitting", {})
+    if isinstance(fitting, Mapping):
+        # Prefer the requested control value over a fallback model's result.
+        fit_type = fitting.get("fit_type_requested", fitting.get("fit_type"))
+        if fit_type in ("1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component"):
+            state["fit_type"] = fit_type
+        if fitting.get("polarization") in ("LCP", "RCP"):
+            state["fit_polarization"] = fitting["polarization"]
+
+
+def load_session(path: Path, *, navigate: bool = True) -> None:
+    """Restore saved parameters without reusing another reduction's arrays.
+
+    Args:
+        path: A session JSON written by save_session(), not a Dash sidecar.
+        navigate: For a UI action (default), log the load and open File Loader
+            to rebuild raw spectra, or Source Browser when no file selection
+            was saved. False is for headless callers managing replay themselves.
+
+    Raises:
+        OSError, UnicodeError, ValueError: The file cannot be read or its envelope
+            is invalid. These checks happen before clearing any active state.
+
+    This restores metadata and supported control values, not computed arrays.
+    The existing processing pages remain responsible for re-execution. A saved
+    completion flag must not be mistaken for an in-memory spectrum. The UI
+    must not rerun an arbitrary later page with missing inputs: Pages 3/4 can
+    otherwise discard the just-restored baseline parameters or bridge. Default
+    navigation interrupts that run before its later processing can execute.
+    """
+    data = _validate_session_payload(json.loads(Path(path).read_text(encoding="utf-8-sig")))
+    completed = set(data["completed_stages"])
+    _clear_reduction_runtime_state(st.session_state)
+    st.session_state["session_id"] = data["session_id"]
+    st.session_state["pipeline_data"] = data["pipeline_data"]
+    st.session_state["completed_stages"] = completed
+    st.session_state["audit_log"] = data["audit_log"]
+    _seed_reduction_controls(st.session_state, data["pipeline_data"])
+    if navigate:
+        log_event(f"Session loaded — {data['session_id']}")
+        source = data["pipeline_data"].get("01_source_browser", {})
+        selected = source.get("selected_files") if isinstance(source, Mapping) else None
+        has_selection = isinstance(selected, list) and bool(selected) and all(
+            isinstance(filename, str) and bool(filename) for filename in selected
+        )
+        st.switch_page("pages/02_File_Loader.py" if has_selection else "pages/01_Source_Browser.py")
+
+
+def reset_session(*, navigate: bool = True) -> None:
+    """Start an empty reduction without deleting saved sessions or source files.
+
+    Clears reduction caches and controls, preserving theme and unrelated
+    session state (including optional authentication). A new session ID keeps
+    the previous reduction's on-disk Dash bridge outside the new session.
+    Args:
+        navigate: For a UI action (default), log the reset and open Source
+            Browser. False leaves navigation and logging to a headless caller.
+
+    As with load_session(), call before parameter widgets render or in an
+    on_click callback. Default navigation stops the old page from immediately
+    repopulating the new session. No scientific code is executed here.
+    """
+    new_session_id = str(uuid.uuid4())[:8]
+    _clear_reduction_runtime_state(st.session_state)
+    st.session_state["session_id"] = new_session_id
     st.session_state["pipeline_data"] = {}
     st.session_state["completed_stages"] = set()
     st.session_state["audit_log"] = []
+    _seed_reduction_controls(st.session_state, {})
+    if navigate:
+        log_event("Session reset — new reduction started")
+        st.switch_page("pages/01_Source_Browser.py")
