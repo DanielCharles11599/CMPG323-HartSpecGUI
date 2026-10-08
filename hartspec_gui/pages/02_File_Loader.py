@@ -135,6 +135,7 @@ still true here:
 
 from __future__ import annotations
 
+import html
 import logging
 import time
 
@@ -593,20 +594,73 @@ def _render_validation_table() -> None:
     # through everything. This checkbox hides OK rows entirely rather than
     # adding a second search box -- the validation table only has three
     # possible statuses, so a binary toggle is simpler than a text filter.
-    show_only_flagged = st.checkbox(
-        "Show only flagged files",
-        key="file_loader_show_only_flagged",
-        help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
-    )
+    # Flagged files that haven't been quarantined yet -- what "Quarantine
+    # all" would act on. Already-quarantined rows also have status "error"
+    # (see _build_validation_rows) but are excluded here since they've
+    # already been moved.
+    flagged_pending_files = [
+        row["file"] for row in rows if row["status"] == "error" and row["file"] not in quarantined
+    ]
+    pending_all = st.session_state.get("file_loader_pending_quarantine_all", False)
+    if pending_all and not flagged_pending_files:
+        # Nothing left to quarantine (e.g. all handled individually since
+        # "Quarantine all" was clicked) -- drop the stale confirmation.
+        pending_all = False
+        st.session_state["file_loader_pending_quarantine_all"] = False
+
+    filter_col, quarantine_all_col, _spacer = st.columns([2, 2, 6])
+    with filter_col:
+        show_only_flagged = st.checkbox(
+            "Show only flagged files",
+            key="file_loader_show_only_flagged",
+            help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
+        )
+    with quarantine_all_col:
+        # Only offered when there is actually something to quarantine.
+        if flagged_pending_files and not pending_all:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button(
+                f"Quarantine all ({len(flagged_pending_files)})",
+                key="quarantine_all_btn",
+                help="Move every flagged file into Flagged/ at once (asks for confirmation first).",
+            ):
+                st.session_state["file_loader_pending_quarantine_all"] = True
+                st.session_state["file_loader_pending_quarantine"] = None
+                st.rerun()
+
+    if pending_all:
+        # Same inline confirm pattern as the per-row Quarantine button (no
+        # browser-native dialog) -- this is a bulk, irreversible-from-the-UI
+        # move of every flagged file.
+        st.caption(
+            f"Quarantine all {len(flagged_pending_files)} flagged file(s)? This moves them out of the active "
+            "archive into Flagged/ immediately — undoing it means manually moving the files back on disk."
+        )
+        confirm_col, cancel_col, _confirm_spacer = st.columns([1, 1, 6])
+        with confirm_col:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button("Continue", key="confirm_quarantine_all", type="primary", use_container_width=True):
+                for target in flagged_pending_files:
+                    _quarantine_file(target)
+                quarantined_now = st.session_state.get("file_loader_quarantined", set())
+                failed = [f for f in flagged_pending_files if f not in quarantined_now]
+                if failed:
+                    # Individual reasons are in the audit log; this surfaces the aggregate.
+                    st.session_state["file_loader_quarantine_error"] = (
+                        f"{len(failed)} of {len(flagged_pending_files)} file(s) could not be moved: "
+                        + ", ".join(failed)
+                    )
+                st.session_state["file_loader_pending_quarantine_all"] = False
+                st.rerun()
+        with cancel_col:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button("Cancel", key="cancel_quarantine_all", use_container_width=True):
+                st.session_state["file_loader_pending_quarantine_all"] = False
+                st.rerun()
+
     display_rows = [row for row in rows if row["status"] == "error"] if show_only_flagged else rows
     if show_only_flagged:
         st.caption(f"Showing {len(display_rows)} of {len(rows)} file(s).")
-
-    # Which flagged rows currently have their full issue text expanded --
-    # clicking the issue text itself (not a separate button elsewhere)
-    # toggles this, and the full text then appears directly underneath it,
-    # inside the same column -- see col_issue below.
-    issue_details_open = st.session_state.setdefault("file_loader_issue_details_open", set())
 
     _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
@@ -648,7 +702,6 @@ def _render_validation_table() -> None:
                 # this honestly rather than claiming parity again.
                 is_quarantined = row["file"] in quarantined
                 is_pending = row["file"] == pending
-                is_detail_open = row["file"] in issue_details_open
                 status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
 
                 with st.container(border=True):
@@ -662,38 +715,19 @@ def _render_validation_table() -> None:
                         # Plain text again, same 10.5px size as the File
                         # column, single line with an ellipsis + native hover
                         # tooltip when it's too long to fit -- not a button.
+                        # The full text stays reachable via the native hover
+                        # tooltip (title attribute), one part per line:
+                        # "&#10;" is an HTML newline entity, inserted
+                        # between ";"-separated parts, each escaped so a
+                        # quote in an error message can't break the attribute.
+                        issue_parts = [part.strip() for part in row["issue"].split(";") if part.strip()]
+                        tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
                         st.markdown(
                             f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
-                            f'overflow:hidden; text-overflow:ellipsis;" title="{row["issue"]}">'
+                            f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
                             f'{row["issue"]}</div>',
                             unsafe_allow_html=True,
                         )
-                        # The expand/collapse control for this row -- kept
-                        # inline in the Issue column itself (not a separate
-                        # column off to the side) and shrunk via the
-                        # .hs-compact-btn-marker CSS rule in main() below, so
-                        # it reads as a small inline toggle rather than a
-                        # full-size button.
-                        st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
-                        toggle_label = "▴ Hide full issue" if is_detail_open else "▾ Show full issue"
-                        if st.button(toggle_label, key=f"issue_toggle_{row['file']}"):
-                            if is_detail_open:
-                                issue_details_open.discard(row["file"])
-                            else:
-                                issue_details_open.add(row["file"])
-                            st.session_state["file_loader_issue_details_open"] = issue_details_open
-                            st.rerun()
-                        if is_detail_open:
-                            # Full text, with a line break after every ";"
-                            # so a multi-part issue (e.g. several checksum/
-                            # verify messages joined with "; ") reads as a
-                            # list rather than one dense run-on line.
-                            full_issue_html = row["issue"].replace(";", ";<br>")
-                            st.markdown(
-                                f'<div style="font-size:9.5px; color:{theme["text-muted"]}; '
-                                f'margin-top:4px;">{full_issue_html}</div>',
-                                unsafe_allow_html=True,
-                            )
                     with col_status:
                         st.markdown(styles.render_badge(status_label, "error"), unsafe_allow_html=True)
                     with col_action:
@@ -1296,8 +1330,8 @@ def main() -> None:
             color: {_theme['text-body']} !important;
         }}
         /* Compact inline action buttons for the validation table (Quarantine
-           / Continue / Cancel, and each flagged row's Show/Hide full issue
-           toggle) -- these are small per-row actions, not primary CTAs, and
+           / Continue / Cancel, and Quarantine all) -- these are small
+           inline actions, not primary CTAs, and
            Streamlit's default button padding/height made Quarantine not
            fit comfortably in its column. Scoped to only the buttons
            immediately following a `.hs-compact-btn-marker` span (one is
