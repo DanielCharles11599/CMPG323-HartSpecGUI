@@ -1,2 +1,0 @@
-data/fits/faulty.fits
-data/fits/good.fits
