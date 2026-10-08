@@ -131,3 +131,17 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
   color: var(--hs-text-body) !important;
 }
 .Select-value-label, .Select-placeholder { color: var(--hs-text-body) !important; }
+
+/* PM revision: numeric flat-baseline selection toolbar and editable region list. */
+.hs-block-panel { height: auto; min-height: 152px; overflow: visible; margin-bottom: 16px; }
+/* The table grows with its rows and naturally pushes the polynomial grid down. */
+.hs-block-panel .dash-table-container,
+.hs-block-panel .dash-spreadsheet-container,
+.hs-block-panel .dash-spreadsheet-inner { max-height: none !important; overflow-y: visible !important; }
+.hs-block-panel .hs-region-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 9px 10px; margin: 0; height: auto; min-height: 56px; border: 0; border-radius: 0; }
+.hs-region-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--hs-text-muted); }
+.hs-region-controls input { width: 116px; height: 29px; padding: 4px 7px; border-radius: 6px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); }
+.hs-region-controls button { min-height: 29px; border-radius: 6px; padding: 0 9px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); cursor: pointer; }
+.hs-region-controls button:first-of-type { background: var(--hs-accent); color: white; border-color: var(--hs-accent); }
+.hs-region-controls .hs-validation { margin-left: 0; max-width: none; white-space: normal; }
+.hs-dash-root { min-height: 830px; overflow: visible; }
