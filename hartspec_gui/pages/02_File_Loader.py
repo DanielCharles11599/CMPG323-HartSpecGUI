@@ -138,6 +138,7 @@ from __future__ import annotations
 import html
 import logging
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -640,8 +641,9 @@ def _render_validation_table() -> None:
         with confirm_col:
             st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
             if st.button("Continue", key="confirm_quarantine_all", type="primary", use_container_width=True):
-                for target in flagged_pending_files:
-                    _quarantine_file(target)
+                with st.spinner(f"Quarantining {len(flagged_pending_files)} file(s)…"):
+                    for target in flagged_pending_files:
+                        _quarantine_file(target)
                 quarantined_now = st.session_state.get("file_loader_quarantined", set())
                 failed = [f for f in flagged_pending_files if f not in quarantined_now]
                 if failed:
@@ -746,7 +748,8 @@ def _render_validation_table() -> None:
                                     "Continue", key=f"confirm_quarantine_{row['file']}",
                                     type="primary", use_container_width=True,
                                 ):
-                                    _quarantine_file(row["file"])
+                                    with st.spinner(f"Quarantining {row['file']}…"):
+                                        _quarantine_file(row["file"])
                                     st.session_state["file_loader_pending_quarantine"] = None
                                     st.rerun()
                                 st.markdown(
@@ -785,7 +788,7 @@ def _render_validation_table() -> None:
                 )
 
 
-def _read_display_header_fields(path) -> dict[str, str]:
+def _read_display_header_fields_uncached(path) -> dict[str, str]:
     """Best-effort, direct-from-FITS-header values for the header-fields
     table's 9 priority columns (build spec §7, page 02).
 
@@ -870,6 +873,19 @@ def _read_display_header_fields(path) -> dict[str, str]:
     return fields
 
 
+@st.cache_data(show_spinner=False)
+def _read_display_header_fields_cached(path_str: str, mtime: float) -> dict[str, str]:
+    return _read_display_header_fields_uncached(path_str)
+
+
+def _read_display_header_fields(path) -> dict[str, str]:
+    """Cached wrapper around `_read_display_header_fields_uncached` (same path + mtime key as above)."""
+    mtime = _file_mtime(path)
+    if mtime is None:
+        return _read_display_header_fields_uncached(path)
+    return _read_display_header_fields_cached(str(path), mtime)
+
+
 # --------------------------------------------------------------------------
 # Auto/Manual column-mapping (FR-02, confirmed 2026-08-30). "Auto" is the
 # best-effort fixed mapping above (_read_display_header_fields). "Manual"
@@ -909,7 +925,7 @@ def _is_structural_key(key: str) -> bool:
     return any(key.startswith(prefix) and key[len(prefix):].isdigit() for prefix in _STRUCTURAL_KEY_PREFIXES)
 
 
-def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+def _flatten_header_preview_uncached(path) -> list[tuple[str, str, str]]:
     """Every non-plumbing header keyword across every HDU in a file, as
     (qualified_key, hdu_label, formatted_value) tuples.
 
@@ -938,6 +954,35 @@ def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
     except Exception:
         pass
     return items
+
+
+def _file_mtime(path) -> float | None:
+    """Modification time used as part of the header-cache key (None if the file is missing/unreadable)."""
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _flatten_header_cached(path_str: str, mtime: float) -> list[tuple[str, str, str]]:
+    return _flatten_header_preview_uncached(path_str)
+
+
+def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+    """Cached wrapper around `_flatten_header_preview_uncached`.
+
+    Every Streamlit rerun (including the one right after a quarantine
+    click) used to re-open every loaded FITS file from disk several times
+    just to rebuild the header-fields table. Keyed by path + modification
+    time, so a changed file is re-read but an unchanged one is not.
+    A missing file is never cached (a file that later reappears must not
+    be served a stale empty result).
+    """
+    mtime = _file_mtime(path)
+    if mtime is None:
+        return _flatten_header_preview_uncached(path)
+    return _flatten_header_cached(str(path), mtime)
 
 
 def _read_all_raw_fields(path) -> dict[str, str]:
@@ -978,28 +1023,23 @@ def _read_all_raw_fields(path) -> dict[str, str]:
 def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
     """Look up one "HDU{n}:{key}" identifier's current value in a file.
 
-    Returns None (never raises) if the key is unset, the HDU index is out
-    of range for this particular file, or the file can't be read at all
-    -- callers treat None as "pending", the same convention used
-    everywhere else in this module for a value that couldn't be sourced.
+    Reads from the cached header listing (`_flatten_header_preview`)
+    instead of re-opening the FITS file for every single column of every
+    file -- Manual mode previously did ~10 file opens per file per rerun.
+    The picker options are built from that same listing, so every key a
+    user can choose is resolvable here.
+
+    Returns None (never raises) if the key is unset, absent from this
+    particular file, or the file can't be read at all -- callers treat
+    None as "pending", the same convention used everywhere else in this
+    module for a value that couldn't be sourced.
     """
     if not qualified_key or ":" not in qualified_key:
         return None
-    hdu_part, key = qualified_key.split(":", 1)
-    if not hdu_part.startswith("HDU"):
-        return None
-    try:
-        hdu_index = int(hdu_part[3:])
-    except ValueError:
-        return None
-    try:
-        with fits.open(path) as hdul:
-            if hdu_index >= len(hdul):
-                return None
-            value = hdul[hdu_index].header.get(key)
-            return None if value is None else str(value)
-    except Exception:
-        return None
+    for candidate_key, _hdu_label, value in _flatten_header_preview(path):
+        if candidate_key == qualified_key:
+            return value
+    return None
 
 
 def _default_manual_mapping() -> dict:
@@ -1342,6 +1382,18 @@ def main() -> None:
            `st-key-` CSS class yet. Deliberately NOT a change to
            utils/styles.py's global button rules, since those also style the
            app's primary/secondary CTAs everywhere else. */
+        /* Streamlit dims ("hazes") every element it considers stale while a
+           rerun is in progress -- on this page a rerun after quarantining
+           can take a while, and the whole page went ghostly for the
+           duration. Spinners (st.spinner) now signal progress instead, so
+           the dimming is switched off here. Page-local on purpose; if it
+           should apply app-wide it can be promoted to utils/styles.py. */
+        [data-stale="true"],
+        .element-container[data-stale="true"],
+        .stale-element {{
+            opacity: 1 !important;
+            transition: none !important;
+        }}
         .element-container:has(.hs-compact-btn-marker) + .element-container button {{
             padding: 2px 10px !important;
             font-size: 10px !important;
@@ -1365,7 +1417,8 @@ def main() -> None:
     _render_validation_table()
 
     st.markdown(f"<div style='height:{styles.SECTION_GAP}px'></div>", unsafe_allow_html=True)
-    _render_header_fields_table()
+    with st.spinner("Reading FITS headers…"):
+        _render_header_fields_table()
 
     if st.session_state.get("file_loader_load_done"):
         session_store.mark_stage_complete(STAGE_KEY)
