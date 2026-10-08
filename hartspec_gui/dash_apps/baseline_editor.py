@@ -11,6 +11,10 @@ import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_update
 
 from utils import styles
+from utils.baseline_editor_selection_logic import (
+    RegionValidationError, add_region, update_region, delete_region,
+    region_from_plotly_selection, spectrum_velocity_bounds, validate_region_rows,
+)
 from utils.baseline_editor_bridge import append_event, read_bridge, update_bridge
 from utils.baseline_editor_logic import (
     POLYNOMIAL_ORDERS,
@@ -91,7 +95,7 @@ def _empty_figure(theme_name: str, height: int = 78) -> go.Figure:
 
 
 def _spectrum_figure(state: Mapping[str, Any], rows: list[dict[str, Any]], theme_name: str) -> go.Figure:
-    """Build the FR-05 selectable corrected-spectrum canvas with committed block overlays."""
+    """Plot the full spectrum with selected line-free polynomial-fit regions."""
     theme = _theme_tokens(theme_name)
     spectrum = state.get("spectrum") or {}
     vlsr = spectrum.get("Vlsr") or []
@@ -248,16 +252,18 @@ def _table() -> dash_table.DataTable:
         id="block-table",
         columns=[
             {"name": "Block", "id": "block", "editable": False, "type": "numeric"},
-            {"name": "Start (km/s)", "id": "start", "editable": True, "type": "numeric"},
-            {"name": "End (km/s)", "id": "end", "editable": True, "type": "numeric"},
+            {"name": "Start (km/s)", "id": "start", "editable": False, "type": "numeric"},
+            {"name": "End (km/s)", "id": "end", "editable": False, "type": "numeric"},
             {"name": "", "id": "delete", "editable": False},
         ],
         data=[],
-        editable=True,
+        editable=False,
+        row_selectable="single",
+        selected_rows=[],
         cell_selectable=True,
         page_action="none",
-        fixed_rows={"headers": True},
-        style_table={"height": "88px", "overflowY": "auto", "overflowX": "hidden"},
+        # Grow with the selection list; users should not scroll after just two rows.
+        style_table={"overflowY": "visible", "overflowX": "hidden"},
         style_header={
             "height": "32px",
             "minHeight": "32px",
@@ -319,11 +325,12 @@ def create_app() -> Dash:
             dcc.Store(id="fit-result-store"),
             dcc.Store(id="selected-orders-store"),
             dcc.Store(id="persist-version"),
+            dcc.Store(id="region-edit-version"),
             html.Div(
                 className="hs-dash-panel hs-canvas-panel",
                 children=[
                     html.Div(
-                        "Interactive canvas — click-drag to select a velocity range (0.1 km/s precision)",
+                        "Select flat, line-free baseline regions (numeric entry or click-drag; 0.1 km/s)",
                         className="hs-panel-title",
                     ),
                     dcc.Graph(
@@ -334,7 +341,19 @@ def create_app() -> Dash:
                     ),
                 ],
             ),
-            html.Div(className="hs-dash-panel hs-block-panel", children=[_table()]),
+            html.Div(className="hs-dash-panel hs-block-panel", children=[
+                html.Div([
+                    html.Label("Start velocity (km/s)"),
+                    dcc.Input(id="region-start", type="number", step=0.1, debounce=True),
+                    html.Label("End velocity (km/s)"),
+                    dcc.Input(id="region-end", type="number", step=0.1, debounce=True),
+                    html.Button("Add flat region", id="add-region", n_clicks=0),
+                    html.Button("Update selected", id="update-region", n_clicks=0),
+                    html.Button("Delete selected", id="delete-region", n_clicks=0),
+                    html.Span(id="region-error", role="alert", className="hs-validation"),
+                 ], className="hs-region-controls"),
+                _table(),
+            ]),
             html.Div("Six-panel polynomial order comparison", className="hs-grid-label"),
             html.Div(
                 className="hs-comparison-grid",
@@ -406,27 +425,60 @@ def create_app() -> Dash:
 
     @app.callback(
         Output("block-table", "data", allow_duplicate=True),
+        Output("region-error", "children"),
         Input("spectrum-graph", "selectedData"),
-        Input("block-table", "active_cell"),
+        Input("add-region", "n_clicks"),
+        Input("update-region", "n_clicks"),
+        Input("delete-region", "n_clicks"),
+        State("block-table", "data"),
+        State("block-table", "selected_rows"),
+        State("region-start", "value"),
+        State("region-end", "value"),
+        State("session-store", "data"),
+        prevent_initial_call=True,
+    )
+    def edit_flat_regions(selected_data, add_clicks, update_clicks, delete_clicks,
+                          rows, selected_rows, start_value, end_value, state):
+        """Only commit valid line-free selections; preserve old rows on errors."""
+        if not state or not (state.get("spectrum") or {}).get("Vlsr"):
+            return no_update, "No corrected spectrum available."
+        lower, upper = spectrum_velocity_bounds(state["spectrum"]["Vlsr"])
+        trigger = ctx.triggered_id
+        try:
+            if trigger == "spectrum-graph":
+                region = region_from_plotly_selection(selected_data, lower, upper)
+                if region is None:
+                    return no_update, ""
+                new_rows = add_region(rows, region.start, region.end, lower, upper)
+            elif trigger == "add-region":
+                new_rows = add_region(rows, start_value, end_value, lower, upper)
+            elif trigger in ("update-region", "delete-region"):
+                if not selected_rows:
+                    raise RegionValidationError("Choose a region row first.")
+                index = selected_rows[0]
+                if trigger == "update-region":
+                    new_rows = update_region(rows, index, start_value, end_value, lower, upper)
+                else:
+                    new_rows = delete_region(rows, index, lower, upper)
+            else:
+                return no_update, ""
+            return [{**row, "delete": ""} for row in new_rows], ""
+        except RegionValidationError as exc:
+            return no_update, str(exc)
+
+    @app.callback(
+        Output("region-start", "value"),
+        Output("region-end", "value"),
+        Input("block-table", "selected_rows"),
         State("block-table", "data"),
         prevent_initial_call=True,
     )
-    def add_or_delete_block(selected_data, active_cell, rows):
-        rows = list(rows or [])
-        trigger = ctx.triggered_id
-        if trigger == "spectrum-graph":
-            block = selected_data_to_block(selected_data, len(rows) + 1)
-            if block is not None:
-                rows.append(block.as_row())
-            return rows
-
-        if trigger == "block-table" and active_cell and active_cell.get("column_id") == "delete":
-            row_index = active_cell.get("row")
-            if isinstance(row_index, int) and 0 <= row_index < len(rows):
-                rows.pop(row_index)
-                normalized, _ = normalize_blocks(rows)
-                return normalized
-        return no_update
+    def populate_region_inputs(selected_rows, rows):
+        """Load the chosen region's exact boundaries into editable number boxes."""
+        if not selected_rows or not rows or selected_rows[0] >= len(rows):
+            return no_update, no_update
+        row = rows[selected_rows[0]]
+        return row["start"], row["end"]
 
     @app.callback(
         Output("fit-result-store", "data", allow_duplicate=True),
@@ -534,7 +586,7 @@ def create_app() -> Dash:
             validation_text = errors[0] if len(errors) == 1 else f"{len(errors)} invalid blocks"
             validation_class = "hs-validation hs-validation-error"
         elif not normalized:
-            validation_text = "Drag on the spectrum to add a block"
+            validation_text = "Add a flat region using start/end values or drag on the spectrum"
             validation_class = "hs-validation"
         elif integration_error and not fit_result:
             validation_text = integration_error
@@ -608,7 +660,7 @@ def create_app() -> Dash:
             bridge_state["integration_error"] = flatten_error
 
             if not rows_equal(previous_blocks, bridge_state["blocks"]):
-                append_event(bridge_state, "Baseline blocks updated")
+                append_event(bridge_state, "Flat baseline fit regions updated")
             if selected_orders != previous_orders and selected_orders:
                 append_event(
                     bridge_state,
