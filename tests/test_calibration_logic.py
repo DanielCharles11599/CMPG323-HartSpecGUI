@@ -160,6 +160,58 @@ class TestPssWindowAverages:
         assert result["rcp"] is None
 
 
+class TestPssTrailingStatistics:
+    def test_uses_only_previous_thirty_days(self):
+        history = {
+            "lcp": {
+                "mjd": [69.0, 70.0, 80.0, 90.0, 100.0, 101.0],
+                "pss": [99.0, 10.0, 20.0, 30.0, 40.0, 99.0],
+            },
+            "rcp": {
+                "mjd": [69.0, 70.0, 80.0, 90.0, 100.0, 101.0],
+                "pss": [99.0, 8.0, 16.0, 24.0, 32.0, 99.0],
+            },
+        }
+
+        result = calibration_logic.get_pss_trailing_statistics(
+            history,
+            observation_mjd=100.0,
+            days=30,
+        )
+
+        assert result["start_mjd"] == pytest.approx(70.0)
+        assert result["end_mjd"] == pytest.approx(100.0)
+        assert result["lcp"]["count"] == 4
+        assert result["lcp"]["mean"] == pytest.approx(25.0)
+        assert result["lcp"]["std"] == pytest.approx(12.9099444874)
+        assert result["rcp"]["count"] == 4
+        assert result["rcp"]["mean"] == pytest.approx(20.0)
+        assert result["rcp"]["std"] == pytest.approx(10.3279555899)
+
+    def test_single_measurement_has_no_standard_deviation(self):
+        history = {
+            "lcp": {
+                "mjd": [95.0],
+                "pss": [10.0],
+            },
+            "rcp": {
+                "mjd": [95.0],
+                "pss": [8.0],
+            },
+        }
+
+        result = calibration_logic.get_pss_trailing_statistics(
+            history,
+            observation_mjd=100.0,
+            days=30,
+        )
+
+        assert result["lcp"]["mean"] == pytest.approx(10.0)
+        assert result["lcp"]["std"] is None
+        assert result["rcp"]["mean"] == pytest.approx(8.0)
+        assert result["rcp"]["std"] is None
+
+
 class TestAtmosphericCalibration:
     def test_requires_calibration_metadata(self):
         spectrum = {

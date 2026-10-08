@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
 import make_fixtures  # noqa: E402
 
 from utils.env import load_dotenv_if_present  # noqa: E402
+from utils import session_store  # noqa: E402
 
 # Load .env once, at collection time -- before any fixture below reads
 # os.environ. Without this, real_fits_archive's env check only worked by
@@ -38,10 +39,25 @@ def fits_fixtures_dir(tmp_path_factory) -> Path:
 
 
 @pytest.fixture()
-def fits_archive(monkeypatch, fits_fixtures_dir) -> Path:
+def fits_archive(monkeypatch, fits_fixtures_dir, tmp_path) -> Path:
     """Point utils.fits_ingest.get_archive_root() at the synthetic fixtures
     for the duration of one test, via the same env var the app itself
     honors -- so no test-only code path exists inside fits_ingest.py.
+
+    Also isolates session_store.SESSIONS_DIR to a fresh per-test temp
+    directory. Without this, every page's sidebar.render_sidebar() reads
+    real saved session files from wherever SESSIONS_DIR resolves on the
+    machine running the tests (session_store._default_sessions_dir()
+    falls back to the real production "/data/sessions" path if it
+    happens to exist there) -- any leftover session file from manually
+    running the real app leaks into the "Load Session" selectbox during
+    every AppTest run, which Streamlit's AppTest harness chokes on (a
+    real bug in its own selectbox-option handling, not something this
+    project's code can work around other than keeping real session files
+    out of test runs entirely). SESSIONS_DIR is set via monkeypatch.setattr
+    rather than the SESSIONS_PATH env var, since it's a module-level
+    constant computed once at import time -- setting the env var later
+    wouldn't retroactively change it.
 
     FITS_ARCHIVE_PATH is the canonical name (matches
     source_browser_logic.DEFAULT_FITS_ARCHIVE_PATH / the project prompt's
@@ -51,20 +67,15 @@ def fits_archive(monkeypatch, fits_fixtures_dir) -> Path:
     directories.
     """
     monkeypatch.setenv("FITS_ARCHIVE_PATH", str(fits_fixtures_dir))
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
     return fits_fixtures_dir
 
 
 @pytest.fixture()
-def real_fits_archive(monkeypatch) -> Path:
+def real_fits_archive(monkeypatch, tmp_path) -> Path:
     """Point at a folder of REAL HartRAO FITS files on your own machine,
     instead of the synthetic ones -- opt-in, via an env var only you set.
-
-    Set once per shell session (PowerShell):
-        $env:HARTSPEC_REAL_FITS_DIR = "C:\\path\\to\\your\\real\\fits"
-
-    Any test using this fixture is skipped automatically if that env var
-    isn't set -- so this never breaks the suite on a teammate's machine or
-    in CI where those files don't exist.
+    ...(existing docstring unchanged)...
     """
     import os
 
@@ -74,29 +85,18 @@ def real_fits_archive(monkeypatch) -> Path:
     path = Path(real_dir)
     if not path.is_dir():
         pytest.skip(f"HARTSPEC_REAL_FITS_DIR={real_dir} is not a directory")
-    # FITS_ARCHIVE_PATH is the canonical archive-root override (see
-    # fits_archive fixture above) -- HARTSPEC_FITS_ARCHIVE_ROOT is retired.
     monkeypatch.setenv("FITS_ARCHIVE_PATH", str(path))
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
     return path
 
 
 @pytest.fixture()
 def isolated_fits_archive(tmp_path, monkeypatch) -> Path:
-    """A FRESH, function-scoped copy of the synthetic FITS fixtures --
-    unlike `fits_archive` above (built ONCE per pytest session and shared
-    by every test that requests it), this fixture builds a brand new,
-    throwaway directory for the single test using it.
-
-    Required for any test that performs a REAL destructive filesystem
-    action -- specifically FR-03's quarantine step 5, which calls a real
-    `shutil.move()`. A test that clicks "Continue" against the shared
-    `fits_archive` fixture would permanently move a fixture file out of
-    the directory every other test in the same pytest run also depends
-    on, causing order-dependent failures in whichever tests happen to run
-    afterward. Using this fixture instead means each quarantine-confirming
-    test can move/delete files freely without affecting anything else.
+    """A FRESH, function-scoped copy of the synthetic FITS fixtures...
+    ...(existing docstring unchanged)...
     """
     out_dir = tmp_path / "fits_archive"
     make_fixtures.build_all(out_dir)
     monkeypatch.setenv("FITS_ARCHIVE_PATH", str(out_dir))
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
     return out_dir

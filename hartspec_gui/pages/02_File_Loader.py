@@ -135,8 +135,10 @@ still true here:
 
 from __future__ import annotations
 
+import html
 import logging
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -168,6 +170,13 @@ HEADER_FIELDS_COLUMNS = [
 # real bug this caused ("HPBW" specifically, since it's the one curated
 # name that happens to be case-identical to its actual FITS keyword).
 _CURATED_COLUMN_NAMES = set(HEADER_FIELDS_COLUMNS)
+
+# Fixed, scrollable body height for the validation table (TODO: confirm
+# against design -- the build spec's 116px panel height was sized for the
+# 3-row sample only, not a batch that can run to 30+ files). Keeps the
+# panel itself a bounded size instead of pushing the header-fields table
+# and "Continue" button further down the page on every large load.
+VALIDATION_TABLE_HEIGHT = 260
 
 
 # --------------------------------------------------------------------------
@@ -586,73 +595,169 @@ def _render_validation_table() -> None:
     # through everything. This checkbox hides OK rows entirely rather than
     # adding a second search box -- the validation table only has three
     # possible statuses, so a binary toggle is simpler than a text filter.
-    show_only_flagged = st.checkbox(
-        "Show only flagged files",
-        key="file_loader_show_only_flagged",
-        help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
-    )
+    # Flagged files that haven't been quarantined yet -- what "Quarantine
+    # all" would act on. Already-quarantined rows also have status "error"
+    # (see _build_validation_rows) but are excluded here since they've
+    # already been moved.
+    flagged_pending_files = [
+        row["file"] for row in rows if row["status"] == "error" and row["file"] not in quarantined
+    ]
+    pending_all = st.session_state.get("file_loader_pending_quarantine_all", False)
+    if pending_all and not flagged_pending_files:
+        # Nothing left to quarantine (e.g. all handled individually since
+        # "Quarantine all" was clicked) -- drop the stale confirmation.
+        pending_all = False
+        st.session_state["file_loader_pending_quarantine_all"] = False
+
+    filter_col, quarantine_all_col, _spacer = st.columns([2, 2, 6])
+    with filter_col:
+        show_only_flagged = st.checkbox(
+            "Show only flagged files",
+            key="file_loader_show_only_flagged",
+            help="Hide OK rows so flagged/quarantined files are easy to find without scrolling.",
+        )
+    with quarantine_all_col:
+        # Only offered when there is actually something to quarantine.
+        if flagged_pending_files and not pending_all:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button(
+                f"Quarantine all ({len(flagged_pending_files)})",
+                key="quarantine_all_btn",
+                help="Move every flagged file into Flagged/ at once (asks for confirmation first).",
+            ):
+                st.session_state["file_loader_pending_quarantine_all"] = True
+                st.session_state["file_loader_pending_quarantine"] = None
+                st.rerun()
+
+    if pending_all:
+        # Same inline confirm pattern as the per-row Quarantine button (no
+        # browser-native dialog) -- this is a bulk, irreversible-from-the-UI
+        # move of every flagged file.
+        st.caption(
+            f"Quarantine all {len(flagged_pending_files)} flagged file(s)? This moves them out of the active "
+            "archive into Flagged/ immediately — undoing it means manually moving the files back on disk."
+        )
+        confirm_col, cancel_col, _confirm_spacer = st.columns([1, 1, 6])
+        with confirm_col:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button("Continue", key="confirm_quarantine_all", type="primary", use_container_width=True):
+                with st.spinner(f"Quarantining {len(flagged_pending_files)} file(s)…"):
+                    for target in flagged_pending_files:
+                        _quarantine_file(target)
+                quarantined_now = st.session_state.get("file_loader_quarantined", set())
+                failed = [f for f in flagged_pending_files if f not in quarantined_now]
+                if failed:
+                    # Individual reasons are in the audit log; this surfaces the aggregate.
+                    st.session_state["file_loader_quarantine_error"] = (
+                        f"{len(failed)} of {len(flagged_pending_files)} file(s) could not be moved: "
+                        + ", ".join(failed)
+                    )
+                st.session_state["file_loader_pending_quarantine_all"] = False
+                st.rerun()
+        with cancel_col:
+            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
+            if st.button("Cancel", key="cancel_quarantine_all", use_container_width=True):
+                st.session_state["file_loader_pending_quarantine_all"] = False
+                st.rerun()
+
     display_rows = [row for row in rows if row["status"] == "error"] if show_only_flagged else rows
     if show_only_flagged:
         st.caption(f"Showing {len(display_rows)} of {len(rows)} file(s).")
 
-    with st.container(border=False):
-        _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
+    _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
 
+    # Fixed-height, scrollable body -- previously an unbounded st.container,
+    # so a large batch (30+ files) pushed the header-fields table and the
+    # "Continue" button far down the page and the whole page had to be
+    # scrolled past it. Same pattern as 01_Source_Browser.py's own
+    # fixed-height, internally-scrolling file list.
+    with st.container(height=VALIDATION_TABLE_HEIGHT, border=False):
         for idx, row in enumerate(display_rows):
             striped = idx % 2 == 1
             theme = styles.get_theme()
-            bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
 
             if row["status"] == "error":
-                # Flagged rows get a real inline Quarantine button, so they're
-                # laid out with st.columns (matching the header's proportions)
-                # instead of the static _render_table_row helper. Now scoped
-                # per-row across however many files are actually flagged, not
-                # hardcoded to a single known-bad sample row.
+                # Flagged rows need real Streamlit widgets (the Quarantine
+                # buttons), so they can't be the static HTML row OK rows are.
+                # They used to be wrapped in st.container(border=True), but
+                # that renders Streamlit's own native bordered box, whose
+                # background comes from Streamlit's static base theme -- in
+                # dark mode it was a visibly different color from the themed
+                # OK rows, so flagged files looked like separate objects.
+                # Now the row is just st.columns(), and the row's
+                # background / stripe / bottom border are applied to that
+                # column block itself via the page-local
+                # `.hs-flagged-row-{0,1}` marker CSS in main() (0 = panel
+                # color, 1 = alternate stripe, same parity rule as
+                # _render_table_row), using the same theme tokens as OK rows.
                 is_quarantined = row["file"] in quarantined
                 is_pending = row["file"] == pending
                 status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
+                stripe_class = f"hs-flagged-row-{1 if striped else 0}"
 
-                st.markdown(
-                    f'<div style="background-color:{bg}; border-bottom:1px solid '
-                    f'{theme["border-subtle"]}; padding:2px 0;">',
-                    unsafe_allow_html=True,
-                )
                 col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
                 with col_file:
                     st.markdown(
-                        f'<div style="padding-left:10px; font-size:10.5px; color:{theme["text-body"]}; '
-                        f'line-height:28px;">{row["file"]}</div>',
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]};">{row["file"]}</div>',
                         unsafe_allow_html=True,
                     )
                 with col_issue:
+                    # Same 10.5px size as the File column, single line with
+                    # an ellipsis. The full text is reachable via the native
+                    # hover tooltip (title attribute), one part per line:
+                    # "&#10;" is an HTML newline entity inserted between
+                    # ";"-separated parts, each escaped so a quote in an
+                    # error message can't break the attribute.
+                    issue_parts = [part.strip() for part in row["issue"].split(";") if part.strip()]
+                    tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
                     st.markdown(
-                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; '
-                        f'line-height:28px;">{row["issue"]}</div>',
+                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
+                        f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
+                        f'{row["issue"]}</div>',
                         unsafe_allow_html=True,
                     )
+                    if is_pending:
+                        # Confirmation copy updated for step 5: this now
+                        # describes a real, irreversible-from-the-UI action
+                        # (a real shutil.move(), not just session state) --
+                        # the earlier "this doesn't do anything yet" dev note
+                        # is gone now that it's no longer true; don't
+                        # reintroduce it without also reverting the
+                        # move_to_quarantine() call above. Rendered inside
+                        # the Issue column so it stays within this row's
+                        # striped background.
+                        st.caption(
+                            f"Quarantine {row['file']}? This moves the file out of the active archive into "
+                            "Flagged/ immediately — undoing it means manually moving the file back on disk."
+                        )
                 with col_status:
+                    # The row marker rides in the same markdown call as the
+                    # badge so it adds no extra element (and no extra gap).
                     st.markdown(
-                        f'<div style="line-height:28px;">{styles.render_badge(status_label, "error")}</div>',
+                        f'<span class="{stripe_class}"></span>' + styles.render_badge(status_label, "error"),
                         unsafe_allow_html=True,
                     )
                 with col_action:
                     if not is_quarantined:
+                        st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
                         if is_pending:
                             # FR-03 handoff step 4: confirmation before
-                            # quarantine, inline where the Quarantine button
-                            # was rather than a page-top banner -- keeps the
-                            # confirmation visually attached to the specific
-                            # row it applies to, especially once several rows
-                            # can be flagged at once. "Continue" / "Cancel"
-                            # per explicit naming request (not "Confirm").
+                            # quarantine, inline where the Quarantine
+                            # button was rather than a page-top banner --
+                            # keeps the confirmation visually attached to
+                            # the specific row it applies to, especially
+                            # once several rows can be flagged at once.
+                            # "Continue" / "Cancel" per explicit naming
+                            # request (not "Confirm").
                             if st.button(
                                 "Continue", key=f"confirm_quarantine_{row['file']}",
                                 type="primary", use_container_width=True,
                             ):
-                                _quarantine_file(row["file"])
+                                with st.spinner(f"Quarantining {row['file']}…"):
+                                    _quarantine_file(row["file"])
                                 st.session_state["file_loader_pending_quarantine"] = None
                                 st.rerun()
+                            st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
                             if st.button(
                                 "Cancel", key=f"cancel_quarantine_{row['file']}",
                                 use_container_width=True,
@@ -665,23 +770,6 @@ def _render_validation_table() -> None:
                             ):
                                 _request_quarantine(row["file"])
                                 st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                if is_pending:
-                    # Confirmation copy updated for step 5: this now describes
-                    # a real, irreversible-from-the-UI action (a real
-                    # shutil.move(), not just session state) -- the earlier
-                    # "this doesn't do anything yet" dev note is gone now that
-                    # it's no longer true; don't reintroduce it without also
-                    # reverting the move_to_quarantine() call above.
-                    st.markdown(
-                        f'<div style="background-color:{bg}; padding:4px 10px 10px 20px; '
-                        f'font-size:9.5px; color:{theme["text-muted"]}; border-bottom:1px solid '
-                        f'{theme["border-subtle"]};">Quarantine {row["file"]}? This moves the file '
-                        f"out of the active archive into <code>Flagged/</code> immediately -- "
-                        f"undoing it means manually moving the file back on disk.</div>",
-                        unsafe_allow_html=True,
-                    )
             else:
                 badge = styles.render_badge("OK", "ok")
                 _render_table_row(
@@ -690,7 +778,7 @@ def _render_validation_table() -> None:
                 )
 
 
-def _read_display_header_fields(path) -> dict[str, str]:
+def _read_display_header_fields_uncached(path) -> dict[str, str]:
     """Best-effort, direct-from-FITS-header values for the header-fields
     table's 9 priority columns (build spec §7, page 02).
 
@@ -775,6 +863,19 @@ def _read_display_header_fields(path) -> dict[str, str]:
     return fields
 
 
+@st.cache_data(show_spinner=False)
+def _read_display_header_fields_cached(path_str: str, mtime: float) -> dict[str, str]:
+    return _read_display_header_fields_uncached(path_str)
+
+
+def _read_display_header_fields(path) -> dict[str, str]:
+    """Cached wrapper around `_read_display_header_fields_uncached` (same path + mtime key as above)."""
+    mtime = _file_mtime(path)
+    if mtime is None:
+        return _read_display_header_fields_uncached(path)
+    return _read_display_header_fields_cached(str(path), mtime)
+
+
 # --------------------------------------------------------------------------
 # Auto/Manual column-mapping (FR-02, confirmed 2026-08-30). "Auto" is the
 # best-effort fixed mapping above (_read_display_header_fields). "Manual"
@@ -814,7 +915,7 @@ def _is_structural_key(key: str) -> bool:
     return any(key.startswith(prefix) and key[len(prefix):].isdigit() for prefix in _STRUCTURAL_KEY_PREFIXES)
 
 
-def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+def _flatten_header_preview_uncached(path) -> list[tuple[str, str, str]]:
     """Every non-plumbing header keyword across every HDU in a file, as
     (qualified_key, hdu_label, formatted_value) tuples.
 
@@ -843,6 +944,35 @@ def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
     except Exception:
         pass
     return items
+
+
+def _file_mtime(path) -> float | None:
+    """Modification time used as part of the header-cache key (None if the file is missing/unreadable)."""
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _flatten_header_cached(path_str: str, mtime: float) -> list[tuple[str, str, str]]:
+    return _flatten_header_preview_uncached(path_str)
+
+
+def _flatten_header_preview(path) -> list[tuple[str, str, str]]:
+    """Cached wrapper around `_flatten_header_preview_uncached`.
+
+    Every Streamlit rerun (including the one right after a quarantine
+    click) used to re-open every loaded FITS file from disk several times
+    just to rebuild the header-fields table. Keyed by path + modification
+    time, so a changed file is re-read but an unchanged one is not.
+    A missing file is never cached (a file that later reappears must not
+    be served a stale empty result).
+    """
+    mtime = _file_mtime(path)
+    if mtime is None:
+        return _flatten_header_preview_uncached(path)
+    return _flatten_header_cached(str(path), mtime)
 
 
 def _read_all_raw_fields(path) -> dict[str, str]:
@@ -883,28 +1013,23 @@ def _read_all_raw_fields(path) -> dict[str, str]:
 def _resolve_qualified_key(path, qualified_key: str | None) -> str | None:
     """Look up one "HDU{n}:{key}" identifier's current value in a file.
 
-    Returns None (never raises) if the key is unset, the HDU index is out
-    of range for this particular file, or the file can't be read at all
-    -- callers treat None as "pending", the same convention used
-    everywhere else in this module for a value that couldn't be sourced.
+    Reads from the cached header listing (`_flatten_header_preview`)
+    instead of re-opening the FITS file for every single column of every
+    file -- Manual mode previously did ~10 file opens per file per rerun.
+    The picker options are built from that same listing, so every key a
+    user can choose is resolvable here.
+
+    Returns None (never raises) if the key is unset, absent from this
+    particular file, or the file can't be read at all -- callers treat
+    None as "pending", the same convention used everywhere else in this
+    module for a value that couldn't be sourced.
     """
     if not qualified_key or ":" not in qualified_key:
         return None
-    hdu_part, key = qualified_key.split(":", 1)
-    if not hdu_part.startswith("HDU"):
-        return None
-    try:
-        hdu_index = int(hdu_part[3:])
-    except ValueError:
-        return None
-    try:
-        with fits.open(path) as hdul:
-            if hdu_index >= len(hdul):
-                return None
-            value = hdul[hdu_index].header.get(key)
-            return None if value is None else str(value)
-    except Exception:
-        return None
+    for candidate_key, _hdu_label, value in _flatten_header_preview(path):
+        if candidate_key == qualified_key:
+            return value
+    return None
 
 
 def _default_manual_mapping() -> dict:
@@ -1234,6 +1359,56 @@ def main() -> None:
         [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
         }}
+        /* Compact inline action buttons for the validation table (Quarantine
+           / Continue / Cancel, and Quarantine all) -- these are small
+           inline actions, not primary CTAs, and
+           Streamlit's default button padding/height made Quarantine not
+           fit comfortably in its column. Scoped to only the buttons
+           immediately following a `.hs-compact-btn-marker` span (one is
+           emitted right before each such button in _render_validation_table)
+           using the same `:has()` sibling-selector technique
+           utils/sidebar.py already uses for its own nav buttons -- proven to
+           work on this pinned Streamlit version, which has no per-widget
+           `st-key-` CSS class yet. Deliberately NOT a change to
+           utils/styles.py's global button rules, since those also style the
+           app's primary/secondary CTAs everywhere else. */
+        /* Streamlit dims ("hazes") every element it considers stale while a
+           rerun is in progress -- on this page a rerun after quarantining
+           can take a while, and the whole page went ghostly for the
+           duration. Spinners (st.spinner) now signal progress instead, so
+           the dimming is switched off here. Page-local on purpose; if it
+           should apply app-wide it can be promoted to utils/styles.py. */
+        [data-stale="true"],
+        .element-container[data-stale="true"],
+        .stale-element {{
+            opacity: 1 !important;
+            transition: none !important;
+        }}
+        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0,1}
+           marker) get the same background stripe, bottom border and left
+           padding as the plain-HTML OK rows (_render_table_row), using the
+           same theme tokens -- so every row in the validation table looks
+           like one object. Targets the column block itself via :has(), the
+           same sibling/descendant technique used for the compact buttons. */
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0),
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
+            border-bottom: 1px solid {_theme['border-subtle']};
+            padding: 2px 0 2px 10px;
+            align-items: center !important;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) {{
+            background-color: {_theme['bg-panel']};
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
+            background-color: {_theme['bg-panel-alt']};
+        }}
+        .element-container:has(.hs-compact-btn-marker) + .element-container button {{
+            padding: 2px 10px !important;
+            font-size: 10px !important;
+            min-height: 24px !important;
+            height: 24px !important;
+            line-height: 1 !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1250,7 +1425,8 @@ def main() -> None:
     _render_validation_table()
 
     st.markdown(f"<div style='height:{styles.SECTION_GAP}px'></div>", unsafe_allow_html=True)
-    _render_header_fields_table()
+    with st.spinner("Reading FITS headers…"):
+        _render_header_fields_table()
 
     if st.session_state.get("file_loader_load_done"):
         session_store.mark_stage_complete(STAGE_KEY)
