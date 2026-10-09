@@ -247,6 +247,8 @@ def build_bandpass_result(mode: str, pair: tuple[dict[str, Any], dict[str, Any]]
         "corrected": corrected,
         "filename1": entry1["filename"],
         "filename2": entry2["filename"],
+        "position1": str(entry1.get("position", "") or ""),
+        "position2": str(entry2.get("position", "") or ""),
         "common_velocity_range_kms": common_velocity_range(spec1, spec2),
     }
 
