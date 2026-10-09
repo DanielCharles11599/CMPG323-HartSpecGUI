@@ -228,3 +228,36 @@ def get_atmospheric_calibration(spectrum):
         "nd_rcp": nd_rcp,
         "optical_depth": optical_depth,
     }
+
+
+def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
+    """Convert baseline-corrected K spectra to Jy without mutating inputs.
+
+    Uses the mean LCP/RCP PSS, matching Page 07's existing
+    system-owner Graph 3 convention.
+    """
+    scale = float(atcor) * float(pss_jy_per_k)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("ATcor and PSS must give a positive finite scale.")
+
+    arrays = {}
+    for key in ("Vlsr", "LCP", "RCP"):
+        try:
+            value = np.asarray(spectrum[key], dtype=float)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid baseline spectrum field: {key}") from exc
+
+        if value.ndim != 1 or value.size == 0:
+            raise ValueError(f"{key} must be a nonempty 1-D array.")
+        if not np.isfinite(value).all():
+            raise ValueError(f"{key} contains non-finite values.")
+        arrays[key] = value
+
+    if len({value.size for value in arrays.values()}) != 1:
+        raise ValueError("Baseline spectrum arrays have different lengths.")
+
+    return {
+        "Vlsr": arrays["Vlsr"].copy(),
+        "LCP": arrays["LCP"] * scale,
+        "RCP": arrays["RCP"] * scale,
+    }
