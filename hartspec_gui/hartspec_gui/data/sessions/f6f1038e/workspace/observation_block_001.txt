@@ -1,2 +1,0 @@
-C:\Users\User\Desktop\Coding Projects\CMPG323-HartSpecGUI\data\fits\faulty.fits
-C:\Users\User\Desktop\Coding Projects\CMPG323-HartSpecGUI\data\fits\good.fits
