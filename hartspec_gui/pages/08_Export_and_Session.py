@@ -33,6 +33,7 @@ import streamlit as st
 
 from utils import baseline_editor_bridge, export_logic, fitting_inputs, session_store, spectrum_resolution, styles
 from utils.sidebar import render_sidebar
+from utils.observation_log_ui import render_observation_log
 
 THIS_STAGE_KEY = "08_export_and_session"
 CURRENT_STAGE = 8  # 1-indexed, per utils/sidebar.py + utils/styles.py convention
@@ -308,16 +309,10 @@ else:
 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Observation Log Panel (FR-20) — real audit trail, not static text. audit_log entries are
-# {"ts": "HH:MM:SS", "message": str} dicts, per session_store.log_event().
-# Fixed height + internal scrolling (UAT feedback) so a long log never pushes the end of the page out of reach.
+# Observation Log Panel (FR-20) — read-only events and current recorded parameters.
+# The new panel does not append events, change stage data or alter checkpoint behaviour.
 # ---------------------------------------------------------------------
-styles.render_panel_open("Observation Log Panel (FR-20)")
-audit_entries = st.session_state.get("audit_log", [])
-log_text = "\n".join(f"{entry['ts']} {entry['message']}" for entry in audit_entries)
-with st.container(height=LOG_PANEL_HEIGHT):
-    st.code(log_text or "No actions logged yet this session.", language=None)
-styles.render_panel_close()
+render_observation_log(st.session_state, theme=theme, height=LOG_PANEL_HEIGHT)
 
 # ---------------------------------------------------------------------
 # Mark export stage complete — the last stage key, so the progress bar reads 8/8 once this fires (on later
