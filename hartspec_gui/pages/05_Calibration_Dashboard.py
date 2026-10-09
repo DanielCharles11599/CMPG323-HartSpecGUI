@@ -36,7 +36,7 @@ _theme = styles.get_theme()
 st.markdown(
     f"""
     <style>
-    [data-testid="stVerticalBlockBorderWrapper"] {{
+    [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] {{
         background-color: {_theme["bg-panel"]} !important;
         border-color: {_theme["border-subtle"]} !important;
     }}
