@@ -1,5 +1,5 @@
 # 03_Bandpass_Correction.py — FR-04/19: verified multi-pair bandpass correction and replay.
-# Merges JC's pair selector / automatic application / LCP-RCP panels with Step 3 safety.
+# Preserves JC's display/readability and FR-19 fingerprint replay alongside verified pair-selection safeguards.
 # Requires the entry-pair API in the supplied utils/bandpass_correction_logic.py.
 # Scientific subtraction and velocity-channel selection remain in that unchanged helper.
 from __future__ import annotations
@@ -193,6 +193,48 @@ def _input_fingerprint(pair: Pair) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _legacy_output_fingerprint(spectrum: Mapping[str, Any]) -> str:
+    """Check saved outputs from JC's Page 03, which used its own SHA-256 format.
+
+    The newer baseline-editor bridge fingerprint has a different serialization.
+    Neither changes any scientific data.
+    """
+    digest = hashlib.sha256()
+    for key in _REQUIRED_ARRAY_KEYS:
+        array = np.asarray(spectrum[key], dtype="<f8").reshape(-1)
+        digest.update(key.encode("ascii"))
+        digest.update(array.size.to_bytes(8, byteorder="little", signed=False))
+        digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _replay_mismatch(saved: Mapping[str, Any], pair: Pair, mode: str,
+                     input_fingerprint: str, result: Mapping[str, Any]) -> str | None:
+    """Refuse silent replay if saved identity/verified output contradict current data.
+
+    This supports both the older filename-only saved records and newer exact
+    path/input fingerprints, plus both generations of output hash.
+    """
+    if not isinstance(saved, Mapping) or saved.get("mode") != mode:
+        return "The saved bandpass mode is missing or differs from the selected mode."
+    if _saved_pair_index(saved, [pair]) != 0 and any(
+        name in saved for name in ("pair_paths", "filename1", "filename2")
+    ):
+        return "The saved bandpass pair no longer matches the available observation pair."
+    if saved.get("input_fingerprint") and saved["input_fingerprint"] != input_fingerprint:
+        return "The selected FITS inputs or observation metadata differ from the saved session."
+    corrected = _normalise_spectrum(result["corrected"], "Replayed bandpass spectrum")
+    if saved.get("corrected_fingerprint") and (
+        saved["corrected_fingerprint"] != baseline_editor_bridge.spectrum_fingerprint(corrected)
+    ):
+        return "The recalculated bandpass output differs from the saved session."
+    if saved.get("output_fingerprint") and (
+        saved["output_fingerprint"] != _legacy_output_fingerprint(corrected)
+    ):
+        return "The recalculated bandpass output differs from the saved session."
+    return None
+
+
 def _saved_pair_index(saved: Mapping[str, Any], pairs: list[Pair]) -> int | None:
     """Match new path-based records or JC's older filename1/filename2 records."""
     paths = saved.get("pair_paths")
@@ -350,10 +392,15 @@ def _commit_result(mode: str, result: Mapping[str, Any], pair: Pair, fingerprint
         raise ValueError("The correction helper returned an invalid common velocity range.")
     output_fingerprint = baseline_editor_bridge.spectrum_fingerprint(corrected)
     summary = dict(stage_summary(mode, corrected))
+    position1 = str(pair[0].get("position", "") or "")
+    position2 = str(pair[1].get("position", "") or "")
     summary.update({
         "filename1": pair[0]["filename"], "filename2": pair[1]["filename"],
+        "position1": position1, "position2": position2,
+        "pair_pattern": f"{position1} → {position2}",
         "pair_paths": _pair_paths(pair), "common_velocity_range_kms": extent,
         "input_fingerprint": fingerprint, "corrected_fingerprint": output_fingerprint,
+        "output_fingerprint": _legacy_output_fingerprint(corrected),
     })
     state = st.session_state
     previous = state.get("bandpass_corrected_spectrum")
@@ -368,6 +415,9 @@ def _commit_result(mode: str, result: Mapping[str, Any], pair: Pair, fingerprint
     changed = changed or ("pair_paths" in saved and saved["pair_paths"] != _pair_paths(pair))
     changed = changed or ("input_fingerprint" in saved and saved["input_fingerprint"] != fingerprint)
     changed = changed or ("corrected_fingerprint" in saved and saved["corrected_fingerprint"] != output_fingerprint)
+    changed = changed or (
+        "output_fingerprint" in saved and saved["output_fingerprint"] != summary["output_fingerprint"]
+    )
     changed = changed or (bool(bridge) and bridge.get("spectrum_fingerprint") != output_fingerprint)
     has_downstream = any(
         key in state["pipeline_data"] or key in state["completed_stages"] for key in DOWNSTREAM_STAGE_KEYS
@@ -417,6 +467,24 @@ def _apply_selected_pair(pair: Pair, *, force: bool = False) -> None:
             return
         # The helper requires the metadata entries, NOT [entry1['spectrum'], entry2['spectrum']].
         result = build_bandpass_result(mode, pair)
+        if state.get("bandpass_replay_pending") and not force:
+            saved = state["pipeline_data"].get(PAGE_STAGE_KEY, {})
+            mismatch = _replay_mismatch(saved, pair, mode, fingerprint, result)
+            if mismatch:
+                _clear_stage3_and_downstream("Saved bandpass replay did not match")
+                state["bandpass_require_apply"] = True
+                state["bandpass_failed_request"] = request
+                state["bandpass_selection_warning"] = (
+                    "Saved bandpass data failed verification. Choose the intended pair and mode, "
+                    "then click Apply to start a new result."
+                )
+                state["bandpass_error"] = mismatch
+                return
+            if not (saved.get("corrected_fingerprint") or saved.get("output_fingerprint")):
+                st.warning(
+                    "This saved session predates output fingerprints. The pair and mode were restored, "
+                    "but the previous numeric output cannot be verified."
+                )
         _commit_result(mode, result, pair, fingerprint)
     except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
         _clear_stage3_and_downstream("Bandpass correction failed")
@@ -437,6 +505,9 @@ def _render_pair_info(pair: Pair, pair_number: int, total_pairs: int) -> None:
         with cols[2]:
             st.markdown("**Mode suggestion from metadata**")
             st.caption(f"{suggested or 'Unable to determine automatically'} — {reason}")
+        first_position = str(pair[0].get("position", "?") or "?").strip().upper()
+        second_position = str(pair[1].get("position", "?") or "?").strip().upper()
+        st.caption(f"Observed POSITION sequence: {first_position} → {second_position}")
         st.caption(
             f"Pair {pair_number} of {total_pairs}. SPPOINT = 0 integrations are paired within each observation, "
             "using observation_list.txt ordering when available. Both files passed loading and structural validation."
@@ -448,7 +519,7 @@ def _add_before_after(
 ) -> None:
     """Add unchanged before/after data for one polarisation to JC's two-panel chart."""
     for spectrum, prefix, width, dash, opacity in (
-        (raw, "Before", 1.4, "dot", 0.55), (corrected, "After", 1.7, "solid", 1.0),
+        (raw, "Before", 2.0, "dot", 0.85), (corrected, "After", 2.4, "solid", 1.0),
     ):
         fig.add_trace(go.Scatter(
             x=spectrum["Vlsr"], y=spectrum[label], mode="lines", name=f"{prefix} {label}",
@@ -484,8 +555,18 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
         fig.update_xaxes(**layout["xaxis"])
         fig.update_yaxes(**layout["yaxis"])
         x_values = np.concatenate((raw["Vlsr"], corrected["Vlsr"]))
-        fig.update_xaxes(title_text="Vlsr (km/s)", showline=True, range=[float(x_values.min()), float(x_values.max())])
-        fig.update_yaxes(title_text="Temperature (K)", showline=True)
+        fig.update_xaxes(
+            title_text="Vlsr (km/s)", showline=True,
+            range=[float(x_values.min()), float(x_values.max())],
+            color=theme["text-body"],
+            title_font=dict(color=theme["text-body"], size=13),
+            tickfont=dict(color=theme["text-body"], size=11),
+        )
+        fig.update_yaxes(
+            title_text="Temperature (K)", showline=True, color=theme["text-body"],
+            title_font=dict(color=theme["text-body"], size=13),
+            tickfont=dict(color=theme["text-body"], size=11),
+        )
         fig.update_annotations(font=dict(color=theme["text-body"]))
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, theme=None)
         if len(common_range) == 2:
@@ -500,6 +581,24 @@ st.set_page_config(page_title="HARTSPEC — Bandpass Correction", layout="wide",
 session_store.init_session_state()
 sidebar.render_sidebar(current_stage=CURRENT_STAGE)
 styles.inject_base_css()
+
+# Native Streamlit widget labels sometimes use the static browser theme rather
+# than the sidebar's dynamically selected light/dark palette.
+_theme = styles.get_theme()
+st.markdown(
+    f"""
+    <style>
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stAlert"] p,
+    [data-testid="stAlert"] span {{
+        color: {_theme['text-body']} !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if not _upstream_complete():
     _clear_stage3_and_downstream("Upstream stages are incomplete")
