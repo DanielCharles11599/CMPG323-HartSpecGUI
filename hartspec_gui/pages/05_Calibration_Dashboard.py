@@ -64,6 +64,7 @@ pss_window = None
 pss_averages = None
 pss_30day_stats = None
 pss_error = None
+calibration_error = None
 
 if loaded_spectrum is not None:
     try:
@@ -113,6 +114,29 @@ if loaded_spectrum is not None:
         and pss_averages["rcp"] is not None
         and pss_error is None
     )
+
+    calibrated_spectrum = None
+    if page_complete:
+        try:
+            mean_pss = (
+                float(pss_averages["lcp"]) +
+                float(pss_averages["rcp"])
+            ) / 2.0
+            calibrated_spectrum = (
+                calibration_logic.apply_calibration_to_spectrum(
+                    st.session_state["baseline_corrected_spectrum"],
+                    atmospheric_result["atcor"],
+                    mean_pss,
+                )
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            calibration_error = str(exc)
+            page_complete = False
+
+    if calibrated_spectrum is not None:
+        st.session_state["calibrated_spectrum"] = calibrated_spectrum
+    else:
+        st.session_state.pop("calibrated_spectrum", None)
 
     page_payload = {
         "complete": page_complete,
@@ -188,6 +212,10 @@ if loaded_spectrum is not None:
 else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+    st.session_state.pop("calibrated_spectrum", None)
+
+if calibration_error:
+    st.error(f"Spectrum calibration failed: {calibration_error}")
 
 session_store.checkpoint_session("Calibration parameters recorded")
 
