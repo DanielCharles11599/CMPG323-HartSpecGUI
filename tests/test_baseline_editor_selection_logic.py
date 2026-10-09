@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from baseline_editor_selection_logic import (
+from hartspec_gui.utils.baseline_editor_selection_logic import (
     RegionValidationError,
     VelocityRegion,
     add_region,
