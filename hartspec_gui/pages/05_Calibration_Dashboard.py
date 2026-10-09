@@ -189,6 +189,8 @@ else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
 
+session_store.checkpoint_session("Calibration parameters recorded")
+
 styles.render_page_header(
     title=PAGE_TITLE,
     subtitle=PAGE_SUBTITLE,

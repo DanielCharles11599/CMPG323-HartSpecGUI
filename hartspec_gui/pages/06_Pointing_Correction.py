@@ -253,10 +253,15 @@ def main() -> None:
     scan_key, dirname, input_source = "manual", "manual", "manual entry"
 
     if scans:
-        index = 0
+        scan_options = {scan.key: scan for scan in scans}
+        if st.session_state.get("pointing_scan_key") not in scan_options:
+            st.session_state["pointing_scan_key"] = scans[0].key
         if len(scans) > 1:
-            index = st.selectbox("Pointing scan", range(len(scans)), format_func=lambda i: scans[i].label)
-        scan = scans[index]
+            selected_scan = st.selectbox("Pointing scan", list(scan_options), key="pointing_scan_key",
+                                         format_func=lambda key: scan_options[key].label)
+        else:
+            selected_scan = scans[0].key
+        scan = scan_options[selected_scan]
         scan_key, dirname, input_source = scan.key, scan.block, f"pointing scan: {scan.label}"
         st.caption(
             "Click a spectrum (if click-to-pick is installed) or type a velocity to move the black point onto the "
@@ -303,6 +308,12 @@ def main() -> None:
             "hpbw_deg": result.hpbw_deg,
             "peak_powers": result.powers,
             "input_source": input_source,
+            "scan_key": scan_key,
+            "scan_files": dict(scan.files) if scans else {},
+            "picked_velocities": {
+                role: float(st.session_state[f"pointing_pick::{scan_key}::{role}"])
+                for role in DIRECTIONS
+            } if scans else {},
             **offsets,
         }
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
@@ -318,6 +329,8 @@ def main() -> None:
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
         st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+
+    session_store.checkpoint_session("Pointing parameters recorded")
 
     if st.button("Continue to Spectral Fitting →", type="primary", disabled=result is None,
                  key="pointing_next_btn"):

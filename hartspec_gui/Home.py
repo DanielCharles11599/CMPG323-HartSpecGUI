@@ -7,7 +7,7 @@ pinned Streamlit 1.32.0) requires a root script to launch. Run this file:
     streamlit run Home.py
 
 It doesn't render its own UI -- it immediately hands off to Stage 01 so
-users always land on the start of the pipeline.
+users land on Stage 01 unless this tab has an automatic checkpoint to recover.
 
 Loads a local .env file (if present) before anything else, so env-var
 overrides like FITS_ARCHIVE_PATH work without setting them in the
@@ -25,4 +25,8 @@ from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()
 
+from utils import session_store
+
+st.set_page_config(page_title="HARTSPEC — Session", layout="wide")
+session_store.init_session_state()
 st.switch_page("pages/01_Source_Browser.py")

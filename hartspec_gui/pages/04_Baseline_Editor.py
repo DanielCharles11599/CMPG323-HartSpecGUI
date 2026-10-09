@@ -19,12 +19,8 @@ import streamlit.components.v1 as components
 
 from dash_apps.baseline_editor import start_server
 from utils import session_store, sidebar, styles
-from utils.baseline_editor_bridge import (
-    initialize_bridge,
-    read_bridge,
-    spectrum_fingerprint,
-)
-from utils.baseline_editor_logic import THIS_STAGE_KEY, stage_payload
+from utils.baseline_editor_bridge import initialize_bridge
+from utils.baseline_editor_logic import THIS_STAGE_KEY
 from utils.stage_invalidation import invalidate_baseline_dependents
 
 CURRENT_STAGE = 4
@@ -98,6 +94,7 @@ def _clear_page4_completion() -> None:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state.pop("baseline_corrected_spectrum", None)
     invalidate_baseline_dependents(st.session_state)
+    session_store.checkpoint_session("Baseline result invalidated")
 
 
 def _flattened_spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any] | None) -> bool:
@@ -126,84 +123,12 @@ def _flattened_spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str,
 
 
 def _sync_dash_state_into_streamlit() -> None:
-    """Pull the current Dash bridge state into Streamlit session/audit state.
-
-    A stale bridge is ignored when its spectrum fingerprint does not match
-    the current Page 3 handoff. This prevents an old baseline fit from being
-    re-marked complete after the user changes the bandpass result.
-    """
+    """Synchronize the same bridge parameters used by the global checkpoint path."""
     if not _upstream_complete():
         _clear_page4_completion()
+        session_store.checkpoint_session("Baseline upstream inputs unavailable")
         return
-
-    current_spectrum = st.session_state.get("bandpass_corrected_spectrum")
-    if not current_spectrum:
-        _clear_page4_completion()
-        return
-
-    try:
-        current_fingerprint = spectrum_fingerprint(current_spectrum)
-    except (KeyError, TypeError, ValueError):
-        _clear_page4_completion()
-        return
-
-    session_id = st.session_state["session_id"]
-    bridge = read_bridge(session_id)
-    if not bridge:
-        return
-
-    if bridge.get("spectrum_fingerprint") != current_fingerprint:
-        _clear_page4_completion()
-        return
-
-    # New bridge payloads use ``baseline_regions`` to make the semantics explicit.
-    # Fall back to the legacy ``blocks`` key so saved sessions created before this
-    # PM revision still replay correctly.
-    baseline_regions = bridge.get("baseline_regions", bridge.get("blocks", []))
-    payload = stage_payload(
-        baseline_regions,
-        bridge.get("selection_mode", "Manual ranges"),
-        bridge.get("selected_orders"),
-        bridge.get("fit_result"),
-    )
-    # Persist the clarified domain meaning alongside the legacy payload shape.
-    # These fields are JSON-safe and make future replay/migrations unambiguous.
-    payload["selection_semantics"] = SELECTION_SEMANTICS
-    payload["selected_regions_are_masked"] = False
-    payload["fit_uses_selected_flat_regions"] = True
-    payload["output_preserves_full_velocity_axis"] = True
-    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = payload
-
-    flattened = bridge.get("flattened_spectrum")
-    if payload["complete"] and flattened:
-        previous_flattened = st.session_state.get("baseline_corrected_spectrum")
-        if previous_flattened is not None and not _flattened_spectra_equal(previous_flattened, flattened):
-            # Page 4 is still complete, but a different block/order selection
-            # produced a genuinely different flattened spectrum -- Page 5/7/8
-            # derived state (calibrated spectrum, saved fit, export marker)
-            # was computed from the old one and is now stale.
-            invalidate_baseline_dependents(st.session_state)
-            session_store.log_event(
-                "Baseline output changed — downstream calibration/fit results invalidated"
-            )
-        st.session_state["baseline_corrected_spectrum"] = flattened
-        session_store.mark_stage_complete(PAGE_STAGE_KEY)
-    else:
-        st.session_state.pop("baseline_corrected_spectrum", None)
-        st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-        invalidate_baseline_dependents(st.session_state)
-
-    seen_event_ids = set(
-        st.session_state.setdefault("baseline_editor_seen_event_ids", [])
-    )
-    for event in bridge.get("events", []):
-        event_id = event.get("id")
-        if event_id and event_id not in seen_event_ids:
-            session_store.log_event(
-                event.get("message", "Baseline editor updated")
-            )
-            seen_event_ids.add(event_id)
-    st.session_state["baseline_editor_seen_event_ids"] = sorted(seen_event_ids)
+    session_store.sync_baseline_state()
 
 
 def _dash_url(port: int, session_id: str, revision: str) -> str:
@@ -335,7 +260,10 @@ def main() -> None:
         spectrum=corrected,
         theme=styles.get_theme_name(),
         bandpass_mode=bandpass_mode,
+        checkpoint_token=st.session_state.get("checkpoint_token"),
+        restored_parameters=st.session_state["pipeline_data"].get(PAGE_STAGE_KEY),
     )
+    session_store.checkpoint_session("Baseline editor opened")
 
     # start_server() is already a process-level singleton guarded by a lock.
     # Calling it directly avoids Streamlit cache lifecycle warnings while

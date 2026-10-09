@@ -338,3 +338,6 @@ if st.button("Mark export complete", type="primary", disabled=export_blocked):
         st.warning("Export recorded, but these stages are not complete in this session: " + ", ".join(not_complete))
     else:
         st.success("Pipeline complete — all 8 stages recorded in this session.")
+
+
+session_store.checkpoint_session("Export/session actions recorded")
