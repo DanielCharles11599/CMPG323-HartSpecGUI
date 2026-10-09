@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import streamlit as st
 
-from utils import fits_ingest
 
 SpectrumDict = dict[str, Any]
 THIS_STAGE_KEY = "03_bandpass_correction"
@@ -130,7 +129,9 @@ def _observation_list_order(observation_dir: str) -> dict[str, int]:
     return order
 
 
-def get_full_integration_pairs(entries: list[dict[str, Any]] | None = None) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+def get_full_integration_pairs(
+    entries: list[dict[str, Any]] | None = None,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Pair SPPOINT=0 files within each observation, matching HartSpec."""
     entries = get_loaded_entries() if entries is None else entries
 

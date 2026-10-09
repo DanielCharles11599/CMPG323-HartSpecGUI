@@ -14,7 +14,10 @@ import types
 import numpy as np
 import pytest
 
-from test_file_validation_handoff import app, publish, seed_files  # noqa: F401 -- imported pytest fixture
+from test_file_validation_handoff import app, publish, seed_files
+
+# Keep the imported pytest fixture visible to this module while allowing test parameters named ``app``.
+_APP_FIXTURE_REFERENCE = app
 
 STAGE = "03_bandpass_correction"
 BASELINE = "04_baseline_editor"
@@ -172,8 +175,11 @@ def test_late_old_bridge_write_cannot_restore_identical_arrays_from_old_pair(app
     original_bridge = app.bridge.read_bridge(old_id)
     app.run_bandpass(changes={"bandpass_pair_index": 1})
     app.bridge.write_bridge(old_id, original_bridge)
-    result = app.resolver.resolve_spectrum(app.state, read_bridge=app.bridge.read_bridge,
-                                          fingerprint=app.bridge.spectrum_fingerprint)
+    result = app.resolver.resolve_spectrum(
+        app.state,
+        read_bridge=app.bridge.read_bridge,
+        fingerprint=app.bridge.spectrum_fingerprint,
+    )
     assert app.state["session_id"] != old_id
     assert app.bridge.read_bridge(app.state["session_id"]) is None
     assert result.source_key == "raw"
@@ -504,6 +510,7 @@ def test_malformed_helper_result_cannot_partially_commit(app, monkeypatch):
     seed_pairs(app)
     app.run_bandpass()
     downstream(app)
+
     def bad_result(mode, pair):
         return {"mode": mode, "corrected": pair[0]["spectrum"], "raw_spec1": pair[0]["spectrum"],
                 "raw_spec2": {"Vlsr": []}, "filename1": pair[0]["filename"], "filename2": pair[1]["filename"]}
@@ -517,6 +524,7 @@ def test_malformed_helper_result_cannot_partially_commit(app, monkeypatch):
 def test_wrong_pair_returned_by_helper_is_rejected(app, monkeypatch):
     seed_pairs(app)
     original = app.adapter.build_bandpass_result
+
     def wrong_pair(mode, pair):
         result = original(mode, pair)
         result["filename1"] = "wrong.fits"

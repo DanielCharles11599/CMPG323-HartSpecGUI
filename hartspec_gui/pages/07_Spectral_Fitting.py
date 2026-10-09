@@ -114,7 +114,11 @@ if resolved.is_placeholder:
 blockers: list[str] = []
 if resolved.is_placeholder:
     blockers.append("a real spectrum")
-if not resolved.is_placeholder and not resolved.is_calibrated and resolved.source_key != spectrum_resolution.SOURCE_BASELINE:
+if (
+    not resolved.is_placeholder
+    and not resolved.is_calibrated
+    and resolved.source_key != spectrum_resolution.SOURCE_BASELINE
+):
     blockers.append("a valid baseline-flattened spectrum -- complete Page 04 (Baseline Editor)")
 if pss is None:
     blockers.append("a PSS value -- complete Page 05 (Calibration Dashboard)")

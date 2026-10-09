@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
-from utils import fits_ingest
+from utils import fits_ingest  # noqa: E402
 from utils import source_browser_logic as sbl  # noqa: E402
 from utils.source_browser_logic import (  # noqa: E402
     build_selected_files,
@@ -32,10 +32,12 @@ from utils.source_browser_logic import (  # noqa: E402
 
 @pytest.fixture
 def fake_fits_header(monkeypatch):
-    """Replace astropy.io.fits.getheader with a tiny in-memory stand-in.
+    """Replace ``fits.open`` with the current scanner's tiny stand-in.
 
-    Fixture files contain "KEY=value" lines; a file containing the literal
-    string "CORRUPT" simulates an unreadable header.
+    Fixture files contain ``KEY=value`` lines; a file containing ``CORRUPT``
+    simulates an unreadable FITS file.  ``source_browser_logic`` now opens a
+    file once and reads ``hdul[0].header`` (plus HDU 2 when present), so the
+    old ``fits.getheader`` monkeypatch no longer exercised the real code path.
     """
 
     def _parse_value(raw: str):
@@ -45,8 +47,19 @@ def fake_fits_header(monkeypatch):
         except ValueError:
             return raw
 
-    def _fake_getheader(path):
-        text = Path(path).read_text()
+    class _FakeHDU:
+        def __init__(self, header):
+            self.header = header
+
+    class _FakeHDUList(list):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_open(path):
+        text = Path(path).read_text(encoding="utf-8")
         if "CORRUPT" in text:
             raise OSError("simulated corrupt FITS header")
         header = {}
@@ -54,9 +67,9 @@ def fake_fits_header(monkeypatch):
             if "=" in line:
                 key, value = line.split("=", 1)
                 header[key.strip()] = _parse_value(value)
-        return header
+        return _FakeHDUList([_FakeHDU(header)])
 
-    monkeypatch.setattr(sbl.fits, "getheader", _fake_getheader)
+    monkeypatch.setattr(sbl.fits, "open", _fake_open)
 
 
 def _write_fits(path: Path, date_obs=None, obj=None, restfreq_hz=None, corrupt=False):
@@ -251,7 +264,7 @@ class TestBuildSummaryText:
         files = flatten_files(tree)
 
         text = build_summary_text(files, "W3(OH)", 1420.406, "2026-08-12")
-        assert text == "1 file matched — W3(OH) · 1420.406 MHz · earliest observation 2026-08-12"
+        assert text == "1 file matched — W3(OH) · 1420.406 MHz · observed 2026-08-12"
 
     def test_missing_earliest_date_degrades_gracefully(self, tmp_path, fake_fits_header):
         _write_fits(tmp_path / "a.fits", obj="W3(OH)", restfreq_hz=1420405751.786)
@@ -305,4 +318,3 @@ class TestBuildSelectedFiles:
     def test_empty_list_returns_empty_list(self, monkeypatch):
         monkeypatch.setenv("FITS_ARCHIVE_PATH", "/whatever")
         assert build_selected_files([]) == []
-        

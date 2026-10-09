@@ -529,7 +529,6 @@ def test_resolver_uses_newly_loaded_raw_data_after_transition(store, resolver):
     assert after.channels["LCP"].tolist() == target["LCP"]
 
 
-
 class _PageSwitch(BaseException):
     """Emulate Streamlit stopping the current script when it switches pages."""
 
@@ -593,7 +592,6 @@ def test_ui_invalid_load_does_not_navigate_or_add_success_log(store):
         store.load_session(path)
     assert routes == []
     assert state == before
-
 
 
 @pytest.mark.parametrize("pipeline_data", [None, [], "invalid", {

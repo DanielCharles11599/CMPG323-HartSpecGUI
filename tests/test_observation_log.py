@@ -113,8 +113,17 @@ def test_newest_means_reverse_append_order_not_clock_sort(recorded_session):
     assert events[0].timestamp == "23:59:59"
 
 
-@pytest.mark.parametrize("query,expected", [("calibration", [2]), ("  PAIR  ", [1]), ("ΔV", [3]),
-                                          ("00:00:02", [3]), (".*", []), ("", [1, 2, 3])])
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("calibration", [2]),
+        ("  PAIR  ", [1]),
+        ("ΔV", [3]),
+        ("00:00:02", [3]),
+        (".*", []),
+        ("", [1, 2, 3]),
+    ],
+)
 def test_event_search_is_literal_unicode_case_insensitive(recorded_session, query, expected):
     model = logic.build_observation_log(recorded_session)
     assert [row.number for row in logic.filter_events(model.events, query)] == expected

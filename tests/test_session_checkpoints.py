@@ -17,8 +17,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from test_file_validation_handoff import APP_ROOT, StopRun, app  # noqa: F401 -- pytest fixture
+from test_file_validation_handoff import APP_ROOT, StopRun, app
 from test_bandpass_merge import seed_pairs
+
+# Keep the imported pytest fixture visible while helpers below use ``app`` as their parameter name.
+_APP_FIXTURE_REFERENCE = app
 
 
 @pytest.fixture
@@ -566,6 +569,7 @@ def test_writers_do_not_deadlock_bridge_and_checkpoint_locks(browser):
     ready(browser)
     attach_baseline(browser)
     errors = []
+
     def dash_writer():
         try:
             for _ in range(8):

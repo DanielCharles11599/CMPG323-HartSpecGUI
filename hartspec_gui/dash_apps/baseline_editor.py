@@ -13,7 +13,7 @@ from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_upda
 from utils import styles
 from utils.baseline_editor_selection_logic import (
     RegionValidationError, add_region, update_region, delete_region,
-    region_from_plotly_selection, spectrum_velocity_bounds, validate_region_rows,
+    region_from_plotly_selection, spectrum_velocity_bounds,
 )
 from utils.baseline_editor_bridge import append_event, read_bridge, update_bridge
 from utils.baseline_editor_logic import (
@@ -23,7 +23,6 @@ from utils.baseline_editor_logic import (
     comparison_panels,
     normalize_blocks,
     rows_equal,
-    selected_data_to_block,
     stage_payload,
 )
 from utils.baseline_polynomial_adapter import (
@@ -47,6 +46,11 @@ def _root_style(theme_name: str) -> dict[str, str]:
     theme = _theme_tokens(theme_name)
     error_fill, error_text = styles.STATUS_BADGES["dark" if theme_name == "dark" else "light"]["error"]
     return {
+        # Fill the iframe viewport with the active page background. Without
+        # this, unused iframe height falls back to the browser's white body.
+        "backgroundColor": theme["bg-primary"],
+        "minHeight": "100vh",
+        "boxSizing": "border-box",
         "--hs-bg-primary": theme["bg-primary"],
         "--hs-bg-panel": theme["bg-panel"],
         "--hs-bg-panel-alt": theme["bg-panel-alt"],
@@ -518,10 +522,11 @@ def create_app() -> Dash:
             # Temporary fix: remember the fitted block set so rehydration does not clear a valid fit. - Faro
             result["blocks"] = normalized
         except CLCBaselineIntegrationUnavailable as exc:
+            error_message = str(exc)
             session_id = state.get("session_id")
             if session_id:
                 def _mutate(bridge_state):
-                    bridge_state["integration_error"] = str(exc)
+                    bridge_state["integration_error"] = error_message
                     bridge_state["fit_result"] = None
                     bridge_state["selected_orders"] = None
                     bridge_state["flattened_spectrum"] = None

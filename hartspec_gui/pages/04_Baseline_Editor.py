@@ -21,15 +21,17 @@ from dash_apps.baseline_editor import start_server
 from utils import session_store, sidebar, styles
 from utils.baseline_editor_bridge import initialize_bridge
 from utils.baseline_editor_logic import THIS_STAGE_KEY
+from utils.feature_detection_ui import render_feature_detection
 from utils.stage_invalidation import invalidate_baseline_dependents
 
 CURRENT_STAGE = 4
 PAGE_STAGE_KEY = THIS_STAGE_KEY
 PAGE_TITLE = "Baseline Block Editor"
 PAGE_SUBTITLE = "FR-05 / 06 / 07 — select flat baseline regions and compare polynomial fits"
-# The revised Dash editor includes numeric range controls and an editable table,
-# so it needs more vertical room than the original drag-only mock-up.
-IFRAME_HEIGHT = 1050
+# The Dash content currently ends shortly after the order-selection row. Keeping
+# the old 1050 px viewport left a large empty iframe tail (white in dark mode).
+# 880 px keeps the complete editor visible while bringing Streamlit actions up.
+IFRAME_HEIGHT = 880
 SELECTION_SEMANTICS = "flat_baseline_fit_regions_v2"
 
 # Page 4 may only run after the three preceding pipeline stages are complete.
@@ -287,29 +289,42 @@ def main() -> None:
     # Clicking the button triggers a normal Streamlit rerun first, which means
     # _sync_dash_state_into_streamlit() at the top of main() has already pulled
     # the latest Dash bridge state before this readiness check is evaluated.
-    st.markdown(
-        f"<div style='height:{styles.SECTION_GAP}px'></div>",
-        unsafe_allow_html=True,
-    )
-
     baseline_ready = (
         PAGE_STAGE_KEY in st.session_state["completed_stages"]
         and st.session_state.get("baseline_corrected_spectrum") is not None
     )
+
+    # Dash writes its bridge independently of Streamlit. Clicking this secondary
+    # control triggers a normal Streamlit rerun, so the sync at the top of main()
+    # pulls the newest committed blocks/fit before FR-08 is recalculated below.
+    st.button("Refresh feature detection from editor", key="refresh_feature_detection")
+
+    feature_detection_ready = False
+    if baseline_ready:
+        baseline_stage = st.session_state["pipeline_data"].get(PAGE_STAGE_KEY, {})
+        blocks = baseline_stage.get("blocks", []) if isinstance(baseline_stage, Mapping) else []
+        feature_detection_ready = render_feature_detection(
+            st.session_state["baseline_corrected_spectrum"],
+            blocks,
+        )
+    else:
+        st.info("Complete the baseline fit above to run FR-08 feature detection.")
 
     if st.button(
         "Continue to Calibration Dashboard →",
         type="primary",
         key="continue_to_calibration_dashboard",
     ):
-        if baseline_ready:
+        if baseline_ready and feature_detection_ready:
             st.switch_page("pages/05_Calibration_Dashboard.py")
-        else:
+        elif not baseline_ready:
             st.warning(
                 "Select at least one valid flat baseline region and complete the polynomial fit "
                 "before continuing. Start/end values must be within the displayed velocity "
                 "range and each start must be smaller than its end."
             )
+        else:
+            st.warning("Resolve the FR-08 feature-detection error shown above before continuing.")
 
 
 if __name__ == "__main__":
