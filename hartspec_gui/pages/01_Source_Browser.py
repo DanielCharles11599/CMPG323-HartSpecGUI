@@ -41,11 +41,12 @@
 #                                 SESSIONS_DIR
 
 import html
+import uuid
 from pathlib import Path
 
 import streamlit as st
 
-from utils import session_store, sidebar, styles
+from utils import fits_ingest, session_store, sidebar, stage_invalidation, styles
 from utils.source_browser_logic import (
     THIS_STAGE_KEY,
     build_selected_files,
@@ -433,6 +434,11 @@ with st.container(border=True):
             unsafe_allow_html=True,
         )
 
+    st.caption(
+        "Changed inputs start a new reduction and clear downstream results. "
+        "Committed stages are checkpointed automatically. Save Session keeps a manual snapshot. "
+        "Unchanged inputs keep existing progress."
+    )
     st.write("")
 
     load_clicked = st.button(
@@ -442,30 +448,89 @@ with st.container(border=True):
         key="load_into_pipeline_btn",
     )
 
-def _commit_and_continue(outcome, error_message) -> None:
-    """Write the hand-off to session state, mark Stage 1 complete, log it, and go to Page 02.
 
-    `outcome` is the FileCheckOutcome (or None if File_check failed / was skipped); `error_message` is the failure
-    text in that case. Page 02 only reads "selected_files"; the rest is recorded for the session JSON / audit trail.
+def _selection_payload(outcome=None, error_message=None) -> dict:
+    """Build the same handoff for comparison, sorting success and explicit bypass.
+
+    Absolute paths and the archive root preserve input identity across a later
+    environment-path change. File order stays exactly as in the filtered list.
     """
-    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
-        # Kept for anything else that may already read it (pages 04/06/07/08
-        # weren't available to check against when this was fixed).
-        "fits_file_paths": [str(f.path) for f in filtered_files],
-        # "selected_files" is the key 02_File_Loader.py actually reads
-        # (`pipeline_data[SOURCE_BROWSER_STAGE_KEY]["selected_files"]`) — see build_selected_files().
+    archive_root = fits_ingest.get_archive_root().expanduser().resolve()
+    return {
+        "fits_file_paths": [str(f.path.resolve()) for f in filtered_files],
         "selected_files": build_selected_files(filtered_files),
+        "archive_root": str(archive_root),
+        "browser_directory": fits_dir_str.strip(),
+        "filename_search": filename_search,
         "source_name": selected_source,
         "frequency_mhz": selected_frequency,
         "earliest_observation_date": earliest_date,
-        # File_check results (empty when it failed/was skipped).
         "observation_blocks": outcome.blocks if outcome else {},
         "discarded_files": outcome.discarded_files if outcome else [],
         "file_check_workspace": str(outcome.work_dir) if outcome else None,
         "file_check_error": error_message,
     }
-    session_store.mark_stage_complete(PAGE_STAGE_KEY)
 
+
+def _reserve_selection_session_id() -> str:
+    """Reserve a new workspace ID without overwriting a saved reduction.
+
+    The existing File_check wrapper replaces its observation workspace. Sort
+    into a newly reserved session directory, not the active reduction's one,
+    so even a failed sorting attempt cannot destroy that reduction's block files.
+    The directory may remain after a cancelled/failed attempt; no old files are
+    deleted here. Exclusive mkdir also prevents two attempts reserving one ID.
+    """
+    sessions_dir = session_store.SESSIONS_DIR
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    for _ in range(10):
+        candidate = uuid.uuid4().hex[:8]
+        if candidate == st.session_state["session_id"]:
+            continue
+        if (sessions_dir / f"{candidate}.json").exists():
+            continue
+        if (sessions_dir / f"{candidate}.baseline_editor.json").exists():
+            continue
+        try:
+            (sessions_dir / candidate).mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("Could not reserve a fresh reduction workspace. Please try again.")
+
+
+def _continue_unchanged() -> None:
+    """Reopen File Loader without clearing results or rerunning block sorting."""
+    st.session_state.pop(KEY_SORT_ERROR, None)
+    session_store.log_event("Source selection unchanged — existing reduction results retained")
+    session_store.checkpoint_session("Source selection committed")
+    st.switch_page("pages/02_File_Loader.py")
+
+
+def _commit_and_continue(outcome, error_message, new_session_id: str) -> None:
+    """Commit confirmed inputs, isolate their results, log once, then open Page 2.
+
+    A fresh ID prevents even delayed writes by the previous Dash iframe from
+    reintroducing that observation's baseline. Saved JSON/bridge files are not
+    removed; the audit history is carried into the new reduction in memory.
+    """
+    previous_id = st.session_state["session_id"]
+    payload = _selection_payload(outcome, error_message)
+    try:
+        changed = stage_invalidation.commit_source_selection(
+            st.session_state, payload,
+            archive_root=fits_ingest.get_archive_root(), new_session_id=new_session_id,
+        )
+    except (ValueError, TypeError, OSError, RuntimeError) as exc:
+        st.error(f"Could not commit the new selection: {exc}. The active reduction was not changed.")
+        return
+    if not changed:
+        _continue_unchanged()
+        return
+    session_store.log_event(
+        f"Source selection committed — reduction {previous_id} → {new_session_id}; "
+        "previous loading, bandpass, baseline, calibration, pointing, fitting and export results cleared"
+    )
     session_store.log_event(
         f"Loaded {len(filtered_files)} file(s) for {selected_source} at {selected_frequency:.3f} MHz"
     )
@@ -476,40 +541,55 @@ def _commit_and_continue(outcome, error_message) -> None:
         )
     else:
         session_store.log_event(f"File_check did not complete ({error_message}); continuing without block sorting")
-
     st.session_state.pop(KEY_SORT_ERROR, None)
+    session_store.checkpoint_session("Source selection committed")
     st.switch_page("pages/02_File_Loader.py")
 
 
-selection_signature = tuple(str(f.path) for f in filtered_files)
+selection_signature = stage_invalidation.source_selection_signature(
+    _selection_payload(), fits_ingest.get_archive_root(),
+) if filtered_files else None
 
 if load_clicked:
-    workspace_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "workspace"
-    try:
-        with st.spinner("Sorting observation blocks (File_check)…"):
-            sort_outcome = run_observation_block_sort(
-                filtered_files, workspace_dir, selected_source, selected_frequency
-            )
-    except Exception as exc:  # noqa: BLE001 — legacy clc code can raise anything (missing header keyword, etc.)
-        # Don't navigate away: the message would be lost. Park it with the selection it belongs to and let the
-        # user choose below.
-        st.session_state[KEY_SORT_ERROR] = {
-            "message": f"{type(exc).__name__}: {exc}",
-            "signature": selection_signature,
-        }
+    if not stage_invalidation.source_selection_changed(
+        st.session_state, _selection_payload(), fits_ingest.get_archive_root(),
+    ):
+        _continue_unchanged()
     else:
-        _commit_and_continue(sort_outcome, None)
+        try:
+            candidate_session_id = _reserve_selection_session_id()
+        except OSError as exc:
+            st.error(f"Could not prepare the new reduction: {exc}. The active selection was not changed.")
+        else:
+            workspace_dir = session_store.SESSIONS_DIR / candidate_session_id / "workspace"
+            try:
+                with st.spinner("Sorting observation blocks (File_check)…"):
+                    sort_outcome = run_observation_block_sort(
+                        filtered_files, workspace_dir, selected_source, selected_frequency
+                    )
+            except Exception as exc:  # noqa: BLE001 — surface legacy CLC failures without losing active results
+                st.session_state[KEY_SORT_ERROR] = {
+                    "message": f"{type(exc).__name__}: {exc}",
+                    "signature": selection_signature,
+                    "candidate_session_id": candidate_session_id,
+                }
+            else:
+                _commit_and_continue(sort_outcome, None, candidate_session_id)
 
 pending_error = st.session_state.get(KEY_SORT_ERROR)
-if pending_error and pending_error["signature"] == selection_signature:
+if (
+    pending_error and selection_signature is not None
+    and pending_error.get("signature") == selection_signature
+    and pending_error.get("candidate_session_id")
+):
     with st.container(border=True):
         st.markdown(
             styles.render_badge("Block sorting failed", "error")
             + f'<div class="hs-summary-text">File_check could not sort the selected files into observation blocks: '
             f'{html.escape(pending_error["message"])}</div>'
-            '<div class="hs-file-caption">Page 02 validates the files themselves; you can continue without block '
-            'sorting, or change the selection and try again.</div>',
+            '<div class="hs-file-caption">The active reduction has not changed. Page 02 validates the files '
+            'themselves; continue without block sorting, or change the selection and try again.</div>',
             unsafe_allow_html=True,
         )
         if st.button("Continue without block sorting →", key="continue_without_sort_btn"):
-            _commit_and_continue(None, pending_error["message"])
+            _commit_and_continue(None, pending_error["message"], pending_error["candidate_session_id"])

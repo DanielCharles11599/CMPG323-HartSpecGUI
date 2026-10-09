@@ -326,6 +326,7 @@ def create_app() -> Dash:
             dcc.Store(id="selected-orders-store"),
             dcc.Store(id="persist-version"),
             dcc.Store(id="region-edit-version"),
+            html.Div(id="checkpoint-message", role="status", className="hs-selection-feedback"),
             html.Div(
                 className="hs-dash-panel hs-canvas-panel",
                 children=[
@@ -616,6 +617,7 @@ def create_app() -> Dash:
 
     @app.callback(
         Output("persist-version", "data"),
+        Output("checkpoint-message", "children"),
         Input("block-table", "data"),
         Input("selection-mode", "value"),
         Input("manual-order-lcp", "value"),
@@ -627,9 +629,14 @@ def create_app() -> Dash:
     )
     def persist(rows, selection_mode, manual_order_lcp, manual_order_rcp, fit_result, selected_orders, state):
         if not state or not state.get("session_id"):
-            return no_update
+            return no_update, ""
 
         session_id = state["session_id"]
+        # Block-table and fit-store callbacks can arrive separately. Never use a
+        # fit made from the previous blocks while the new rows are being saved.
+        if fit_result and not rows_equal(rows or [], fit_result.get("blocks") or []):
+            fit_result = None
+            selected_orders = None
         normalized, errors = normalize_blocks(rows)
         payload = stage_payload(rows, selection_mode, selected_orders, fit_result)
         flattened_spectrum = None
@@ -670,7 +677,15 @@ def create_app() -> Dash:
                 append_event(bridge_state, f"Polynomial selection mode set to {selection_mode}")
 
         written = update_bridge(session_id, _mutate)
-        return written.get("updated_at")
+        if written.get("checkpoint_error"):
+            feedback = written["checkpoint_error"] + ". Retry Fit Polynomial or Save Session."
+        elif written.get("checkpoint_notice"):
+            feedback = written["checkpoint_notice"]
+        elif written.get("checkpoint_saved_at"):
+            feedback = "Baseline checkpoint saved at " + written["checkpoint_saved_at"]
+        else:
+            feedback = "Baseline state saved to its working bridge."
+        return written.get("updated_at"), feedback
 
     return app
 

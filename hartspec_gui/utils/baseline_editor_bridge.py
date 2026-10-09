@@ -104,7 +104,21 @@ def update_bridge(session_id: str, mutator: Callable[[dict[str, Any]], None]) ->
     with _LOCK:
         state = read_bridge(session_id) or {"session_id": session_id, "events": []}
         mutator(state)
-        return write_bridge(session_id, state)
+        written = write_bridge(session_id, state)
+        token = written.get("checkpoint_token")
+        if token:
+            from utils import checkpoint_store
+            try:
+                record = checkpoint_store.checkpoint_from_bridge(SESSIONS_DIR, token, session_id, written)
+                if record is None:
+                    written["checkpoint_notice"] = (
+                        "This editor is not attached to the active checkpoint. Reopen Page 4."
+                    )
+                else:
+                    written["checkpoint_saved_at"] = record.payload["saved_at"]
+            except (OSError, UnicodeError, ValueError, TypeError) as exc:
+                written["checkpoint_error"] = f"Baseline checkpoint not saved: {exc}"
+        return written
 
 
 def initialize_bridge(
@@ -112,6 +126,8 @@ def initialize_bridge(
     spectrum: Mapping[str, Any],
     theme: str,
     bandpass_mode: str,
+    checkpoint_token: str | None = None,
+    restored_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create/refresh the bridge input while preserving valid Dash-side editor state."""
     fingerprint = spectrum_fingerprint(spectrum)
@@ -127,6 +143,8 @@ def initialize_bridge(
 
     state: dict[str, Any] = {
         "session_id": session_id,
+        "checkpoint_token": checkpoint_token or existing.get("checkpoint_token"),
+        "selection_semantics": existing.get("selection_semantics", "flat_baseline_fit_regions_v2"),
         "theme": theme,
         "bandpass_mode": bandpass_mode,
         "spectrum_fingerprint": fingerprint,
@@ -141,6 +159,16 @@ def initialize_bridge(
         "integration_error": existing.get("integration_error") if same_spectrum else None,
         "complete": bool(existing.get("complete")) if same_spectrum else False,
     }
+    if not same_spectrum and restored_parameters:
+        # Frozen snapshots normally restore above. A parameter-only save has
+        # no curves to trust; seed flat-region controls and require a new fit.
+        semantics = restored_parameters.get("selection_semantics")
+        if semantics == "flat_baseline_fit_regions_v2":
+            state["blocks"] = restored_parameters.get("blocks", [])
+            state["selection_mode"] = restored_parameters.get("selection_mode", "Automatic")
+            state["manual_orders"] = restored_parameters.get("manual_orders") or (
+                restored_parameters.get("selected_orders") or {"LCP": 3, "RCP": 3}
+            )
     return write_bridge(session_id, state)
 
 

@@ -39,7 +39,7 @@ def render_sidebar(current_stage: int) -> None:
     so ``styles.inject_base_css`` can strip its background/border via CSS
     without touching the Save/Load/Reset or theme-toggle buttons below.
     """
-    session_store.init_session_state()
+    session_store.begin_page(current_stage)
     theme = styles.get_theme()
 
     with st.sidebar:
@@ -78,13 +78,26 @@ def render_sidebar(current_stage: int) -> None:
 
         st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
         st.caption("SESSION")
+        st.session_state["checkpoint_status_placeholder"] = st.empty()
+        session_store.render_checkpoint_status()
+        if st.session_state.get("checkpoint_notice"):
+            st.info(st.session_state.pop("checkpoint_notice"))
+        if st.session_state.get("checkpoint_error") and st.button("Retry checkpoint", key="checkpoint_retry"):
+            session_store.checkpoint_session("Checkpoint retry", allow_empty=True)
 
         if st.button("Save Session", key="session_save", use_container_width=True):
-            saved_path = session_store.save_session()
-            st.success(f"Saved: {saved_path.name}")
+            try:
+                saved_path = session_store.save_session()
+                st.success(f"Saved: {saved_path.name}")
+            except (OSError, UnicodeError, ValueError, TypeError) as exc:
+                st.error(f"Session not saved: {exc}. Current work remains in memory.")
 
         with st.expander("Load Session"):
-            saved_sessions = session_store.list_sessions()
+            try:
+                saved_sessions = session_store.list_sessions()
+            except OSError as exc:
+                saved_sessions = []
+                st.error(f"Cannot read saved sessions: {exc}")
             if not saved_sessions:
                 st.caption("No saved sessions yet.")
             else:
@@ -96,9 +109,49 @@ def render_sidebar(current_stage: int) -> None:
                     label_visibility="collapsed",
                 )
                 if st.button("Load", key="session_load_confirm", use_container_width=True):
-                    session_store.load_session(chosen)
-                    st.rerun()
+                    try:
+                        session_store.load_session(chosen)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        st.error(f"Could not load session: {exc}")
+
+        # TODO: confirm against design — shared checkpoint recovery complements the three session actions.
+        with st.expander("Recover checkpoint"):
+            from utils import checkpoint_store
+            try:
+                checkpoints = checkpoint_store.list_latest(session_store.SESSIONS_DIR)
+            except OSError as exc:
+                checkpoints = []
+                st.error(f"Cannot list checkpoints: {exc}")
+            if checkpoints:
+                # The latest revision path changes after every commit; a stable
+                # stream key prevents an already-selected widget value becoming invalid.
+                options = {item.path.parent.name: item for item in checkpoints}
+                if st.session_state.get("session_checkpoint_choice") not in options:
+                    st.session_state["session_checkpoint_choice"] = next(iter(options))
+                chosen_checkpoint = st.selectbox(
+                    "Checkpoint", list(options), key="session_checkpoint_choice",
+                    format_func=lambda path: _checkpoint_label(options[path].payload),
+                )
+                if st.button("Recover selected", key="session_checkpoint_recover", use_container_width=True):
+                    try:
+                        selected = options[chosen_checkpoint]
+                        session_store.recover_checkpoint(selected.path, warning=selected.warning)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        st.error(f"Could not recover checkpoint: {exc}")
+            else:
+                st.caption("No automatic checkpoints yet.")
+            st.caption("Recovery uses the private identifier in this tab's URL. Keep the address private.")
 
         if st.button("Reset Session", key="session_reset", use_container_width=True):
             session_store.reset_session()
             st.rerun()
+
+
+
+def _checkpoint_label(payload: dict) -> str:
+    """Make explicit recovery choices distinguishable without exposing token values."""
+    source = payload.get("pipeline_data", {}).get("01_source_browser", {})
+    source = source if isinstance(source, dict) else {}
+    label = source.get("source_name") or "Unnamed reduction"
+    count = len(payload.get("completed_stages", []))
+    return f"{label} · {count}/8 stages · {payload.get('saved_at', '')}"

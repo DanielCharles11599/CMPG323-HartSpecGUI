@@ -36,7 +36,7 @@ _theme = styles.get_theme()
 st.markdown(
     f"""
     <style>
-    [data-testid="stVerticalBlockBorderWrapper"] {{
+    [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] {{
         background-color: {_theme["bg-panel"]} !important;
         border-color: {_theme["border-subtle"]} !important;
     }}
@@ -188,6 +188,8 @@ if loaded_spectrum is not None:
 else:
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+
+session_store.checkpoint_session("Calibration parameters recorded")
 
 styles.render_page_header(
     title=PAGE_TITLE,

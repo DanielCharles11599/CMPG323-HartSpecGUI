@@ -31,8 +31,12 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import baseline_editor_bridge, export_logic, fitting_inputs, session_store, spectrum_resolution, styles
+from utils import (
+    baseline_editor_bridge, export_logic, export_preview_logic, export_preview_ui, fitting_inputs, session_store,
+    spectrum_resolution, styles,
+)
 from utils.sidebar import render_sidebar
+from utils.observation_log_ui import render_observation_log
 
 THIS_STAGE_KEY = "08_export_and_session"
 CURRENT_STAGE = 8  # 1-indexed, per utils/sidebar.py + utils/styles.py convention
@@ -67,6 +71,15 @@ pipeline_data = st.session_state.get("pipeline_data", {})
 pss = fitting_inputs.pss_from_pipeline(pipeline_data)
 pointing_factor = fitting_inputs.pointing_factor_from_pipeline(pipeline_data)
 average, overall_mean = fitting_inputs.pair_average(lcp, rcp)
+
+# FR-18's legacy RMS/peak statistics are calculated on the CLC final Stokes-I path.
+# Keep them separate from the existing Graph 3/export arithmetic: this is a read-only
+# preview derived from committed Pages 04-06 data and never rewrites spectrum/session state.
+export_preview = export_preview_logic.preview_from_pipeline(
+    st.session_state,
+    read_bridge=baseline_editor_bridge.read_bridge,
+    fingerprint=baseline_editor_bridge.spectrum_fingerprint,
+)
 
 # Exporting or "completing" the pipeline on synthetic data would put fabricated numbers in a file / audit trail.
 export_blocked = resolved.is_placeholder
@@ -129,6 +142,7 @@ def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: st
 
 _chart("LCP and RCP", [("LCP", vlsr, lcp, styles.LCP_COLOR, "solid"), ("RCP", vlsr, rcp, styles.RCP_COLOR, "solid")],
        f"Intensity ({unit})")
+export_preview_ui.render_export_preview(export_preview, theme=theme)
 if graph3 is not None:
     traces = [("Graph 3", vlsr, graph3, theme["accent"], "solid")]
     if fit_curve is not None:
@@ -244,16 +258,27 @@ def _describe_session(payload: dict[str, Any]) -> str:
     reduction") are assembled from whichever pipeline_data stage summaries are present. Falls back to a plain
     session-id label when nothing usable is found.
     """
-    saved = payload.get("pipeline_data", {})
-    fitting = saved.get(FIT_STAGE_KEY)
-    if fitting:
-        return f"{fitting.get('fit_type', 'fit')} committed (Graph 3)"
-    if saved.get("06_pointing_correction"):
+    pipeline_data = payload.get("pipeline_data", {})
+
+    # A malformed history entry must not crash the history display.
+    if not isinstance(pipeline_data, dict):
+        pipeline_data = {}
+
+    fitting = pipeline_data.get("07_spectral_fitting")
+    if isinstance(fitting, dict) and fitting:
+        fit_type = fitting.get("fit_type", "fit")
+        polarization = fitting.get("polarization", "")
+        prefix = f"{polarization} — " if polarization else ""
+        return f"{prefix}{fit_type} committed (Graph 3)"
+
+    pointing = pipeline_data.get("06_pointing_correction")
+    if isinstance(pointing, dict) and pointing:
         return "Pointing correction computed"
-    bandpass = saved.get("03_bandpass_correction")
-    if bandpass:
+
+    bandpass = pipeline_data.get("03_bandpass_correction")
+    if isinstance(bandpass, dict) and bandpass:
         return f"Bandpass — {bandpass.get('mode', 'correction')}"
-    if saved.get("01_source_browser"):
+    if pipeline_data.get("01_source_browser"):
         return "Source Browser selection saved"
     return f"Session {payload.get('session_id', '')}"
 
@@ -274,8 +299,10 @@ if not recent_sessions:
 else:
     for path in recent_sessions:
         try:
-            payload = json.loads(Path(path).read_text())
-        except (OSError, json.JSONDecodeError):
+            payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
             continue
         ts_label = _format_timestamp(payload.get("saved_at", ""))
         desc = _describe_session(payload)
@@ -283,23 +310,22 @@ else:
         c1.markdown(f'<span style="font-size:13px;">{ts_label}</span>', unsafe_allow_html=True)
         c2.markdown(f'<span style="font-size:13px;">{desc}</span>', unsafe_allow_html=True)
         if c3.button("Load", key=f"load_{path.name}", type="secondary"):
-            session_store.load_session(path)
-            session_store.log_event(f"Session loaded — {path.stem}")
-            st.rerun()
+            try:
+                # The shared action logs and navigates to the replay entry page
+                # on success, before this page can process the new session.
+                session_store.load_session(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                # The store validates before changing state; keep the current
+                # reduction usable when a saved file is damaged or not a session.
+                st.error(f"Could not load session; the current session is unchanged. {exc}")
 
 st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Observation Log Panel (FR-20) — real audit trail, not static text. audit_log entries are
-# {"ts": "HH:MM:SS", "message": str} dicts, per session_store.log_event().
-# Fixed height + internal scrolling (UAT feedback) so a long log never pushes the end of the page out of reach.
+# Observation Log Panel (FR-20) — read-only events and current recorded parameters.
+# The new panel does not append events, change stage data or alter checkpoint behaviour.
 # ---------------------------------------------------------------------
-styles.render_panel_open("Observation Log Panel (FR-20)")
-audit_entries = st.session_state.get("audit_log", [])
-log_text = "\n".join(f"{entry['ts']} {entry['message']}" for entry in audit_entries)
-with st.container(height=LOG_PANEL_HEIGHT):
-    st.code(log_text or "No actions logged yet this session.", language=None)
-styles.render_panel_close()
+render_observation_log(st.session_state, theme=theme, height=LOG_PANEL_HEIGHT)
 
 # ---------------------------------------------------------------------
 # Mark export stage complete — the last stage key, so the progress bar reads 8/8 once this fires (on later
@@ -320,3 +346,6 @@ if st.button("Mark export complete", type="primary", disabled=export_blocked):
         st.warning("Export recorded, but these stages are not complete in this session: " + ", ".join(not_complete))
     else:
         st.success("Pipeline complete — all 8 stages recorded in this session.")
+
+
+session_store.checkpoint_session("Export/session actions recorded")

@@ -254,7 +254,9 @@ if save_clicked:
         f"Spectral fit committed — {result.fit_type_used} fitted to Graph 3 "
         f"(PSS {pss.value:.4f}, pointing correction {pointing_factor:.4f}, {resolved.source_key} spectrum)"
     )
-    st.success("Fit saved to session.")
+    session_store.checkpoint_session("Spectral fit committed")
+    if not st.session_state.get("checkpoint_error"):
+        st.success("Fit saved to session and checkpointed.")
 
 if next_clicked:
     st.switch_page(NEXT_PAGE)

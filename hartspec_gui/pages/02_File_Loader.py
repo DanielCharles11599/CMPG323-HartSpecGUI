@@ -1,4 +1,10 @@
+# 02_File_Loader.py — FR-02/03: loading, validated handoff and confirmed quarantine.
 """Page 02 — File Loader (FR-02 FITS load, FR-03 validation / quarantine).
+
+Step 3: a loaded spectrum is only eligible after structural verification also
+passes. The progress badges, processing handoff and Page 3 share that rule.
+Changing the eligible input set invalidates dependent results and isolates
+old Dash state. Quarantine remains an explicitly confirmed filesystem move.
 
 Layout reference: HARTSPEC-Page_Build_Spec.md §7, page 02. Column/row widths
 below are expressed as flex proportions derived from that spec's pixel
@@ -81,8 +87,9 @@ Three design questions from the handoff were explicitly answered before
 this was built (not guessed):
 
 1. Load/validate ordering -> **load all files first, then validate all**
-   (not interleaved). `_render_load_progress()` runs the full ingest loop;
-   `_render_validation_table()` then runs verification per file afterward.
+   (not interleaved). `_render_load_progress()` runs the full ingest loop,
+   then validates every loaded file before publishing the processing handoff.
+   `_render_validation_table()` displays those cached results.
 2. Multi-file progress UI -> **"Loading file X of N" text + a single
    aggregate bar** (not per-file spinners, not a bare aggregate-only bar).
 3. Header-fields table -> **confirmed one row per file**, now built (FR-03
@@ -139,12 +146,14 @@ import html
 import logging
 import time
 from pathlib import Path
+from typing import Mapping
 
 import pandas as pd
 import streamlit as st
 from astropy.io import fits
 
 from utils import fits_ingest, session_store, sidebar, styles
+from utils.file_loader_logic import publish_validated_handoff, restore_saved_quarantine
 from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
 
 logger = logging.getLogger(__name__)
@@ -268,9 +277,11 @@ def _render_target_file_override() -> None:
 
     with st.expander("Dev override: choose files manually", expanded=False):
         current = st.session_state.get("file_loader_target_filenames", [LOAD_FILENAME])
+        # Load/Reset may explicitly clear this control. Initialise only when
+        # absent; a competing value= argument would conflict with restored state.
+        st.session_state.setdefault("file_loader_manual_filenames_input", "\n".join(current))
         typed = st.text_area(
             "Filenames, one per line (relative to FITS_ARCHIVE_PATH)",
-            value="\n".join(current),
             key="file_loader_manual_filenames_input",
             height=100,
         )
@@ -361,12 +372,32 @@ def _run_real_verify(filename: str) -> fits_ingest.VerificationResult:
     return result
 
 
+def _sync_validated_handoff(filenames: list[str]) -> None:
+    """Publish only eligible spectra and record a changed-input invalidation.
+
+    Runs after verification and immediately after a successful quarantine,
+    before rerun/navigation. Existing saved bridges are isolated by a fresh
+    reduction ID, not deleted; a delayed old Dash write cannot restore them.
+    """
+    outcome = publish_validated_handoff(st.session_state, filenames, fits_ingest.get_archive_root())
+    if outcome.invalidated:
+        session_store.log_event(
+            "Validated input files changed — bandpass, baseline, calibration, pointing, fit and export "
+            f"results invalidated (reduction {outcome.previous_session_id} → {st.session_state['session_id']})"
+        )
+        st.session_state["file_loader_validation_notice"] = (
+            "The usable input files changed. Previous correction, calibration, pointing, fit and export "
+            "results were cleared; run the following stages again. Saved sessions and old baseline files "
+            "were not deleted."
+        )
+
+
 def _render_load_progress() -> None:
     """Load every target file, showing 'Loading file X of N' + one
     aggregate progress bar -- per the confirmed answer to the FR-03
     multi-file UI question. Ordering is also confirmed: load ALL files
-    first here; validation (including FR-03 verify) happens afterward in
-    `_render_validation_table()`, not interleaved into this loop.
+    first here; structural verification runs in a second loop. Nothing
+    enters the processing handoff until both checks have finished.
 
     Final state (this revision): the bar/label always reach 100% --
     "N of N files processed" -- once scanning finishes, with an explicit
@@ -375,6 +406,7 @@ def _render_load_progress() -> None:
     CHANGE" note at the top of this module for why "Loaded X of Y" was
     replaced.
     """
+    restore_saved_quarantine(st.session_state)
     theme = styles.get_theme()
     filenames = _get_target_filenames()
     quarantined = st.session_state.get("file_loader_quarantined", set())
@@ -416,9 +448,7 @@ def _render_load_progress() -> None:
 
         if n == 0:
             _draw("No active files to load", 1.0, "All selected files have been quarantined.")
-            st.session_state["file_loader_load_done"] = False
-            st.session_state["loaded_spectra"] = []
-            st.session_state.pop("loaded_spectrum", None)
+            _sync_validated_handoff(filenames)
             return
 
         results: dict[str, fits_ingest.IngestResult] = {}
@@ -427,20 +457,17 @@ def _render_load_progress() -> None:
             _draw(f"Loading file {idx} of {n}: {filename}", (idx - 1) / n, "")
             results[filename] = _run_real_load(filename)
 
-        loaded_spectra = [
-            result.spectrum
-            for result in results.values()
-            if result.ok and result.spectrum is not None
-        ]
-        st.session_state["loaded_spectra"] = loaded_spectra
-        if loaded_spectra:
-            st.session_state["loaded_spectrum"] = loaded_spectra[0]
-        else:
-            st.session_state.pop("loaded_spectrum", None)
+        # Preserve the agreed load-all/validate-all ordering. A successful
+        # CLC load alone is not permission to use a structurally flagged file.
+        with st.spinner("Validating FITS files…"):
+            for filename, result in results.items():
+                if result.ok and result.spectrum is not None:
+                    _run_real_verify(filename)
+        _sync_validated_handoff(filenames)
 
         elapsed_total = time.perf_counter() - start_all
 
-        ok_count = sum(1 for r in results.values() if r.ok)
+        ok_count = len(st.session_state["loaded_spectra"])
         flagged_count = n - ok_count
         plural = "s" if n != 1 else ""
         # Always 100% here: every candidate file was scanned and accounted
@@ -466,10 +493,12 @@ def _render_load_progress() -> None:
         # the badge terminology already shown in the validation table
         # right below this panel.
         if ok_count < n:
-            failed_filenames = [f for f, r in results.items() if not r.ok]
-            logger.warning("%d of %d file(s) flagged as unreadable: %s", n - ok_count, n, ", ".join(failed_filenames))
+            failed_filenames = st.session_state["pipeline_data"][STAGE_KEY]["flagged_files"]
+            logger.warning(
+                "%d of %d file(s) flagged during load/validation: %s", n - ok_count, n, ", ".join(failed_filenames)
+            )
 
-        st.session_state["file_loader_load_done"] = ok_count > 0
+        st.caption("Only files that pass both loading and structural validation continue to Bandpass Correction.")
 
 
 def _request_quarantine(filename: str) -> None:
@@ -525,6 +554,11 @@ def _quarantine_file(filename: str) -> None:
 
     session_store.log_event(f"{filename} quarantined -- moved to {dest_path}")
 
+    # Do not wait for the next page rerun: later stages may be opened directly.
+    # Already-excluded flagged files leave the existing usable inputs intact.
+    _sync_validated_handoff(_get_target_filenames())
+    session_store.checkpoint_session("Confirmed quarantine recorded")
+
 
 def _build_validation_rows(filenames: list[str]) -> list[dict]:
     """Real per-file validation rows, replacing the old static
@@ -564,6 +598,12 @@ def _build_validation_rows(filenames: list[str]) -> list[dict]:
         if not ingest_result.ok:
             detail = "; ".join(f"{k}: {v}" for k, v in ingest_result.load_errors.items())
             rows.append({"file": filename, "issue": detail or "Failed to load", "status": "error"})
+            continue
+
+        if not isinstance(ingest_result.spectrum, Mapping) or not all(
+            key in ingest_result.spectrum for key in ("Vlsr", "LCP", "RCP")
+        ):
+            rows.append({"file": filename, "issue": "Loader returned no usable spectrum", "status": "error"})
             continue
 
         verify_result = _run_real_verify(filename)
@@ -1199,6 +1239,7 @@ def _render_manual_mapping_card(filenames: list[str]) -> dict:
         if submitted:
             st.session_state["file_loader_manual_mapping_global"] = pending
             applied = pending
+            session_store.checkpoint_session("Header mapping applied")
 
     return applied
 
@@ -1422,6 +1463,9 @@ def main() -> None:
     )
     _render_target_file_override()
     _render_load_progress()
+    notice = st.session_state.pop("file_loader_validation_notice", None)
+    if notice:
+        st.warning(notice)
     _render_validation_table()
 
     st.markdown(f"<div style='height:{styles.SECTION_GAP}px'></div>", unsafe_allow_html=True)
@@ -1430,7 +1474,9 @@ def main() -> None:
 
     if st.session_state.get("file_loader_load_done"):
         session_store.mark_stage_complete(STAGE_KEY)
+    session_store.checkpoint_session("File loading and validation recorded")
 
+    if st.session_state.get("file_loader_load_done"):
         # "Continue to X ->" pattern, matching Page 03's own button
         # (see 03_Bandpass_Correction.py's "Continue to Baseline Block
         # Editor ->"). Only shown once loading actually succeeded for at
