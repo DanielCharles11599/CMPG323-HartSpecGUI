@@ -31,7 +31,10 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import baseline_editor_bridge, export_logic, fitting_inputs, session_store, spectrum_resolution, styles
+from utils import (
+    baseline_editor_bridge, export_logic, export_preview_logic, export_preview_ui, fitting_inputs, session_store,
+    spectrum_resolution, styles,
+)
 from utils.sidebar import render_sidebar
 from utils.observation_log_ui import render_observation_log
 
@@ -68,6 +71,15 @@ pipeline_data = st.session_state.get("pipeline_data", {})
 pss = fitting_inputs.pss_from_pipeline(pipeline_data)
 pointing_factor = fitting_inputs.pointing_factor_from_pipeline(pipeline_data)
 average, overall_mean = fitting_inputs.pair_average(lcp, rcp)
+
+# FR-18's legacy RMS/peak statistics are calculated on the CLC final Stokes-I path.
+# Keep them separate from the existing Graph 3/export arithmetic: this is a read-only
+# preview derived from committed Pages 04-06 data and never rewrites spectrum/session state.
+export_preview = export_preview_logic.preview_from_pipeline(
+    st.session_state,
+    read_bridge=baseline_editor_bridge.read_bridge,
+    fingerprint=baseline_editor_bridge.spectrum_fingerprint,
+)
 
 # Exporting or "completing" the pipeline on synthetic data would put fabricated numbers in a file / audit trail.
 export_blocked = resolved.is_placeholder
@@ -130,6 +142,7 @@ def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: st
 
 _chart("LCP and RCP", [("LCP", vlsr, lcp, styles.LCP_COLOR, "solid"), ("RCP", vlsr, rcp, styles.RCP_COLOR, "solid")],
        f"Intensity ({unit})")
+export_preview_ui.render_export_preview(export_preview, theme=theme)
 if graph3 is not None:
     traces = [("Graph 3", vlsr, graph3, theme["accent"], "solid")]
     if fit_curve is not None:
