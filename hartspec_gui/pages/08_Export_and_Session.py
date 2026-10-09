@@ -73,9 +73,25 @@ average, overall_mean = fitting_inputs.pair_average(lcp, rcp)
 export_blocked = resolved.is_placeholder
 
 # Graph 3 only from the pre-calibration spectrum with real PSS + pointing inputs (same rule as Page 07).
-graph3_ready = pss is not None and pointing_factor is not None and not resolved.is_placeholder \
-    and not resolved.is_calibrated
-graph3 = fitting_inputs.graph3(lcp, rcp, pss.value, pointing_factor) if graph3_ready else None
+graph3_ready = (
+    pss is not None
+    and pointing_factor is not None
+    and (
+        resolved.is_calibrated
+        or resolved.source_key == spectrum_resolution.SOURCE_BASELINE
+    )
+)
+
+graph3 = None
+if graph3_ready:
+    if resolved.is_calibrated:
+        # Page 05 already applied atmospheric correction and PSS.
+        graph3 = lcp + rcp + pointing_factor
+    else:
+        # Compatibility with a valid baseline-only spectrum.
+        graph3 = fitting_inputs.graph3(
+            lcp, rcp, pss.value, pointing_factor
+        )
 source_key = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing_factor) if graph3_ready else ""
 
 # A saved fit is only used if it was computed on exactly this Graph 3 (same spectrum, PSS and pointing correction).

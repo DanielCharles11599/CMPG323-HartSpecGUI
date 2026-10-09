@@ -114,8 +114,8 @@ if resolved.is_placeholder:
 blockers: list[str] = []
 if resolved.is_placeholder:
     blockers.append("a real spectrum")
-if resolved.is_calibrated:
-    blockers.append("the pre-calibration spectrum (the Page 05 calibrated spectrum already includes PSS)")
+if not resolved.is_placeholder and not resolved.is_calibrated and resolved.source_key != spectrum_resolution.SOURCE_BASELINE:
+    blockers.append("a valid baseline-flattened spectrum -- complete Page 04 (Baseline Editor)")
 if pss is None:
     blockers.append("a PSS value -- complete Page 05 (Calibration Dashboard)")
 if pointing_factor is None:
@@ -128,7 +128,13 @@ graph3: Optional[np.ndarray] = None
 result: Optional[FitResult] = None
 source_key = ""
 if graph3_ready:
-    graph3 = fitting_inputs.graph3(lcp, rcp, pss.value, pointing_factor)
+    if resolved.is_calibrated:
+        # Page 05 already applied ATcor and PSS.
+        graph3 = lcp + rcp + pointing_factor
+    else:
+        graph3 = fitting_inputs.graph3(
+            lcp, rcp, pss.value, pointing_factor
+        )
     source_key = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing_factor)
     result = run_fit(fit_type, vlsr, graph3, fitting_inputs.GRAPH3_UNIT)
 
@@ -167,7 +173,9 @@ g3_unit = fitting_inputs.GRAPH3_UNIT
 left, right = st.columns(2)
 with left:
     _panel(
-        "Graph 3 — [(LCP + RCP) × PSS] + Pointing Correction",
+        ("Graph 3 — Calibrated (LCP + RCP) + Pointing Correction"
+         if resolved.is_calibrated
+         else "Graph 3 — [(LCP + RCP) × PSS] + Pointing Correction"),
         None if graph3 is None else _figure([("Graph 3", vlsr, graph3, theme["accent"], "solid")],
                                             f"Intensity ({g3_unit})"),
         "Waiting for the inputs listed above.",
@@ -215,7 +223,11 @@ def _stage_summary() -> dict[str, Any]:
     return {
         "fit_type": result.fit_type_used,
         "fit_type_requested": result.fit_type_requested,
-        "fitted_quantity": f"Graph 3 = {fitting_inputs.GRAPH3_FORMULA}",
+        "fitted_quantity": (
+            "Calibrated LCP + calibrated RCP + Pointing Correction"
+            if getattr(resolved, "is_calibrated", False)
+            else f"Graph 3 = {fitting_inputs.GRAPH3_FORMULA}"
+        ),
         "parameters": [{"parameter": p, "value": v, "error": e} for p, v, e in result.rows],
         "converged": result.converged,
         "notes": list(result.notes),
