@@ -153,6 +153,47 @@ def get_pss_window_averages(pss_history, pss_window):
     }
 
 
+def get_pss_trailing_statistics(pss_history, observation_mjd, days=30):
+    """Return trailing-window PSS mean, sample standard deviation and count."""
+    if pss_history is None:
+        raise ValueError("PSS history is required.")
+
+    end_mjd = float(observation_mjd)
+    start_mjd = end_mjd - float(days)
+
+    def statistics_for(series):
+        values = [
+            float(pss)
+            for mjd, pss in zip(series["mjd"], series["pss"])
+            if start_mjd <= float(mjd) <= end_mjd
+        ]
+
+        if not values:
+            return {
+                "mean": None,
+                "std": None,
+                "count": 0,
+            }
+
+        return {
+            "mean": float(np.mean(values)),
+            "std": (
+                float(np.std(values, ddof=1))
+                if len(values) >= 2
+                else None
+            ),
+            "count": len(values),
+        }
+
+    return {
+        "start_mjd": start_mjd,
+        "end_mjd": end_mjd,
+        "days": int(days),
+        "lcp": statistics_for(pss_history["lcp"]),
+        "rcp": statistics_for(pss_history["rcp"]),
+    }
+
+
 def get_atmospheric_calibration(spectrum):
     """Run the existing HartSpec atmospheric calibration for one spectrum."""
     if not spectrum:

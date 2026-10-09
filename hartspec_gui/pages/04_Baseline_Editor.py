@@ -1,4 +1,11 @@
-# 04_Baseline_Editor.py — FR-05/06/07: embedded Dash baseline block + polynomial order editor.
+# 04_Baseline_Editor.py — FR-05/06/07: embedded Dash flat-baseline region + polynomial order editor.
+#
+# PM feedback revision (2026-10): selected ranges are flat, line-free regions used
+# to estimate the baseline. They are not exclusion masks and are not removed from
+# the spectrum. The fitted baseline is evaluated across the complete velocity axis
+# so emission/spiky channels remain available to downstream pipeline stages.
+# Exact start/end editing is the primary interaction; chart dragging may remain as
+# an optional convenience inside the embedded Dash editor.
 
 from __future__ import annotations
 
@@ -23,8 +30,11 @@ from utils.stage_invalidation import invalidate_baseline_dependents
 CURRENT_STAGE = 4
 PAGE_STAGE_KEY = THIS_STAGE_KEY
 PAGE_TITLE = "Baseline Block Editor"
-PAGE_SUBTITLE = "FR-05 / 06 / 07 — Dash-embedded interactive editor"
-IFRAME_HEIGHT = 736
+PAGE_SUBTITLE = "FR-05 / 06 / 07 — select flat baseline regions and compare polynomial fits"
+# The revised Dash editor includes numeric range controls and an editable table,
+# so it needs more vertical room than the original drag-only mock-up.
+IFRAME_HEIGHT = 1050
+SELECTION_SEMANTICS = "flat_baseline_fit_regions_v2"
 
 # Page 4 may only run after the three preceding pipeline stages are complete.
 UPSTREAM_STAGE_KEYS = (
@@ -146,12 +156,22 @@ def _sync_dash_state_into_streamlit() -> None:
         _clear_page4_completion()
         return
 
+    # New bridge payloads use ``baseline_regions`` to make the semantics explicit.
+    # Fall back to the legacy ``blocks`` key so saved sessions created before this
+    # PM revision still replay correctly.
+    baseline_regions = bridge.get("baseline_regions", bridge.get("blocks", []))
     payload = stage_payload(
-        bridge.get("blocks", []),
-        bridge.get("selection_mode", "Automatic"),
+        baseline_regions,
+        bridge.get("selection_mode", "Manual ranges"),
         bridge.get("selected_orders"),
         bridge.get("fit_result"),
     )
+    # Persist the clarified domain meaning alongside the legacy payload shape.
+    # These fields are JSON-safe and make future replay/migrations unambiguous.
+    payload["selection_semantics"] = SELECTION_SEMANTICS
+    payload["selected_regions_are_masked"] = False
+    payload["fit_uses_selected_flat_regions"] = True
+    payload["output_preserves_full_velocity_axis"] = True
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = payload
 
     flattened = bridge.get("flattened_spectrum")
@@ -194,7 +214,13 @@ def _dash_url(port: int, session_id: str, revision: str) -> str:
     old/empty hydrated state even though the bridge JSON has been refreshed.
     """
     base = os.environ.get("DASH_BRIDGE_URL", f"http://localhost:{port}").rstrip("/")
-    query = urlencode({"session_id": session_id, "rev": revision})
+    query = urlencode(
+        {
+            "session_id": session_id,
+            "rev": revision,
+            "selection_semantics": SELECTION_SEMANTICS,
+        }
+    )
     return f"{base}/?{query}"
 
 
@@ -207,6 +233,34 @@ def _render_upstream_error(missing_stages: list[str]) -> None:
     )
     if st.button("Return to Bandpass Correction", key="return_to_bandpass"):
         st.switch_page("pages/03_Bandpass_Correction.py")
+
+
+def _render_selection_guidance() -> None:
+    """Explain the revised baseline-region semantics before the Dash iframe.
+
+    The old wording encouraged users to select noisy/emission channels as ranges
+    to exclude. PM feedback reverses that interpretation: users now select the
+    flat, line-free channels that are safe inputs to the polynomial fit. The
+    fitted baseline is then subtracted from every channel, so spectral features
+    outside the selections remain in the downstream spectrum.
+    """
+    theme = styles.get_theme()
+    st.markdown(
+        f"""
+        <div style="background:{theme['bg-panel']}; border:1px solid {theme['border-default']};
+                    border-left:4px solid {theme['accent']}; border-radius:{styles.PANEL_RADIUS}px;
+                    padding:12px 14px; margin-bottom:{styles.SECTION_GAP}px;
+                    color:{theme['text-body']}; font-size:12px; line-height:1.55;">
+          <div style="font-weight:600; margin-bottom:4px;">How to choose baseline regions</div>
+          Select only the <strong>flat, line-free</strong> parts of the spectrum. These ranges are
+          inputs to the baseline fit; they are <strong>not masked or removed</strong>. Emission and
+          spiky channels outside the selected ranges remain on the full velocity axis and continue
+          through the pipeline. Enter exact start/end velocities in the editor and adjust them in
+          the editable table. Chart dragging is optional.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def main() -> None:
@@ -230,6 +284,7 @@ def main() -> None:
         current_stage=CURRENT_STAGE,
         completed_stages=_completed_upstream_count(),
     )
+    _render_selection_guidance()
 
     completed = st.session_state["completed_stages"]
     missing_stages = [
@@ -291,7 +346,7 @@ def main() -> None:
     # callback to re-read the bridge instead of leaving an old blank graph.
     revision = (
         f"{bridge['spectrum_fingerprint'][:12]}-"
-        f"{styles.get_theme_name()}"
+        f"{styles.get_theme_name()}-flat-regions-v2"
     )
     components.iframe(
         _dash_url(port, st.session_state["session_id"], revision),
@@ -323,8 +378,9 @@ def main() -> None:
             st.switch_page("pages/05_Calibration_Dashboard.py")
         else:
             st.warning(
-                "Complete the baseline block selection and polynomial fit before continuing. "
-                "Once the editor has produced a valid flattened spectrum, click Continue again."
+                "Select at least one valid flat baseline region and complete the polynomial fit "
+                "before continuing. Start/end values must be within the displayed velocity "
+                "range and each start must be smaller than its end."
             )
 
 
