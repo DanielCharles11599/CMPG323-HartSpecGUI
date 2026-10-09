@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+import hashlib
 
 import numpy as np
 import plotly.graph_objects as go
@@ -34,17 +35,39 @@ st.set_page_config(
 session_store.init_session_state()
 sidebar.render_sidebar(current_stage=CURRENT_STAGE)
 styles.inject_base_css()
-
+# Keep native Streamlit text readable when the app's selected theme differs from
+# the browser's native Streamlit theme (same fix as Page 02).
+_theme = styles.get_theme()
+st.markdown(
+    f"""
+    <style>
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stExpander"] summary span,
+    .streamlit-expanderHeader,
+    .streamlit-expanderHeader p,
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stTextInput"] input,
+    [data-testid="stAlert"] p,
+    [data-testid="stAlert"] span,
+    [data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+    [data-testid="stVerticalBlockBorderWrapper"] p,
+    [data-testid="stVerticalBlockBorderWrapper"] span {{
+        color: {_theme['text-body']} !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 def _completed_upstream_count() -> int:
     completed = st.session_state["completed_stages"]
     return sum(key in completed for key in UPSTREAM_STAGE_KEYS)
 
-
 def _upstream_complete() -> bool:
     completed = st.session_state["completed_stages"]
     return all(key in completed for key in UPSTREAM_STAGE_KEYS)
-
 
 def _normalise_spectrum(spectrum: Mapping[str, Any], label: str) -> dict[str, np.ndarray]:
     arrays: dict[str, np.ndarray] = {}
@@ -60,7 +83,6 @@ def _normalise_spectrum(spectrum: Mapping[str, Any], label: str) -> dict[str, np
         if not np.all(np.isfinite(array)):
             raise ValueError(f"{label} field {key} contains NaN or infinite values.")
         arrays[key] = array.copy()
-
     lengths = {key: arrays[key].size for key in _REQUIRED_ARRAY_KEYS}
     if len(set(lengths.values())) != 1:
         raise ValueError(
@@ -69,6 +91,35 @@ def _normalise_spectrum(spectrum: Mapping[str, Any], label: str) -> dict[str, np
         )
     return arrays
 
+def _spectrum_fingerprint(spectrum: Mapping[str, Any]) -> str:
+    """Return a stable SHA-256 fingerprint for Vlsr/LCP/RCP numeric output."""
+    digest = hashlib.sha256()
+    for key in _REQUIRED_ARRAY_KEYS:
+        array = np.asarray(spectrum[key], dtype="<f8").reshape(-1)
+        digest.update(key.encode("ascii"))
+        digest.update(array.size.to_bytes(8, byteorder="little", signed=False))
+        digest.update(array.tobytes(order="C"))
+    return digest.hexdigest()
+
+def _display_matches_saved(
+    saved_stage: Mapping[str, Any],
+    display_result: Mapping[str, Any] | None,
+    applied_mode: str | None,
+) -> bool:
+    """Check whether the in-memory display is exactly the saved FR-04 result."""
+    if not display_result or applied_mode != saved_stage.get("mode"):
+        return False
+    if str(display_result.get("filename1", "")) != str(saved_stage.get("filename1", "")):
+        return False
+    if str(display_result.get("filename2", "")) != str(saved_stage.get("filename2", "")):
+        return False
+    fingerprint = saved_stage.get("output_fingerprint")
+    if not fingerprint:
+        return False
+    try:
+        return _spectrum_fingerprint(display_result["corrected"]) == fingerprint
+    except (KeyError, TypeError, ValueError):
+        return False
 
 def _spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any]) -> bool:
     if not left:
@@ -85,19 +136,16 @@ def _spectra_equal(left: Mapping[str, Any] | None, right: Mapping[str, Any]) -> 
     except (KeyError, TypeError, ValueError):
         return False
 
-
 def _clear_stage3_and_downstream() -> None:
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
     st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state.pop("bandpass_corrected_spectrum", None)
     st.session_state.pop("bandpass_display_result", None)
     st.session_state.pop("bandpass_applied_mode", None)
-
     for key in DOWNSTREAM_STAGE_KEYS:
         st.session_state["completed_stages"].discard(key)
         st.session_state["pipeline_data"].pop(key, None)
     st.session_state.pop("baseline_corrected_spectrum", None)
-
 
 def _on_mode_change() -> None:
     applied = st.session_state.get("bandpass_applied_mode")
@@ -105,19 +153,16 @@ def _on_mode_change() -> None:
     if applied and selected != applied:
         _clear_stage3_and_downstream()
 
-
-def _commit_result(result: Mapping[str, Any]) -> None:
+def _commit_result(result: Mapping[str, Any], *, replayed: bool = False) -> None:
     mode = str(result["mode"])
     corrected = _normalise_spectrum(result["corrected"], "Bandpass-corrected spectrum")
     previous = st.session_state.get("bandpass_corrected_spectrum")
-
     if previous is not None and not _spectra_equal(previous, corrected):
         for key in DOWNSTREAM_STAGE_KEYS:
             st.session_state["completed_stages"].discard(key)
             st.session_state["pipeline_data"].pop(key, None)
         st.session_state.pop("baseline_corrected_spectrum", None)
         session_store.log_event("Bandpass output changed — Baseline Block Editor state invalidated")
-
     st.session_state["bandpass_corrected_spectrum"] = corrected
     st.session_state["bandpass_display_result"] = {
         "mode": mode,
@@ -129,24 +174,32 @@ def _commit_result(result: Mapping[str, Any]) -> None:
         "common_velocity_range_kms": list(result.get("common_velocity_range_kms") or []),
     }
     st.session_state["bandpass_applied_mode"] = mode
-
     summary = stage_summary(mode, corrected)
     summary["filename1"] = str(result["filename1"])
     summary["filename2"] = str(result["filename2"])
     summary["common_velocity_range_kms"] = list(result.get("common_velocity_range_kms") or [])
+    summary["pair_signature"] = f"{result['filename1']}::{result['filename2']}"
+    summary["position1"] = str(result.get("position1", "") or "")
+    summary["position2"] = str(result.get("position2", "") or "")
+    summary["pair_pattern"] = f"{summary['position1']} → {summary['position2']}"
+    summary["output_fingerprint"] = _spectrum_fingerprint(corrected)
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = summary
     session_store.mark_stage_complete(PAGE_STAGE_KEY)
-    session_store.log_event(
-        f"Bandpass correction applied — {mode} "
-        f"({corrected['Vlsr'].size} channels)"
-    )
-
+    if replayed:
+        session_store.log_event(
+            f"Bandpass correction replayed from saved session — {mode} "
+            f"({corrected['Vlsr'].size} channels)"
+        )
+    else:
+        session_store.log_event(
+            f"Bandpass correction applied — {mode} "
+            f"({corrected['Vlsr'].size} channels)"
+        )
 
 def _render_pair_info(pair: tuple[dict[str, Any], dict[str, Any]], pair_number: int, total_pairs: int) -> None:
     first, second = pair
     suggested, reason = suggest_mode(pair)
     suggestion = suggested if suggested else "Unable to determine automatically"
-
     st.markdown('<div class="hs-eyebrow">Detected full-integration pair</div>', unsafe_allow_html=True)
     with st.container(border=True):
         cols = st.columns([1, 1, 1.25])
@@ -159,7 +212,9 @@ def _render_pair_info(pair: tuple[dict[str, Any], dict[str, Any]], pair_number: 
         with cols[2]:
             st.markdown("**CLC mode suggestion**")
             st.caption(f"{suggestion} — {reason}")
-
+        first_position = str(first.get("position", "?") or "?").strip().upper()
+        second_position = str(second.get("position", "?") or "?").strip().upper()
+        st.caption(f"Observed POSITION sequence: {first_position} → {second_position}")
         if total_pairs > 1:
             st.caption(
                 f"Pair {pair_number} of {total_pairs}. Pairs are formed from SPPOINT = 0 files in observation order, "
@@ -169,7 +224,6 @@ def _render_pair_info(pair: tuple[dict[str, Any], dict[str, Any]], pair_number: 
             st.caption(
                 "This pair was formed from the SPPOINT = 0 full integrations, matching the original HartSpec workflow."
             )
-
 
 def _add_before_after(fig: go.Figure, row: int, col: int, raw_x, raw_y, corrected_x, corrected_y, label: str, color: str) -> None:
     fig.add_trace(
@@ -200,26 +254,22 @@ def _add_before_after(fig: go.Figure, row: int, col: int, raw_x, raw_y, correcte
         col=col,
     )
 
-
 def _render_before_after(result: Mapping[str, Any]) -> None:
     theme = styles.get_theme()
     raw = result["raw_spec1"]
     corrected = result["corrected"]
     common_range = result.get("common_velocity_range_kms") or []
-
     with st.container(border=True):
         st.markdown(
             '<div class="hs-panel-title">Before / after bandpass correction</div>',
             unsafe_allow_html=True,
         )
-
         fig = make_subplots(
             rows=1,
             cols=2,
             subplot_titles=("LCP", "RCP"),
             horizontal_spacing=0.08,
         )
-
         _add_before_after(
             fig, 1, 1,
             raw["Vlsr"], raw["LCP"],
@@ -232,7 +282,6 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
             corrected["Vlsr"], corrected["RCP"],
             "RCP", styles.RCP_COLOR,
         )
-
         if len(common_range) == 2:
             for column in (1, 2):
                 fig.add_vrect(
@@ -244,7 +293,6 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
                     row=1,
                     col=column,
                 )
-
         fig.update_layout(
             paper_bgcolor=theme["bg-panel"],
             plot_bgcolor=theme["bg-panel"],
@@ -264,7 +312,6 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
                 color=theme["text-body"],
             ),
         )
-
         fig.update_xaxes(
             title_text="Vlsr (km/s)",
             showgrid=False,
@@ -305,9 +352,7 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
             row=1,
             col=2,
         )
-
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
-
         if len(common_range) == 2:
             st.caption(
                 f"Highlighted common velocity range: {common_range[0]:.3f} to "
@@ -318,9 +363,10 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
             f"mode = {result['mode']}"
         )
 
-
 # ---------------------------------------------------------------------------
+
 # Page render
+
 # ---------------------------------------------------------------------------
 
 styles.render_page_header(
@@ -351,20 +397,60 @@ if not pairs:
     if st.button("Return to File Loader", key="bandpass_return_loader_no_pair"):
         st.switch_page("pages/02_File_Loader.py")
     st.stop()
-
 if len([entry for pair in pairs for entry in pair]) < 2:
     _clear_stage3_and_downstream()
     st.error("The selected observation does not contain a complete full-integration pair.")
     st.stop()
-
+# FR-19 replay: restore the exact pair and mode saved in pipeline_data before
+# creating the selectbox/radio widgets. Pair index alone is not a stable session
+# parameter because the loaded-file order can differ in a fresh browser session.
+_saved_stage = st.session_state["pipeline_data"].get(PAGE_STAGE_KEY, {})
+_stage_was_completed = PAGE_STAGE_KEY in st.session_state["completed_stages"]
+_saved_mode = _saved_stage.get("mode")
+_saved_filename1 = _saved_stage.get("filename1")
+_saved_filename2 = _saved_stage.get("filename2")
+_stored_display = st.session_state.get("bandpass_display_result")
+_stored_applied_mode = st.session_state.get("bandpass_applied_mode")
+_stored_matches_saved = _display_matches_saved(_saved_stage, _stored_display, _stored_applied_mode)
+if _stage_was_completed and not _stored_matches_saved:
+    if _saved_mode not in MODE_OPTIONS or not _saved_filename1 or not _saved_filename2:
+        _clear_stage3_and_downstream()
+        st.error(
+            "The saved FR-04 session is missing its exact pair or mode, so it cannot be "
+            "replayed deterministically. Return to File Loader and apply bandpass correction again."
+        )
+        if st.button("Return to File Loader", key="bandpass_return_loader_replay_metadata"):
+            st.switch_page("pages/02_File_Loader.py")
+        st.stop()
+    _saved_pair_index = next(
+        (
+            index for index, pair in enumerate(pairs)
+            if str(pair[0].get("filename", "")) == str(_saved_filename1)
+            and str(pair[1].get("filename", "")) == str(_saved_filename2)
+        ),
+        None,
+    )
+    if _saved_pair_index is None:
+        _clear_stage3_and_downstream()
+        st.error(
+            "The saved FR-04 pair is no longer available among the loaded FITS files: "
+            f"{_saved_filename1} + {_saved_filename2}. Reload those files in File Loader before replaying."
+        )
+        if st.button("Return to File Loader", key="bandpass_return_loader_replay_pair"):
+            st.switch_page("pages/02_File_Loader.py")
+        st.stop()
+    st.session_state["bandpass_pair_index"] = _saved_pair_index
+    st.session_state["bandpass_mode"] = _saved_mode
+    st.session_state["bandpass_pair_signature"] = f"{_saved_filename1}::{_saved_filename2}"
+    st.session_state.pop("bandpass_applied_mode", None)
+    st.session_state["_bandpass_replay_expected"] = dict(_saved_stage)
+st.session_state.setdefault("bandpass_mode", MODE_OPTIONS[0])
 if st.session_state.get("bandpass_pair_index", 0) >= len(pairs):
     st.session_state["bandpass_pair_index"] = 0
-
 pair_labels = [
     f"Pair {index + 1}: {pair[0]['filename']} ↔ {pair[1]['filename']}"
     for index, pair in enumerate(pairs)
 ]
-
 st.markdown('<div class="hs-eyebrow">Full-integration pair</div>', unsafe_allow_html=True)
 pair_index = st.selectbox(
     "Full-integration pair",
@@ -375,7 +461,6 @@ pair_index = st.selectbox(
 )
 selected_pair = pairs[pair_index]
 pair_signature = f"{selected_pair[0]['filename']}::{selected_pair[1]['filename']}"
-
 # Auto-select the CLC-derived mode when the detected pair changes, but leave the explicit toggle available for the user.
 if st.session_state.get("bandpass_pair_signature") != pair_signature:
     st.session_state["bandpass_pair_signature"] = pair_signature
@@ -383,9 +468,7 @@ if st.session_state.get("bandpass_pair_signature") != pair_signature:
     if suggested_mode is not None:
         st.session_state["bandpass_mode"] = suggested_mode
     _clear_stage3_and_downstream()
-
 _render_pair_info(selected_pair, pair_index + 1, len(pairs))
-
 st.markdown('<div class="hs-eyebrow">Bandpass mode</div>', unsafe_allow_html=True)
 st.radio(
     "Bandpass mode",
@@ -395,26 +478,38 @@ st.radio(
     label_visibility="collapsed",
     on_change=_on_mode_change,
 )
-
 # Automatically apply the detected/selected mode.
 try:
     current_mode = st.session_state["bandpass_mode"]
     applied_mode = st.session_state.get("bandpass_applied_mode")
-
-    if applied_mode != current_mode:
+    replay_expected = st.session_state.get("_bandpass_replay_expected")
+    if replay_expected is not None:
+        result = build_bandpass_result(current_mode, selected_pair)
+        expected_fingerprint = replay_expected.get("output_fingerprint")
+        actual_fingerprint = _spectrum_fingerprint(result["corrected"])
+        if expected_fingerprint and actual_fingerprint != expected_fingerprint:
+            raise ValueError(
+                "The replayed spectrum does not match the saved FR-04 output fingerprint. "
+                "The input FITS files or correction implementation may have changed."
+            )
+        if not expected_fingerprint:
+            st.warning(
+                "This saved session predates output fingerprints. The exact pair and mode were restored, "
+                "but the previous numeric output cannot be verified against a stored hash."
+            )
+        _commit_result(result, replayed=True)
+        st.session_state.pop("_bandpass_replay_expected", None)
+    elif applied_mode != current_mode:
         result = build_bandpass_result(current_mode, selected_pair)
         _commit_result(result)
-
 except (ValueError, TypeError, KeyError) as exc:
+    st.session_state.pop("_bandpass_replay_expected", None)
     _clear_stage3_and_downstream()
     st.error(f"Bandpass correction failed: {exc}")
-
 stored_result = st.session_state.get("bandpass_display_result")
 applied_mode = st.session_state.get("bandpass_applied_mode")
-
 if stored_result and applied_mode == st.session_state["bandpass_mode"]:
     _render_before_after(stored_result)
-
     if st.button("Continue to Baseline Block Editor →", key="continue_to_baseline"):
         st.switch_page("pages/04_Baseline_Editor.py")
 else:
