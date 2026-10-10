@@ -150,6 +150,7 @@ from typing import Mapping
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from astropy.io import fits
 
 from utils import fits_ingest, session_store, sidebar, styles
@@ -197,6 +198,18 @@ VALIDATION_PENDING_ROW_HEIGHT = 96
 # between the badge and the Quarantine / Continue / Cancel buttons, so badges line up with the OK rows' badges.
 VALIDATION_COL_FILE, VALIDATION_COL_ISSUE, VALIDATION_COL_STATUS = 36, 34, 30
 VALIDATION_FLAGGED_WEIGHTS = [36, 34, 16, 14]
+
+# How the header-fields table (30+ fields per file) is drawn:
+#   "dataframe" -- st.dataframe() with a pandas Styler (the FR-02 wording). Body cells follow the HARTSPEC light/dark
+#                  theme, but Streamlit 1.32 draws the column headers and the File (index) column from its own static
+#                  base theme, so those two stay dark/light with the OS/browser, not with the in-app toggle.
+#   "html"      -- a scrollable HTML table styled like the validation table (HartRAO-blue header, stripes, theme
+#                  tokens, sticky header and File column). Fully themed, but it is NOT st.dataframe(): the tests
+#                  that read at.dataframe[0].value need the snippet in the hand-off notes if this is switched on.
+# TODO: confirm against design -- is "st.dataframe()" in FR-02 a hard requirement, or is "a searchable table" enough?
+HEADER_TABLE_RENDERER = "dataframe"
+HEADER_TABLE_HEIGHT = 460  # px; the table scrolls inside this
+HEADER_TABLE_ROW_HEIGHT = 36
 # Shared inline style for a flagged-row cell: same left padding as the OK rows' cells, content centred vertically.
 FLAGGED_CELL_STYLE = "display:flex; align-items:center; min-height:20px; padding-left:10px; line-height:1.2;"
 
@@ -1287,6 +1300,69 @@ def _render_manual_mapping_card(filenames: list[str]) -> dict:
     return applied
 
 
+def _themed_header_styler(df: pd.DataFrame, theme: Mapping[str, str]):
+    """Pandas Styler giving every body cell the active theme's stripe + text colour (st.dataframe honours these).
+
+    st.dataframe draws its index column from Streamlit's static base theme, which a Styler cannot recolour. So the
+    filename is copied into a normal first "File" column (styled here, bold on a tinted background) and the real
+    index is hidden at render time (``hide_index=True``). The DataFrame's own index is kept as the filename.
+    """
+    display = df.copy()
+    display.index.name = None
+    display.insert(0, "File", display.index)
+
+    def _stripe(column: pd.Series) -> list[str]:
+        return [
+            f"background-color: {theme['bg-panel-alt'] if i % 2 else theme['bg-panel']}; color: {theme['text-body']}"
+            for i in range(len(column))
+        ]
+
+    return (
+        display.style.apply(_stripe, axis=0)
+        .set_properties(
+            subset=["File"],
+            **{"background-color": theme["border-subtle"], "color": theme["text-heading"], "font-weight": "600"},
+        )
+    )
+
+
+def _header_table_html(df: pd.DataFrame, theme: Mapping[str, str]) -> str:
+    """Self-contained HTML for the header-fields table, styled like the validation table.
+
+    Rendered inside an iframe (components.html), so everything is inline and no Markdown parsing is involved --
+    important with 30+ columns x hundreds of files. Header row and the File column are sticky.
+    """
+    font = "'Inter', -apple-system, 'Segoe UI', sans-serif"
+    head = "".join(
+        f'<th class="{"first" if i == 0 else ""}">{html.escape(str(name))}</th>'
+        for i, name in enumerate(["File", *df.columns])
+    )
+    body_rows = []
+    for row_index, (filename, values) in enumerate(df.iterrows()):
+        name = html.escape(str(filename), quote=True)
+        cells = [f'<td class="first" title="{name}">{name}</td>']
+        for value in values:
+            text = "" if pd.isna(value) else str(value)
+            cells.append(f'<td title="{html.escape(text, quote=True)}">{html.escape(text)}</td>')
+        body_rows.append(f'<tr class="{"alt" if row_index % 2 else ""}">{"".join(cells)}</tr>')
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html, body {{ margin:0; padding:0; background:transparent; font-family:{font}; }}
+.wrap {{ height:{HEADER_TABLE_HEIGHT - 2}px; overflow:auto; box-sizing:border-box; background:{theme['bg-panel']};
+         border:1px solid {theme['border-subtle']}; border-radius:{styles.PANEL_RADIUS}px; }}
+table {{ border-collapse:separate; border-spacing:0; min-width:100%; width:max-content; }}
+th {{ position:sticky; top:0; z-index:2; height:{styles.TABLE_HEADER_HEIGHT}px; padding:0 10px; text-align:left;
+      white-space:nowrap; font-size:10px; font-weight:600; background:{theme['table-header-bg']};
+      color:{theme['table-header-text']}; }}
+td {{ height:{HEADER_TABLE_ROW_HEIGHT}px; padding:0 10px; white-space:nowrap; max-width:280px; overflow:hidden;
+      text-overflow:ellipsis; font-size:10.5px; color:{theme['text-body']}; background:{theme['bg-panel']};
+      border-bottom:1px solid {theme['border-subtle']}; }}
+tr.alt td {{ background:{theme['bg-panel-alt']}; }}
+th.first, td.first {{ position:sticky; left:0; z-index:1; }}
+th.first {{ z-index:3; }}
+</style></head><body><div class="wrap"><table><thead><tr>{head}</tr></thead>
+<tbody>{"".join(body_rows)}</tbody></table></div></body></html>"""
+
+
 def _render_header_fields_table() -> None:
     """Real per-file header-fields table (FR-03 handoff step 6).
 
@@ -1402,8 +1478,18 @@ def _render_header_fields_table() -> None:
                 else:
                     df = df[matching_columns]
 
+            # Plain DataFrame kept in session state so tests (and anything else) can read what the table shows,
+            # whichever renderer is active.
             if df is not None:
-                st.dataframe(df, use_container_width=True)
+                st.session_state["file_loader_header_df"] = df
+            else:
+                st.session_state.pop("file_loader_header_df", None)
+            if df is not None:
+                theme = styles.get_theme()
+                if HEADER_TABLE_RENDERER == "html":
+                    components.html(_header_table_html(df, theme), height=HEADER_TABLE_HEIGHT, scrolling=False)
+                else:
+                    st.dataframe(_themed_header_styler(df, theme), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
