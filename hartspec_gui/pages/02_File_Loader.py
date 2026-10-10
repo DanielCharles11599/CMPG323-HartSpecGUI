@@ -187,6 +187,11 @@ _CURATED_COLUMN_NAMES = set(HEADER_FIELDS_COLUMNS)
 # and "Continue" button further down the page on every large load.
 VALIDATION_TABLE_HEIGHT = 260
 
+# Every validation-table row (plain-HTML OK rows AND st.columns() flagged rows) is at least this tall, so the two
+# kinds of row line up. min-height (not height) so content is never clipped.
+# TODO: confirm against design -- build spec / style guide give 28px body rows, but flagged rows hold buttons.
+VALIDATION_ROW_HEIGHT = 46
+
 
 # --------------------------------------------------------------------------
 # Page-local replacements for the two table helpers that were removed from
@@ -220,13 +225,13 @@ def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
     theme = styles.get_theme()
     bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
     cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; '
-        f'color:{theme["text-body"]};">{content}</div>'
+        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; display:flex; '
+        f'align-items:center; color:{theme["text-body"]};">{content}</div>'
         for content, width in cells_html
     )
     st.markdown(
         f"""
-        <div style="display:flex; align-items:center; height:{styles.TABLE_ROW_HEIGHT}px;
+        <div style="display:flex; align-items:center; height:{VALIDATION_ROW_HEIGHT}px; box-sizing:border-box;
                     background-color:{bg}; border-bottom:1px solid {theme['border-subtle']};">
           {cells}
         </div>
@@ -712,6 +717,8 @@ def _render_validation_table() -> None:
     # scrolled past it. Same pattern as 01_Source_Browser.py's own
     # fixed-height, internally-scrolling file list.
     with st.container(height=VALIDATION_TABLE_HEIGHT, border=False):
+        # Marker so page CSS can zero the row gap for this table only (see hs-validation-table-marker).
+        st.markdown('<span class="hs-validation-table-marker"></span>', unsafe_allow_html=True)
         for idx, row in enumerate(display_rows):
             striped = idx % 2 == 1
             theme = styles.get_theme()
@@ -1388,18 +1395,16 @@ def main() -> None:
     st.markdown(
         f"""
         <style>
-        /* Page-local native-widget theming must not leak into the global
-           sidebar session controls. stAppViewContainer excludes stSidebar. */
-        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary,
-        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p,
-        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary span,
-        [data-testid="stAppViewContainer"] .streamlit-expanderHeader,
-        [data-testid="stAppViewContainer"] .streamlit-expanderHeader p {{
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary p,
+        [data-testid="stExpander"] summary span,
+        .streamlit-expanderHeader,
+        .streamlit-expanderHeader p {{
             color: {_theme['text-body']} !important;
         }}
-        [data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"] p,
-        [data-testid="stAppViewContainer"] [data-testid="stTextArea"] textarea,
-        [data-testid="stAppViewContainer"] [data-testid="stTextInput"] input {{
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
         }}
         /* Compact inline action buttons for the validation table (Quarantine
@@ -1437,13 +1442,51 @@ def main() -> None:
         [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
             border-bottom: 1px solid {_theme['border-subtle']};
             padding: 2px 0 2px 10px;
-            align-items: center !important;
+            min-height: {VALIDATION_ROW_HEIGHT}px;
+            box-sizing: border-box;
+            align-items: stretch !important;
         }}
         [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) {{
             background-color: {_theme['bg-panel']};
         }}
         [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
             background-color: {_theme['bg-panel-alt']};
+        }}
+        /* Centre each flagged-row cell vertically. Markdown wraps inline HTML (the status badge) in a <p> with a
+           bottom margin, which pushed the badge above the text and inflated the row; zero it, drop the
+           column's internal gap, and centre column content. */
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) > [data-testid="column"],
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) > [data-testid="column"],
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) > [data-testid="stColumn"] {{
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0) [data-testid="stVerticalBlock"],
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) [data-testid="stVerticalBlock"] {{
+            gap: 0.25rem !important;
+        }}
+        [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker)
+            [data-testid="stMarkdownContainer"] p {{
+            margin: 0 !important;
+        }}
+        /* Validation table: Streamlit puts a 1rem gap between stacked elements. OK rows are plain HTML and
+           looked contiguous, but a flagged/quarantined row is an st.columns() block, so the gap showed up
+           as a hole between the two kinds of row. Zero the gap for this table's own container only. */
+        [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker) {{
+            gap: 0 !important;
+        }}
+        [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker)
+            > .element-container {{
+            margin: 0 !important;
+        }}
+        .element-container:has(.hs-validation-table-marker) {{
+            display: none;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0),
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
+            margin: 0 !important;
         }}
         .element-container:has(.hs-compact-btn-marker) + .element-container button {{
             padding: 2px 10px !important;
@@ -1497,3 +1540,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
