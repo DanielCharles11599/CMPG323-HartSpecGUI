@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import importlib
 import sys
 import types
 from pathlib import Path
@@ -22,9 +21,9 @@ from utils import export_preview_logic as logic  # noqa: E402
 def spectrum():
     """Baseline-flattened spectrum with enough channels for CLC Savitzky-Golay smoothing."""
     v = np.linspace(-5.0, 5.0, 21)
-    l = 0.08 * np.sin(v * 1.7) + 1.5 * np.exp(-0.5 * (v / 0.35) ** 2)
+    lcp = 0.08 * np.sin(v * 1.7) + 1.5 * np.exp(-0.5 * (v / 0.35) ** 2)
     r = 0.06 * np.cos(v * 1.3) + 1.1 * np.exp(-0.5 * ((v - 0.1) / 0.4) ** 2)
-    return {"Vlsr": v, "LCP": l, "RCP": r}
+    return {"Vlsr": v, "LCP": lcp, "RCP": r}
 
 
 @pytest.fixture
@@ -115,8 +114,6 @@ def test_stokes_i_matches_supplied_pols_add_pols(spectrum, blocks):
     reference = {"LCP": result.lcp_jy.copy(), "RCP": result.rcp_jy.copy()}
     clc_add_pols(reference)
     np.testing.assert_allclose(result.stokes_i_jy, reference["I"], rtol=0, atol=1e-12)
-
-
 
 
 def test_final_rms_and_peak_match_supplied_rms_stn_numeric_result(spectrum, blocks):

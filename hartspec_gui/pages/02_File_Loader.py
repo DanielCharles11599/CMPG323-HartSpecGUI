@@ -1388,16 +1388,18 @@ def main() -> None:
     st.markdown(
         f"""
         <style>
-        [data-testid="stExpander"] summary,
-        [data-testid="stExpander"] summary p,
-        [data-testid="stExpander"] summary span,
-        .streamlit-expanderHeader,
-        .streamlit-expanderHeader p {{
+        /* Page-local native-widget theming must not leak into the global
+           sidebar session controls. stAppViewContainer excludes stSidebar. */
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary,
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p,
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary span,
+        [data-testid="stAppViewContainer"] .streamlit-expanderHeader,
+        [data-testid="stAppViewContainer"] .streamlit-expanderHeader p {{
             color: {_theme['text-body']} !important;
         }}
-        [data-testid="stWidgetLabel"] p,
-        [data-testid="stTextArea"] textarea,
-        [data-testid="stTextInput"] input {{
+        [data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"] p,
+        [data-testid="stAppViewContainer"] [data-testid="stTextArea"] textarea,
+        [data-testid="stAppViewContainer"] [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
         }}
         /* Compact inline action buttons for the validation table (Quarantine

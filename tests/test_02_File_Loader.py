@@ -40,9 +40,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
+
 PAGE_PATH = str(Path(__file__).resolve().parents[1] / "hartspec_gui" / "pages" / "02_File_Loader.py")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_page02_from_global_sidebar(tmp_path, monkeypatch):
+    """Keep Page 02 AppTests focused on File Loader behavior.
+
+    The production page always renders the shared session/checkpoint sidebar.
+    These tests exercise File Loader widgets across multiple reruns, so letting
+    the unrelated checkpoint chooser participate makes them depend on global
+    widget-option state and can raise ``ValueError: <token> is not in list``
+    before the Page 02 action under test is evaluated. Sidebar/checkpoint
+    behavior has its own dedicated regression tests; stub only its renderer
+    here while retaining the real session/checkpoint functions Page 02 calls.
+    """
+    from utils import session_store, sidebar
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", sessions_dir)
+    monkeypatch.setattr(sidebar, "render_sidebar", lambda current_stage: None)
+    return sessions_dir
 
 
 def _app_for(*filenames: str) -> AppTest:
@@ -118,7 +140,17 @@ def test_page01_selection_is_picked_up_by_page02(fits_archive):
     }
     at.run(timeout=30)
     assert not at.exception
-    assert at.session_state["file_loader_load_done"] is True
+    ingest_result = at.session_state["file_loader_ingest_result::good_dateobs.fits"]
+    try:
+        verify_result = at.session_state["file_loader_verify_result::good_dateobs.fits"]
+    except KeyError:
+        verify_result = None
+    assert at.session_state["file_loader_load_done"] is True, (
+        f"DATE-OBS handoff rejected: ingest_ok={ingest_result.ok}, "
+        f"convention={ingest_result.convention}, load_errors={ingest_result.load_errors}, "
+        f"verify_ok={getattr(verify_result, 'ok', None)}, "
+        f"verify_issues={getattr(verify_result, 'issues', None)}"
+    )
     markdown_html = _markdown_html(at)
     assert "good_dateobs.fits" in markdown_html
     ingest_result = at.session_state["file_loader_ingest_result::good_dateobs.fits"]
@@ -147,8 +179,25 @@ def test_page01_multiple_selected_files_all_processed(fits_archive):
     # note in 02_File_Loader.py's module docstring for why "Loaded X of Y"
     # was replaced.
     assert "3 of 3 files processed" in markdown_html
-    assert "2 Valid (Loaded)" in markdown_html
-    assert "1 Flagged" in markdown_html
+    if "2 Valid (Loaded)" not in markdown_html or "1 Flagged" not in markdown_html:
+        details = []
+        for filename in ("good_date.fits", "good_dateobs.fits", "unrecognized.fits"):
+            try:
+                ingest = at.session_state[f"file_loader_ingest_result::{filename}"]
+            except KeyError:
+                ingest = None
+            try:
+                verify = at.session_state[f"file_loader_verify_result::{filename}"]
+            except KeyError:
+                verify = None
+            details.append(
+                f"{filename}: ingest_ok={getattr(ingest, 'ok', None)}, "
+                f"convention={getattr(ingest, 'convention', None)}, "
+                f"load_errors={getattr(ingest, 'load_errors', None)}, "
+                f"verify_ok={getattr(verify, 'ok', None)}, "
+                f"verify_issues={getattr(verify, 'issues', None)}"
+            )
+        pytest.fail("Unexpected validation breakdown: " + " | ".join(details))
 
 
 def test_standalone_override_still_works_without_page01(fits_archive):
@@ -186,8 +235,17 @@ def test_dateobs_convention_file_falls_back_and_loads(fits_archive):
     at = _app_for("good_dateobs.fits")
     at.run(timeout=30)
     assert not at.exception
-    assert at.session_state["file_loader_load_done"] is True
     ingest_result = at.session_state["file_loader_ingest_result::good_dateobs.fits"]
+    try:
+        verify_result = at.session_state["file_loader_verify_result::good_dateobs.fits"]
+    except KeyError:
+        verify_result = None
+    assert at.session_state["file_loader_load_done"] is True, (
+        f"DATE-OBS file rejected: ingest_ok={ingest_result.ok}, "
+        f"convention={ingest_result.convention}, load_errors={ingest_result.load_errors}, "
+        f"verify_ok={getattr(verify_result, 'ok', None)}, "
+        f"verify_issues={getattr(verify_result, 'issues', None)}"
+    )
     assert ingest_result.ok
     assert ingest_result.convention == "date-obs"
 
@@ -199,7 +257,7 @@ def test_unrecognized_file_fails_gracefully_without_exception(fits_archive, capl
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is False
     # The failure summary now goes to the server log, not a browser error banner.
-    assert "flagged as unreadable" in caplog.text
+    assert "flagged during load/validation" in caplog.text
     error_texts = "\n".join(e.value for e in at.error)
     assert "Could not load" not in error_texts
 
@@ -229,7 +287,7 @@ def test_partial_failure_across_multiple_files_still_marks_complete(fits_archive
     assert not at.exception
     assert at.session_state["file_loader_load_done"] is True
     assert "file_loader" in at.session_state["completed_stages"]
-    assert "1 of 2 file(s) flagged as unreadable" in caplog.text
+    assert "1 of 2 file(s) flagged during load/validation" in caplog.text
 
 
 def test_successful_load_writes_audit_log_entry(fits_archive):
@@ -310,8 +368,8 @@ def test_quarantine_button_stages_pending_confirmation_not_immediate(fits_archiv
     except KeyError:
         quarantined_now = set()
     assert "unrecognized.fits" not in quarantined_now
-    markdown_html = _markdown_html(at)
-    assert "moves the file out of the active archive" in markdown_html
+    caption_text = "\n".join(c.value for c in at.caption if c.value)
+    assert "moves the file out of the active archive" in caption_text
     assert at.button(key="confirm_quarantine_unrecognized.fits").label == "Continue"
     assert at.button(key="cancel_quarantine_unrecognized.fits").label == "Cancel"
 

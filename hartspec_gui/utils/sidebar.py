@@ -147,7 +147,6 @@ def render_sidebar(current_stage: int) -> None:
             st.rerun()
 
 
-
 def _checkpoint_label(payload: dict) -> str:
     """Make explicit recovery choices distinguishable without exposing token values."""
     source = payload.get("pipeline_data", {}).get("01_source_browser", {})

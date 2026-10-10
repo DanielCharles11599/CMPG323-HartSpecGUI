@@ -1,8 +1,8 @@
 # test_file_validation_handoff.py — FR-02/03: eligibility, invalidation and exact-pair replay.
 """Execute production handoff/state code and page orchestration headlessly.
 
-Streamlit/CLC/Astropy I/O interfaces are substituted. The uploaded bandpass helper runs unchanged. Quarantine uses the actual
-wrapper and temporary files; spectra are marker arrays, not science fixtures.
+Streamlit/CLC/Astropy I/O interfaces are substituted. The uploaded bandpass helper runs unchanged.
+Quarantine uses the actual wrapper and temporary files; spectra are marker arrays, not science fixtures.
 """
 from __future__ import annotations
 
@@ -583,6 +583,7 @@ def test_failed_quarantine_does_not_claim_move_or_invalidate(app, monkeypatch):
     publish(app)
     seed_derived(app)
     old_id = app.state["session_id"]
+
     def fail(name):
         raise app.ingest.QuarantineError("Permission denied (fixture)")
     monkeypatch.setattr(app.ingest, "move_to_quarantine", fail)
@@ -624,6 +625,7 @@ def test_loaded_session_restores_quarantine_exclusion_without_reloading_moved_pa
     saved = app.store.save_session()
     app.store.load_session(saved, navigate=False)
     calls = []
+
     def load(path):
         calls.append(path.name)
         return app.ingest.IngestResult(path.name, path, True, "date", spectrum(2))
@@ -637,8 +639,15 @@ def test_loaded_session_restores_quarantine_exclusion_without_reloading_moved_pa
     assert app.state["pipeline_data"]["file_loader"]["quarantined_files"] == ["a.fits"]
 
 
-@pytest.mark.parametrize("saved", [{}, {"file_loader": None}, {"file_loader": {"quarantined_files": "bad"}},
-                                  {"file_loader": {"quarantined_files": [None]}}])
+@pytest.mark.parametrize(
+    "saved",
+    [
+        {},
+        {"file_loader": None},
+        {"file_loader": {"quarantined_files": "bad"}},
+        {"file_loader": {"quarantined_files": [None]}},
+    ],
+)
 def test_malformed_saved_exclusions_do_not_raise_or_move_files(app, saved):
     app.state["pipeline_data"] = saved
     app.logic.restore_saved_quarantine(app.state)
@@ -654,15 +663,22 @@ def test_current_runtime_exclusions_take_precedence_over_saved_list(app):
 
 def install_metadata(app):
     """Fake only FITS header reading; pairing logic runs from the real page."""
+
     def open_headers(path):
         sp_point = 1 if path.name.startswith("pointing") else 0
-        headers = [types.SimpleNamespace(header={"SPPOINT": sp_point}), types.SimpleNamespace(header={}),
-                   types.SimpleNamespace(header={"POSITION": "ON"})]
+        headers = [
+            types.SimpleNamespace(header={"SPPOINT": sp_point}),
+            types.SimpleNamespace(header={}),
+            types.SimpleNamespace(header={"POSITION": "ON"}),
+        ]
+
         class Headers(list):
             def __enter__(self):
                 return self
+
             def __exit__(self, *args):
                 return False
+
         return Headers(headers)
     app.fits.open = open_headers
 
@@ -796,6 +812,7 @@ def test_bulk_quarantine_partial_failure_retains_failed_file_and_reports_failure
         app.state[f"file_loader_verify_result::{name}"].ok = False
     publish(app)
     original_move = app.ingest.move_to_quarantine
+
     def move(name):
         if name == "bad2.fits":
             raise app.ingest.QuarantineError("Fixture permission failure")

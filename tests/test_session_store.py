@@ -52,7 +52,7 @@ def test_loading_the_top_listed_session_never_wipes_state_via_a_sidecar(tmp_path
            {"session_id": "abcd1234", "pipeline_data": {"03_bandpass_correction": {"mode": "Frequency Switch"}},
             "completed_stages": ["03_bandpass_correction"], "audit_log": []}, now - 100)
     _write(tmp_path / "abcd1234.baseline_editor.json", {"session_id": "abcd1234", "blocks": []}, now)
-    session_store.load_session(session_store.list_sessions()[0])
+    session_store.load_session(session_store.list_sessions()[0], navigate=False)
     assert state["completed_stages"] == {"03_bandpass_correction"}
     assert state["pipeline_data"]["03_bandpass_correction"]["mode"] == "Frequency Switch"
 

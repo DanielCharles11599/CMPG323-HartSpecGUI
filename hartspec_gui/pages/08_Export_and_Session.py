@@ -203,20 +203,39 @@ csv_bytes = export_logic.build_export_csv(
 def _graph_specs() -> list[export_logic.GraphSpec]:
     """The graphs the PDF contains: the ones on Pages 06/07 (no numbers tables, no metadata)."""
     specs = [
-        export_logic.GraphSpec("LCP", f"Intensity ({unit})", [export_logic.GraphTrace("LCP", vlsr, lcp,
-                                                                                     styles.LCP_COLOR)]),
-        export_logic.GraphSpec("RCP", f"Intensity ({unit})", [export_logic.GraphTrace("RCP", vlsr, rcp,
-                                                                                     styles.RCP_COLOR)]),
-        export_logic.GraphSpec("Average of each LCP/RCP pair — (LCP + RCP) / 2", f"Intensity ({unit})",
-                               [export_logic.GraphTrace("(LCP + RCP) / 2", vlsr, average, "#587BBD")],
-                               hline=overall_mean, hline_label="Overall average"),
+        export_logic.GraphSpec(
+            "LCP",
+            f"Intensity ({unit})",
+            [export_logic.GraphTrace("LCP", vlsr, lcp, styles.LCP_COLOR)],
+        ),
+        export_logic.GraphSpec(
+            "RCP",
+            f"Intensity ({unit})",
+            [export_logic.GraphTrace("RCP", vlsr, rcp, styles.RCP_COLOR)],
+        ),
+        export_logic.GraphSpec(
+            "Average of each LCP/RCP pair — (LCP + RCP) / 2",
+            f"Intensity ({unit})",
+            [export_logic.GraphTrace("(LCP + RCP) / 2", vlsr, average, "#587BBD")],
+            hline=overall_mean,
+            hline_label="Overall average",
+        ),
     ]
     if pointing_factor is not None:
-        specs.append(export_logic.GraphSpec(
-            "(LCP + RCP) × Pointing Correction", f"Intensity ({unit})",
-            [export_logic.GraphTrace("(LCP + RCP) × PC", vlsr, fitting_inputs.pointing_product(lcp, rcp,
-                                                                                               pointing_factor),
-                                     "#587BBD")]))
+        specs.append(
+            export_logic.GraphSpec(
+                "(LCP + RCP) × Pointing Correction",
+                f"Intensity ({unit})",
+                [
+                    export_logic.GraphTrace(
+                        "(LCP + RCP) × PC",
+                        vlsr,
+                        fitting_inputs.pointing_product(lcp, rcp, pointing_factor),
+                        "#587BBD",
+                    )
+                ],
+            )
+        )
     if graph3 is not None:
         graph3_unit = fitting_inputs.GRAPH3_UNIT
         specs.append(export_logic.GraphSpec(
@@ -237,8 +256,10 @@ if not export_blocked:
         pdf_bytes = _cached_bytes(
             "pdf", [vlsr, lcp, rcp, graph3 if graph3 is not None else "", fit_curve if fit_curve is not None else "",
                     pointing_factor, resolved.source_key, unit, metadata["source_name"]],
-            lambda: export_logic.build_graphs_pdf(_graph_specs(), "HARTSPEC — " + (metadata["source_name"] or
-                                                                                  "spectrum")),
+            lambda: export_logic.build_graphs_pdf(
+                _graph_specs(),
+                "HARTSPEC — " + (metadata["source_name"] or "spectrum"),
+            ),
         )
     except ImportError:
         pdf_error = "PDF export needs the `matplotlib` package, which is not in requirements.txt yet."

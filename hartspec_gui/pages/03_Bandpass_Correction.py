@@ -588,11 +588,13 @@ _theme = styles.get_theme()
 st.markdown(
     f"""
     <style>
-    [data-testid="stExpander"] summary,
-    [data-testid="stExpander"] summary p,
-    [data-testid="stWidgetLabel"] p,
-    [data-testid="stAlert"] p,
-    [data-testid="stAlert"] span {{
+    /* Keep Page 03 widget theming inside the main content. Without this
+       scope it overrides Load Session / Recover checkpoint in the sidebar. */
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary,
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p,
+    [data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"] p,
+    [data-testid="stAppViewContainer"] [data-testid="stAlert"] p,
+    [data-testid="stAppViewContainer"] [data-testid="stAlert"] span {{
         color: {_theme['text-body']} !important;
     }}
     </style>

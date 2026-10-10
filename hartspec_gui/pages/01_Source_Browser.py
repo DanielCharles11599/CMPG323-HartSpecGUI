@@ -145,24 +145,26 @@ st.markdown(
        beat. border-default is the Style Guide's token for card/input
        borders generally, which an expander panel matches.
     */
-    [data-testid="stExpander"] {{
+    /* These overrides belong to Page 01's main content only. Do not let
+       them recolor the shared sidebar's session expanders/widgets. */
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] {{
         border-color: {_theme['border-default']} !important;
     }}
-    [data-testid="stExpander"] summary,
-    [data-testid="stExpander"] summary p,
-    [data-testid="stExpander"] summary span,
-    .streamlit-expanderHeader,
-    .streamlit-expanderHeader p {{
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary,
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p,
+    [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary span,
+    [data-testid="stAppViewContainer"] .streamlit-expanderHeader,
+    [data-testid="stAppViewContainer"] .streamlit-expanderHeader p {{
         color: {_theme['text-body']} !important;
     }}
-    [data-testid="stExpanderToggleIcon"] {{
+    [data-testid="stAppViewContainer"] [data-testid="stExpanderToggleIcon"] {{
         fill: {_theme['text-body']} !important;
         color: {_theme['text-body']} !important;
     }}
-    [data-testid="stTextInput"] input {{
+    [data-testid="stAppViewContainer"] [data-testid="stTextInput"] input {{
         color: {_theme['text-body']} !important;
     }}
-    [data-testid="stTextInput"] input::placeholder {{
+    [data-testid="stAppViewContainer"] [data-testid="stTextInput"] input::placeholder {{
         color: {_theme['text-faint']} !important;
         opacity: 1;
     }}
