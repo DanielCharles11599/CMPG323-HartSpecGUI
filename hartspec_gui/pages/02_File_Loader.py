@@ -193,6 +193,12 @@ VALIDATION_TABLE_HEIGHT = 260
 VALIDATION_ROW_HEIGHT = 46
 # Taller minimum for the one row currently asking "Quarantine this file?" (wrapped text + stacked buttons).
 VALIDATION_PENDING_ROW_HEIGHT = 96
+# Validation-table column widths (% of the table). File | Issue | Status. In a flagged row the Status share is split
+# between the badge and the Quarantine / Continue / Cancel buttons, so badges line up with the OK rows' badges.
+VALIDATION_COL_FILE, VALIDATION_COL_ISSUE, VALIDATION_COL_STATUS = 36, 34, 30
+VALIDATION_FLAGGED_WEIGHTS = [36, 34, 16, 14]
+# Shared inline style for a flagged-row cell: same left padding as the OK rows' cells, content centred vertically.
+FLAGGED_CELL_STYLE = "display:flex; align-items:center; min-height:20px; padding-left:10px; line-height:1.2;"
 
 
 # --------------------------------------------------------------------------
@@ -723,7 +729,10 @@ def _render_validation_table() -> None:
     if show_only_flagged:
         st.caption(f"Showing {len(display_rows)} of {len(rows)} file(s).")
 
-    _render_table_header([("File", "45.5%"), ("Issue", "35.1%"), ("Status", "19.4%")])
+    _render_table_header([
+        ("File", f"{VALIDATION_COL_FILE}%"), ("Issue", f"{VALIDATION_COL_ISSUE}%"),
+        ("Status", f"{VALIDATION_COL_STATUS}%"),
+    ])
 
     # Fixed-height, scrollable body -- previously an unbounded st.container,
     # so a large batch (30+ files) pushed the header-fields table and the
@@ -759,10 +768,11 @@ def _render_validation_table() -> None:
                 status_label = "QUARANTINED" if is_quarantined else "FLAGGED"
                 stripe_class = f"hs-flagged-row-{1 if striped else 0}"
 
-                col_file, col_issue, col_status, col_action = st.columns([455, 300, 140, 106])
+                col_file, col_issue, col_status, col_action = st.columns(VALIDATION_FLAGGED_WEIGHTS)
                 with col_file:
                     st.markdown(
-                        f'<div style="font-size:10.5px; color:{theme["text-body"]};">{row["file"]}</div>',
+                        f'<div style="{FLAGGED_CELL_STYLE} font-size:10.5px; color:{theme["text-body"]};">'
+                        f'{row["file"]}</div>',
                         unsafe_allow_html=True,
                     )
                 with col_issue:
@@ -776,8 +786,8 @@ def _render_validation_table() -> None:
                     tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
                     if not is_pending:  # while confirming, only the confirmation message is shown
                         st.markdown(
-                            f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
-                            f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
+                            f'<div style="{FLAGGED_CELL_STYLE} font-size:10.5px; color:{theme["text-body"]}; '
+                            f'white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
                             f'{row["issue"]}</div>',
                             unsafe_allow_html=True,
                         )
@@ -791,17 +801,21 @@ def _render_validation_table() -> None:
                         # move_to_quarantine() call above. Rendered inside
                         # the Issue column so it stays within this row's
                         # striped background.
-                        st.caption(
-                            f"Quarantine {row['file']}? This moves the file out of the active archive into "
-                            "Flagged/ immediately — undoing it means manually moving the file back on disk."
+                        st.markdown(
+                            f'<div style="padding-left:10px; font-size:11px; line-height:1.4; '
+                            f'color:{theme["text-muted"]};">Quarantine {html.escape(row["file"])}? This moves the '
+                            "file out of the active archive into Flagged/ immediately — undoing it means manually "
+                            "moving the file back on disk.</div>",
+                            unsafe_allow_html=True,
                         )
                 with col_status:
                     # The row marker rides in the same markdown call as the
                     # badge so it adds no extra element (and no extra gap).
                     st.markdown(
-                        f'<span class="{stripe_class}"></span>'
+                        f'<div style="{FLAGGED_CELL_STYLE}"><span class="{stripe_class}"></span>'
                         + ('<span class="hs-flagged-pending"></span>' if is_pending else "")
-                        + styles.render_badge(status_label, "error"),
+                        + styles.render_badge(status_label, "error")
+                        + "</div>",
                         unsafe_allow_html=True,
                     )
                 with col_action:
@@ -839,7 +853,11 @@ def _render_validation_table() -> None:
                                 st.rerun()
             else:
                 badge = styles.render_badge("OK", "ok")
-                ok_buffer.append(([(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")], striped))
+                ok_buffer.append((
+                    [(row["file"], f"{VALIDATION_COL_FILE}%"), (row["issue"], f"{VALIDATION_COL_ISSUE}%"),
+                     (badge, f"{VALIDATION_COL_STATUS}%")],
+                    striped,
+                ))
         _render_table_rows(ok_buffer)
 
 
@@ -1459,7 +1477,8 @@ def main() -> None:
         [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-0),
         [data-testid="stHorizontalBlock"]:has(.hs-flagged-row-1) {{
             border-bottom: 1px solid {_theme['border-subtle']};
-            padding: 2px 0 2px 10px;
+            padding: 2px 24px 2px 0;
+            gap: 0 !important;
             min-height: {VALIDATION_ROW_HEIGHT}px;
             box-sizing: border-box;
             align-items: stretch !important;
@@ -1576,3 +1595,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
