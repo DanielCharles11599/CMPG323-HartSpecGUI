@@ -191,6 +191,8 @@ VALIDATION_TABLE_HEIGHT = 260
 # kinds of row line up. min-height (not height) so content is never clipped.
 # TODO: confirm against design -- build spec / style guide give 28px body rows, but flagged rows hold buttons.
 VALIDATION_ROW_HEIGHT = 46
+# Taller minimum for the one row currently asking "Quarantine this file?" (wrapped text + stacked buttons).
+VALIDATION_PENDING_ROW_HEIGHT = 96
 
 
 # --------------------------------------------------------------------------
@@ -221,23 +223,35 @@ def _render_table_header(columns: list[tuple[str, str]]) -> None:
     )
 
 
-def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
+def _render_table_rows(rows: list[tuple[list[tuple[str, str]], bool]]) -> None:
+    """Render a run of consecutive plain-HTML table rows as ONE markdown element.
+
+    One element per run (not per row) keeps hundreds of OK rows fast and removes the per-element wrapper spacing that
+    Streamlit adds around each st.markdown() call. Every row has the same fixed height and every cell is a flex
+    container, so content is vertically centred regardless of what the cell holds (text or a badge).
+    """
+    if not rows:
+        return
     theme = styles.get_theme()
-    bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
-    cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; display:flex; '
-        f'align-items:center; color:{theme["text-body"]};">{content}</div>'
-        for content, width in cells_html
-    )
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; height:{VALIDATION_ROW_HEIGHT}px; box-sizing:border-box;
-                    background-color:{bg}; border-bottom:1px solid {theme['border-subtle']};">
-          {cells}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    html_rows = []
+    for cells_html, striped in rows:
+        bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
+        cells = "".join(
+            f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; display:flex; '
+            f'align-items:center; margin:0; line-height:1.2; color:{theme["text-body"]};">{content}</div>'
+            for content, width in cells_html
+        )
+        html_rows.append(
+            f'<div style="display:flex; align-items:center; height:{VALIDATION_ROW_HEIGHT}px; '
+            f'box-sizing:border-box; margin:0; padding:0; background-color:{bg}; '
+            f'border-bottom:1px solid {theme["border-subtle"]};">{cells}</div>'
+        )
+    st.markdown("".join(html_rows), unsafe_allow_html=True)
+
+
+def _render_table_row(cells_html: list[tuple[str, str]], striped: bool) -> None:
+    """Single-row convenience wrapper around `_render_table_rows`."""
+    _render_table_rows([(cells_html, striped)])
 
 
 def _render_status_breakdown(ok_count: int, flagged_count: int) -> None:
@@ -719,11 +733,14 @@ def _render_validation_table() -> None:
     with st.container(height=VALIDATION_TABLE_HEIGHT, border=False):
         # Marker so page CSS can zero the row gap for this table only (see hs-validation-table-marker).
         st.markdown('<span class="hs-validation-table-marker"></span>', unsafe_allow_html=True)
+        ok_buffer: list[tuple[list[tuple[str, str]], bool]] = []
         for idx, row in enumerate(display_rows):
             striped = idx % 2 == 1
             theme = styles.get_theme()
 
             if row["status"] == "error":
+                _render_table_rows(ok_buffer)  # flush the run of OK rows above this flagged row
+                ok_buffer = []
                 # Flagged rows need real Streamlit widgets (the Quarantine
                 # buttons), so they can't be the static HTML row OK rows are.
                 # They used to be wrapped in st.container(border=True), but
@@ -757,12 +774,13 @@ def _render_validation_table() -> None:
                     # error message can't break the attribute.
                     issue_parts = [part.strip() for part in row["issue"].split(";") if part.strip()]
                     tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
-                    st.markdown(
-                        f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
-                        f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
-                        f'{row["issue"]}</div>',
-                        unsafe_allow_html=True,
-                    )
+                    if not is_pending:  # while confirming, only the confirmation message is shown
+                        st.markdown(
+                            f'<div style="font-size:10.5px; color:{theme["text-body"]}; white-space:nowrap; '
+                            f'overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
+                            f'{row["issue"]}</div>',
+                            unsafe_allow_html=True,
+                        )
                     if is_pending:
                         # Confirmation copy updated for step 5: this now
                         # describes a real, irreversible-from-the-UI action
@@ -781,7 +799,9 @@ def _render_validation_table() -> None:
                     # The row marker rides in the same markdown call as the
                     # badge so it adds no extra element (and no extra gap).
                     st.markdown(
-                        f'<span class="{stripe_class}"></span>' + styles.render_badge(status_label, "error"),
+                        f'<span class="{stripe_class}"></span>'
+                        + ('<span class="hs-flagged-pending"></span>' if is_pending else "")
+                        + styles.render_badge(status_label, "error"),
                         unsafe_allow_html=True,
                     )
                 with col_action:
@@ -819,10 +839,8 @@ def _render_validation_table() -> None:
                                 st.rerun()
             else:
                 badge = styles.render_badge("OK", "ok")
-                _render_table_row(
-                    [(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")],
-                    striped=striped,
-                )
+                ok_buffer.append(([(row["file"], "45.5%"), (row["issue"], "35.1%"), (badge, "19.4%")], striped))
+        _render_table_rows(ok_buffer)
 
 
 def _read_display_header_fields_uncached(path) -> dict[str, str]:
@@ -1471,6 +1489,24 @@ def main() -> None:
             [data-testid="stMarkdownContainer"] p {{
             margin: 0 !important;
         }}
+        /* Row being confirmed: the confirmation text wraps and the Continue/Cancel buttons stack, so it needs more
+           room than a normal row (it was squished at the normal height). */
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-pending) {{
+            min-height: {VALIDATION_PENDING_ROW_HEIGHT}px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+        }}
+        /* Remove every spacing source around the validation table's elements (wrapper margins/padding). */
+        [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker)
+            > .element-container {{
+            padding: 0 !important;
+            min-height: 0 !important;
+        }}
+        [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker)
+            [data-testid="stMarkdownContainer"] {{
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
         /* Validation table: Streamlit puts a 1rem gap between stacked elements. OK rows are plain HTML and
            looked contiguous, but a flagged/quarantined row is an st.columns() block, so the gap showed up
            as a hole between the two kinds of row. Zero the gap for this table's own container only. */
@@ -1540,4 +1576,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
