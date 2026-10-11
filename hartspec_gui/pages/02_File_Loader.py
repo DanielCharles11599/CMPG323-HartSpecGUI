@@ -1538,16 +1538,16 @@ def main() -> None:
     st.markdown(
         f"""
         <style>
-        [data-testid="stExpander"] summary,
-        [data-testid="stExpander"] summary p,
-        [data-testid="stExpander"] summary span,
-        .streamlit-expanderHeader,
-        .streamlit-expanderHeader p {{
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary,
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p,
+        [data-testid="stAppViewContainer"] [data-testid="stExpander"] summary span,
+        [data-testid="stAppViewContainer"] .streamlit-expanderHeader,
+        [data-testid="stAppViewContainer"] .streamlit-expanderHeader p {{
             color: {_theme['text-body']} !important;
         }}
-        [data-testid="stWidgetLabel"] p,
-        [data-testid="stTextArea"] textarea,
-        [data-testid="stTextInput"] input {{
+        [data-testid="stAppViewContainer"] [data-testid="stWidgetLabel"] p,
+        [data-testid="stAppViewContainer"] [data-testid="stTextArea"] textarea,
+        [data-testid="stAppViewContainer"] [data-testid="stTextInput"] input {{
             color: {_theme['text-body']} !important;
         }}
         /* Compact inline action buttons for the validation table (Quarantine
@@ -1575,7 +1575,7 @@ def main() -> None:
             opacity: 1 !important;
             transition: none !important;
         }}
-        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0, 1}
+        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0,1}
            marker) get the same background stripe, bottom border and left
            padding as the plain-HTML OK rows (_render_table_row), using the
            same theme tokens -- so every row in the validation table looks
@@ -1639,38 +1639,38 @@ def main() -> None:
         /* Native inputs (field search, the manual-mapping selectboxes, the dev-override text area) otherwise fall back
            to Streamlit's static base theme -- black in BOTH of the app's themes. Same fix and reason as the expander
            and label rules above: force the theme tokens, !important because BaseWeb's own CSS is more specific. */
-        [data-baseweb="input"],
-        [data-baseweb="textarea"],
-        [data-testid="stSelectbox"] [data-baseweb="select"] > div {{
+        [data-testid="stAppViewContainer"] [data-baseweb="input"],
+        [data-testid="stAppViewContainer"] [data-baseweb="textarea"],
+        [data-testid="stAppViewContainer"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {{
             background-color: {_theme['bg-panel']} !important;
             border: 1px solid {_theme['border-default']} !important;
             border-radius: {styles.BUTTON_RADIUS}px !important;
             color: {_theme['text-body']} !important;
         }}
-        [data-baseweb="base-input"],
-        [data-baseweb="input"] input,
-        [data-baseweb="textarea"] textarea {{
+        [data-testid="stAppViewContainer"] [data-baseweb="base-input"],
+        [data-testid="stAppViewContainer"] [data-baseweb="input"] input,
+        [data-testid="stAppViewContainer"] [data-baseweb="textarea"] textarea {{
             background-color: transparent !important;
             color: {_theme['text-body']} !important;
             -webkit-text-fill-color: {_theme['text-body']} !important;
             caret-color: {_theme['text-body']} !important;
         }}
-        [data-baseweb="input"] input::placeholder,
-        [data-baseweb="textarea"] textarea::placeholder {{
+        [data-testid="stAppViewContainer"] [data-baseweb="input"] input::placeholder,
+        [data-testid="stAppViewContainer"] [data-baseweb="textarea"] textarea::placeholder {{
             color: {_theme['text-faint']} !important;
             -webkit-text-fill-color: {_theme['text-faint']} !important;
             opacity: 1;
         }}
-        [data-baseweb="input"]:focus-within,
-        [data-baseweb="textarea"]:focus-within,
-        [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within {{
+        [data-testid="stAppViewContainer"] [data-baseweb="input"]:focus-within,
+        [data-testid="stAppViewContainer"] [data-baseweb="textarea"]:focus-within,
+        [data-testid="stAppViewContainer"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within {{
             border-color: {_theme['accent']} !important;
         }}
-        [data-testid="stSelectbox"] [data-baseweb="select"] div,
-        [data-testid="stSelectbox"] [data-baseweb="select"] span {{
+        [data-testid="stAppViewContainer"] [data-testid="stSelectbox"] [data-baseweb="select"] div,
+        [data-testid="stAppViewContainer"] [data-testid="stSelectbox"] [data-baseweb="select"] span {{
             color: {_theme['text-body']} !important;
         }}
-        [data-testid="stSelectbox"] [data-baseweb="select"] svg {{
+        [data-testid="stAppViewContainer"] [data-testid="stSelectbox"] [data-baseweb="select"] svg {{
             fill: {_theme['text-muted']} !important;
         }}
         /* The open dropdown list is rendered in a popover outside the page container. */
@@ -1691,12 +1691,12 @@ def main() -> None:
         [data-baseweb="popover"] li[aria-selected="true"] * {{
             background-color: {_theme['bg-panel-alt']} !important;
         }}
-        [data-testid="stForm"] {{
+        [data-testid="stAppViewContainer"] [data-testid="stForm"] {{
             border-color: {_theme['border-default']} !important;
             border-radius: {styles.PANEL_RADIUS}px !important;
         }}
-        [data-testid="stCheckbox"] label p,
-        [data-testid="stCheckbox"] label span {{
+        [data-testid="stAppViewContainer"] [data-testid="stCheckbox"] label p,
+        [data-testid="stAppViewContainer"] [data-testid="stCheckbox"] label span {{
             color: {_theme['text-body']} !important;
         }}
         /* Validation table: Streamlit puts a 1rem gap between stacked elements. OK rows are plain HTML and
@@ -1768,3 +1768,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
