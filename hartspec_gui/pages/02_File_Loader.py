@@ -1208,6 +1208,25 @@ def _read_display_header_fields_manual(path, mapping: dict) -> dict[str, str]:
 # old per-file dict-of-dicts at "file_loader_manual_mapping".
 # --------------------------------------------------------------------------
 
+_MAPPING_NONE_OPTION = "\u2014 none \u2014"
+
+
+def _reset_manual_mapping() -> None:
+    """Button callback: revert the manual mapping to the defaults (the same fields Auto mode uses).
+
+    Runs as an on_click callback, i.e. before the next rerun builds the widgets, which is the only moment a widget's
+    session_state key may be touched. The picker keys are removed rather than assigned: the card then re-seeds each
+    selectbox from the applied (default) mapping, and a default whose header keyword is absent from the reference
+    file falls back to "none" instead of raising on an option that isn't in the list.
+    """
+    st.session_state["file_loader_manual_mapping_global"] = _default_manual_mapping()
+    st.session_state.pop("manual_map_global_LCP", None)
+    st.session_state.pop("manual_map_global_RCP", None)
+    for column in HEADER_FIELDS_COLUMNS:
+        st.session_state.pop(f"manual_map_global_{column}", None)
+    session_store.checkpoint_session("Header mapping reset to defaults")
+
+
 def _render_manual_mapping_card(filenames: list[str]) -> dict:
     """Single, file-agnostic 'Manual column mapping' card, with an
     explicit Apply Mapping button (this revision).
@@ -1230,7 +1249,7 @@ def _render_manual_mapping_card(filenames: list[str]) -> dict:
     currently live in the form's widgets, if Apply hasn't been clicked
     since the last change.
     """
-    none_option = "\u2014 none \u2014"
+    none_option = _MAPPING_NONE_OPTION
     reference_filename = filenames[0] if filenames else None
     preview_items: list[tuple[str, str, str]] = []
     if reference_filename:
@@ -1293,6 +1312,11 @@ def _render_manual_mapping_card(filenames: list[str]) -> dict:
             st.session_state["file_loader_manual_mapping_global"] = pending
             applied = pending
             session_store.checkpoint_session("Header mapping applied")
+
+        st.button(
+            "Reset to defaults", key="manual_mapping_reset_btn", on_click=_reset_manual_mapping,
+            help="Put every field back to the default mapping (the same fields Auto mode uses).",
+        )
 
     return applied
 
@@ -1551,7 +1575,7 @@ def main() -> None:
             opacity: 1 !important;
             transition: none !important;
         }}
-        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0,1}
+        /* Flagged rows (st.columns blocks carrying a .hs-flagged-row-{0, 1}
            marker) get the same background stripe, bottom border and left
            padding as the plain-HTML OK rows (_render_table_row), using the
            same theme tokens -- so every row in the validation table looks
@@ -1611,6 +1635,69 @@ def main() -> None:
             [data-testid="stMarkdownContainer"] {{
             margin: 0 !important;
             padding: 0 !important;
+        }}
+        /* Native inputs (field search, the manual-mapping selectboxes, the dev-override text area) otherwise fall back
+           to Streamlit's static base theme -- black in BOTH of the app's themes. Same fix and reason as the expander
+           and label rules above: force the theme tokens, !important because BaseWeb's own CSS is more specific. */
+        [data-baseweb="input"],
+        [data-baseweb="textarea"],
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div {{
+            background-color: {_theme['bg-panel']} !important;
+            border: 1px solid {_theme['border-default']} !important;
+            border-radius: {styles.BUTTON_RADIUS}px !important;
+            color: {_theme['text-body']} !important;
+        }}
+        [data-baseweb="base-input"],
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {{
+            background-color: transparent !important;
+            color: {_theme['text-body']} !important;
+            -webkit-text-fill-color: {_theme['text-body']} !important;
+            caret-color: {_theme['text-body']} !important;
+        }}
+        [data-baseweb="input"] input::placeholder,
+        [data-baseweb="textarea"] textarea::placeholder {{
+            color: {_theme['text-faint']} !important;
+            -webkit-text-fill-color: {_theme['text-faint']} !important;
+            opacity: 1;
+        }}
+        [data-baseweb="input"]:focus-within,
+        [data-baseweb="textarea"]:focus-within,
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within {{
+            border-color: {_theme['accent']} !important;
+        }}
+        [data-testid="stSelectbox"] [data-baseweb="select"] div,
+        [data-testid="stSelectbox"] [data-baseweb="select"] span {{
+            color: {_theme['text-body']} !important;
+        }}
+        [data-testid="stSelectbox"] [data-baseweb="select"] svg {{
+            fill: {_theme['text-muted']} !important;
+        }}
+        /* The open dropdown list is rendered in a popover outside the page container. */
+        [data-baseweb="popover"] [data-baseweb="menu"],
+        [data-baseweb="popover"] ul[role="listbox"] {{
+            background-color: {_theme['bg-panel']} !important;
+            border: 1px solid {_theme['border-default']} !important;
+            border-radius: {styles.BUTTON_RADIUS}px !important;
+        }}
+        [data-baseweb="popover"] li,
+        [data-baseweb="popover"] li * {{
+            background-color: {_theme['bg-panel']} !important;
+            color: {_theme['text-body']} !important;
+        }}
+        [data-baseweb="popover"] li:hover,
+        [data-baseweb="popover"] li:hover *,
+        [data-baseweb="popover"] li[aria-selected="true"],
+        [data-baseweb="popover"] li[aria-selected="true"] * {{
+            background-color: {_theme['bg-panel-alt']} !important;
+        }}
+        [data-testid="stForm"] {{
+            border-color: {_theme['border-default']} !important;
+            border-radius: {styles.PANEL_RADIUS}px !important;
+        }}
+        [data-testid="stCheckbox"] label p,
+        [data-testid="stCheckbox"] label span {{
+            color: {_theme['text-body']} !important;
         }}
         /* Validation table: Streamlit puts a 1rem gap between stacked elements. OK rows are plain HTML and
            looked contiguous, but a flagged/quarantined row is an st.columns() block, so the gap showed up
@@ -1681,4 +1768,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

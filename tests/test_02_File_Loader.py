@@ -703,4 +703,20 @@ def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
     assert df.loc["good_date.fits", "HPBW"] == "0"
     # the raw dump must still be visible too, just relabeled
     assert "HPBW (raw)" in df.columns
+
+def test_reset_manual_mapping_restores_defaults(fits_archive):
+    at = _app_for("good_date.fits")
+    at.run(timeout=30)
+    at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
+    at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
+    _click_apply_mapping(at)
+    assert _header_df(at).loc["good_date.fits", "Object"] == "0"
+
+    at.button(key="manual_mapping_reset_btn").click().run(timeout=30)
+    assert not at.exception
+    assert _header_df(at).loc["good_date.fits", "Object"] == "W3(OH)"
+    assert at.selectbox(key="manual_map_global_Object").value == "HDU0:OBJECT"
+    mapping = at.session_state["file_loader_manual_mapping_global"]
+    assert mapping["Object"] == "HDU0:OBJECT"
+    assert mapping["RA/Dec"] is None
     
