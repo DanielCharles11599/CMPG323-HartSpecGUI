@@ -207,7 +207,7 @@ VALIDATION_FLAGGED_WEIGHTS = [36, 34, 16, 14]
 #                  tokens, sticky header and File column). Fully themed, but it is NOT st.dataframe(): the tests
 #                  that read at.dataframe[0].value need the snippet in the hand-off notes if this is switched on.
 # TODO: confirm against design -- is "st.dataframe()" in FR-02 a hard requirement, or is "a searchable table" enough?
-HEADER_TABLE_RENDERER = "dataframe"
+HEADER_TABLE_RENDERER = "html"
 HEADER_TABLE_HEIGHT = 460  # px; the table scrolls inside this
 HEADER_TABLE_ROW_HEIGHT = 36
 # Shared inline style for a flagged-row cell: same left padding as the OK rows' cells, content centred vertically.
@@ -814,12 +814,9 @@ def _render_validation_table() -> None:
                         # move_to_quarantine() call above. Rendered inside
                         # the Issue column so it stays within this row's
                         # striped background.
-                        st.markdown(
-                            f'<div style="padding-left:10px; font-size:11px; line-height:1.4; '
-                            f'color:{theme["text-muted"]};">Quarantine {html.escape(row["file"])}? This moves the '
-                            "file out of the active archive into Flagged/ immediately — undoing it means manually "
-                            "moving the file back on disk.</div>",
-                            unsafe_allow_html=True,
+                        st.caption(
+                            f"Quarantine {row['file']}? This moves the file out of the active archive into "
+                            "Flagged/ immediately — undoing it means manually moving the file back on disk."
                         )
                 with col_status:
                     # The row marker rides in the same markdown call as the
@@ -1593,6 +1590,9 @@ def main() -> None:
         [data-testid="stVerticalBlock"]:has(> .element-container .hs-validation-table-marker)
             [data-testid="stMarkdownContainer"] p {{
             margin: 0 !important;
+        }}
+        [data-testid="stHorizontalBlock"]:has(.hs-flagged-pending) [data-testid="stCaptionContainer"] {{
+            padding-left: 10px;
         }}
         /* Row being confirmed: the confirmation text wraps and the Continue/Cancel buttons stack, so it needs more
            room than a normal row (it was squished at the normal height). */

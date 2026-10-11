@@ -83,6 +83,15 @@ def _markdown_html(at: AppTest) -> str:
     return "\n".join(m.value for m in at.markdown if m.value)
 
 
+def _header_df(at: AppTest):
+    """The DataFrame the header-fields table is showing, whichever renderer the page uses.
+
+    The page keeps it in session state ("file_loader_header_df"), so these tests work with
+    HEADER_TABLE_RENDERER = "html" (an iframe -- there is no st.dataframe element to read) and with "dataframe".
+    """
+    return at.session_state["file_loader_header_df"]
+
+
 def _click_apply_mapping(at: AppTest) -> AppTest:
     """Click the manual-mapping form's submit button and rerun.
 
@@ -534,9 +543,7 @@ def test_header_fields_search_filters_columns(fits_archive):
     at.run(timeout=30)
     at.text_input(key="file_loader_field_search").set_value("Vlsr").run(timeout=30)
     assert not at.exception
-    dataframes = at.dataframe
-    assert len(dataframes) == 1
-    columns = list(dataframes[0].value.columns)
+    columns = list(_header_df(at).columns)
     assert "Vlsr" in columns
     assert "Humidity" not in columns
 
@@ -548,9 +555,7 @@ def test_header_fields_table_shows_real_per_file_data(fits_archive):
     at = _app_for("good_dateobs.fits")
     at.run(timeout=30)
     assert not at.exception
-    dataframes = at.dataframe
-    assert len(dataframes) == 1
-    df = dataframes[0].value
+    df = _header_df(at)
     assert list(df.index) == ["good_dateobs.fits"]
     # good_dateobs.fits explicitly sets TSYS1/TSYS2 in make_fixtures.py --
     # confirms the real astropy header read actually ran, not a static row.
@@ -564,9 +569,7 @@ def test_header_fields_table_excludes_quarantined_files(isolated_fits_archive):
     at.button(key="quarantine_unrecognized.fits").click().run(timeout=30)
     at.button(key="confirm_quarantine_unrecognized.fits").click().run(timeout=30)
     assert not at.exception
-    dataframes = at.dataframe
-    assert len(dataframes) == 1
-    df = dataframes[0].value
+    df = _header_df(at)
     assert "unrecognized.fits" not in df.index
     assert "good_date.fits" in df.index
 
@@ -588,9 +591,7 @@ def test_manual_mode_default_selection_matches_auto_value(fits_archive):
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
-    dataframes = at.dataframe
-    assert len(dataframes) == 1
-    df = dataframes[0].value
+    df = _header_df(at)
     assert df.loc["good_date.fits", "Object"] == "W3(OH)"
 
 
@@ -603,7 +604,7 @@ def test_manual_mode_override_changes_displayed_value(fits_archive):
     at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
     _click_apply_mapping(at)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert df.loc["good_date.fits", "Object"] == "0"
 
 
@@ -612,13 +613,13 @@ def test_manual_mode_lcp_rcp_needs_both_fields_set(fits_archive):
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert "/" in df.loc["good_dateobs.fits", "LCP/RCP"]
 
     at.selectbox(key="manual_map_global_RCP").set_value("\u2014 none \u2014")
     _click_apply_mapping(at)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert df.loc["good_dateobs.fits", "LCP/RCP"] == "pending"
 
 
@@ -640,7 +641,7 @@ def test_auto_mode_shows_raw_fields_alongside_curated_columns(fits_archive):
     at = _app_for("good_date.fits")
     at.run(timeout=30)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     # OBJECT is a raw field (all-caps, as it appears in the real header),
     # distinct from the curated "Object" column -- both should be present.
     assert "OBJECT" in df.columns
@@ -656,7 +657,7 @@ def test_manual_mode_shows_same_raw_fields_as_auto(fits_archive):
     at.run(timeout=30)
     at.radio(key="file_loader_mapping_mode").set_value("Manual").run(timeout=30)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert "OBJECT" in df.columns
     assert df.loc["good_date.fits", "OBJECT"] == "W3(OH)"
 
@@ -671,7 +672,7 @@ def test_manual_mode_does_not_affect_ingestion_or_auto_default(fits_archive):
 
     at.radio(key="file_loader_mapping_mode").set_value("Auto").run(timeout=30)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert df.loc["good_date.fits", "Object"] == "W3(OH)"
 
 
@@ -682,7 +683,7 @@ def test_manual_mapping_applies_to_every_loaded_file(fits_archive):
     at.selectbox(key="manual_map_global_Object").set_value("HDU0:SPPOINT")
     _click_apply_mapping(at)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert df.loc["good_date.fits", "Object"] == "0"
     assert df.loc["good_dateobs.fits", "Object"] == "0"
 
@@ -698,7 +699,8 @@ def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
     at.selectbox(key="manual_map_global_HPBW").set_value("HDU0:SPPOINT")
     _click_apply_mapping(at)
     assert not at.exception
-    df = at.dataframe[0].value
+    df = _header_df(at)
     assert df.loc["good_date.fits", "HPBW"] == "0"
     # the raw dump must still be visible too, just relabeled
     assert "HPBW (raw)" in df.columns
+    
