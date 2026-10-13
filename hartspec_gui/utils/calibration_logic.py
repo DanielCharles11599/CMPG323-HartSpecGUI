@@ -1,5 +1,7 @@
 """Calibration helpers for the Page 05 dashboard."""
 
+import csv
+from io import StringIO
 import os
 from pathlib import Path
 
@@ -261,3 +263,23 @@ def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
         "LCP": arrays["LCP"] * scale,
         "RCP": arrays["RCP"] * scale,
     }
+
+
+def polarization_trace_csv(spectrum, polarization, intensity_unit):
+    """Export the actual unsmoothed LCP/RCP samples displayed on Page 05."""
+    if polarization not in ("LCP", "RCP"):
+        raise ValueError("Polarization must be LCP or RCP.")
+    if intensity_unit not in ("K", "Jy"):
+        raise ValueError("Intensity unit must be K or Jy.")
+
+    from utils.polarization_logic import validated_spectrum
+
+    arrays = validated_spectrum(spectrum)
+    output = StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(("Vlsr_km_s", f"{polarization}_{intensity_unit}"))
+    writer.writerows(
+        (format(float(velocity), ".17g"), format(float(intensity), ".17g"))
+        for velocity, intensity in zip(arrays["Vlsr"], arrays[polarization])
+    )
+    return output.getvalue().encode("utf-8")

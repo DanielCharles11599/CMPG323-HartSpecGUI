@@ -337,3 +337,60 @@ def test_reference_fits_matches_direct_clc_calibration(fits_path):
             rel=1e-10,
             abs=1e-10,
         )
+
+
+class TestPage05PolarizationExport:
+    def test_exports_exact_lcp_and_rcp_samples_in_plot_order(self):
+        import csv
+        from io import StringIO
+
+        spectrum = {
+            "Vlsr": [-1.5, 0.0, 1.5],
+            "LCP": [2.0, 4.5, 6.0],
+            "RCP": [7.0, 8.5, 9.0],
+        }
+        original = {key: list(value) for key, value in spectrum.items()}
+
+        for polarization, expected in (
+            ("LCP", [2.0, 4.5, 6.0]),
+            ("RCP", [7.0, 8.5, 9.0]),
+        ):
+            csv_bytes = calibration_logic.polarization_trace_csv(
+                spectrum, polarization, "Jy"
+            )
+            rows = list(csv.reader(StringIO(csv_bytes.decode("utf-8"))))
+            assert rows[0] == ["Vlsr_km_s", f"{polarization}_Jy"]
+            assert [float(row[0]) for row in rows[1:]] == spectrum["Vlsr"]
+            assert [float(row[1]) for row in rows[1:]] == expected
+            assert len(rows) == len(spectrum["Vlsr"]) + 1
+
+        assert spectrum == original
+
+    def test_export_preserves_baseline_units(self):
+        spectrum = {"Vlsr": [0.0], "LCP": [1.25], "RCP": [2.25]}
+        result = calibration_logic.polarization_trace_csv(
+            spectrum, "LCP", "K"
+        )
+        assert result.decode("utf-8") == "Vlsr_km_s,LCP_K\n0,1.25\n"
+
+    def test_export_rejects_invalid_polarization_or_units(self):
+        spectrum = {"Vlsr": [0.0], "LCP": [1.0], "RCP": [2.0]}
+        with pytest.raises(ValueError, match="LCP or RCP"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "Mean", "Jy"
+            )
+        with pytest.raises(ValueError, match="K or Jy"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "LCP", "unknown"
+            )
+
+    def test_export_rejects_unaligned_arrays(self):
+        spectrum = {
+            "Vlsr": [0.0, 1.0],
+            "LCP": [1.0],
+            "RCP": [2.0, 3.0],
+        }
+        with pytest.raises(ValueError, match="same channel count"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "LCP", "Jy"
+            )

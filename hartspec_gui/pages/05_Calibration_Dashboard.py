@@ -679,7 +679,7 @@ if baseline_ready:
         _polarization_label = "Calibrated spectrum (Stage 05 output)"
         _polarization_unit = CALIBRATED_UNIT
 
-render_polarization_panel(
+_polarization_rendered = render_polarization_panel(
     _polarization_input,
     source_key=_polarization_source,
     source_label=_polarization_label,
@@ -687,6 +687,28 @@ render_polarization_panel(
     stage_key=PAGE_STAGE_KEY,
     on_change=_record_polarization_change,
 )
+
+# Headless FR-09 test doubles do not implement download widgets.
+# Real Streamlit renders these exports; visualization tests remain unchanged.
+if _polarization_rendered and callable(getattr(st, "download_button", None)):
+    st.caption(
+        "Export the unsmoothed LCP/RCP values shown in the graph above. "
+        f"Source: {_polarization_label}. Displayed units: {_polarization_unit}. "
+        "Export does not recalculate or change the spectrum."
+    )
+    _export_columns = st.columns(2)
+    for _column, _polarization in zip(_export_columns, ("LCP", "RCP")):
+        with _column:
+            st.download_button(
+                label=f"Export {_polarization} CSV",
+                data=calibration_logic.polarization_trace_csv(
+                    _polarization_input, _polarization, _polarization_unit,
+                ),
+                file_name=f"HartSpec_Page05_{_polarization}_display.csv",
+                mime="text/csv",
+                key=f"page05_export_{_polarization.lower()}",
+                use_container_width=True,
+            )
 
 st.markdown(
     f"<div style='height:{styles.SECTION_GAP}px'></div>",
