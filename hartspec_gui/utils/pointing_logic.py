@@ -17,12 +17,13 @@
 #   # Phase 0 change, which the owners have not authorised; this wrapper is the page-side mitigation.
 from __future__ import annotations
 
+import hashlib
 import math
 import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -146,14 +147,29 @@ def power_at_channel(lcp: Any, rcp: Any, index: int) -> float:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class PointingUncertainties:
+    """1-sigma fit uncertainties for the pointing results (FR-12). Any member may be None (not available)."""
+
+    ns_sigma_deg: Optional[float] = None
+    ew_sigma_deg: Optional[float] = None
+    pc_sigma: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class PointingResult:
-    """What pointcor() returned, with the inputs that produced it."""
+    """What pointcor() returned, with the inputs that produced it.
+
+    ``uncertainties`` stays None until they can be sourced: pointcor() returns only (factor, ns, ew), so the fit
+    covariance is not visible to the wrapper.
+    # TODO: confirm against design -- needs clc/Point_cor.py's fit code to extract the uncertainties safely.
+    """
 
     correction_factor: float
     ns_offset_deg: float
     ew_offset_deg: float
     hpbw_deg: float
     powers: Dict[str, float]
+    uncertainties: Optional[PointingUncertainties] = None
 
 
 class _PyplotProxy:
@@ -239,3 +255,123 @@ def compute_pointing(
         hpbw_deg=float(hpbw_deg),
         powers={role: float(powers[role]) for role in ROLES},
     )
+
+
+# ---------------------------------------------------------------------------
+# FR-13: 2.5-sigma Go / No-Go quality check (pure -- no Streamlit)
+# ---------------------------------------------------------------------------
+
+THRESHOLD_SIGMA = 2.5
+VERDICT_GO = "Go"
+VERDICT_NO_GO = "No-Go"
+
+
+@dataclass(frozen=True)
+class PointingCheck:
+    """Outcome of the pointing quality check.
+
+    ``evaluated`` is False when the 2.5-sigma test could not run (no usable uncertainties, or the fit failed); the
+    verdict is then No-Go. ``overridable`` is False only when there is no correction factor to apply at all.
+    """
+
+    verdict: str
+    threshold_sigma: float
+    reasons: Tuple[str, ...]
+    evaluated: bool
+    overridable: bool
+    ns_ratio: Optional[float] = None
+    ew_ratio: Optional[float] = None
+
+
+def _usable_sigma(value: Any) -> Optional[float]:
+    """A finite, strictly positive sigma, or None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    """JSON-safe float (NaN / inf / non-numbers become None)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def evaluate_pointing_check(result: Any, threshold_sigma: float = THRESHOLD_SIGMA) -> PointingCheck:
+    """Go only if both |NS offset| and |EW offset| are strictly below ``threshold_sigma`` x their sigma.
+
+    # TODO: confirm against design -- the requirement text names |NS_off| only; EW is tested the same way here, and
+    # the exact sigma definition belongs to Stats_manager.Sig_point (not available in this session).
+    Missing / unusable uncertainties give a No-Go (cannot verify), never a silent Go.
+    """
+    uncertainties = getattr(result, "uncertainties", None)
+    ns_sigma = _usable_sigma(getattr(uncertainties, "ns_sigma_deg", None))
+    ew_sigma = _usable_sigma(getattr(uncertainties, "ew_sigma_deg", None))
+    if ns_sigma is None or ew_sigma is None:
+        return PointingCheck(
+            VERDICT_NO_GO, threshold_sigma,
+            ("The fit uncertainties needed for the %gσ check are not available, so the offsets cannot be "
+             "verified." % threshold_sigma,),
+            evaluated=False, overridable=True,
+        )
+    reasons: List[str] = []
+    ratios: Dict[str, float] = {}
+    for label, offset, sigma in (("NS", result.ns_offset_deg, ns_sigma), ("EW", result.ew_offset_deg, ew_sigma)):
+        ratio = abs(float(offset)) / sigma
+        ratios[label] = ratio
+        if not ratio < threshold_sigma:  # also catches NaN
+            reasons.append(f"|{label} offset| = {abs(float(offset)):.4f}° is {ratio:.2f}σ, "
+                           f"not below {threshold_sigma:g}σ.")
+    return PointingCheck(
+        VERDICT_GO if not reasons else VERDICT_NO_GO, threshold_sigma, tuple(reasons),
+        evaluated=True, overridable=True, ns_ratio=ratios["NS"], ew_ratio=ratios["EW"],
+    )
+
+
+def failed_fit_check(message: str, threshold_sigma: float = THRESHOLD_SIGMA) -> PointingCheck:
+    """No-Go for a fit that did not converge. Not overridable: there is no correction factor to apply."""
+    return PointingCheck(
+        VERDICT_NO_GO, threshold_sigma, (f"The pointing fit did not converge: {message}",),
+        evaluated=False, overridable=False,
+    )
+
+
+def signature_id(signature: Any) -> str:
+    """Short stable identifier of one set of pointing inputs (scan, picked powers, beam width)."""
+    return hashlib.sha256(repr(signature).encode("utf-8")).hexdigest()[:16]
+
+
+def check_record(
+    check: PointingCheck, result: Any, *, signature: str, accepted: bool,
+    override_note: str = "", override_justification: str = "",
+) -> Dict[str, Any]:
+    """JSON-safe audit record stored in pipeline_data["06_pointing_correction"]["pointing_check"] (RULE-05).
+
+    The override text is kept only for an accepted No-Go, so a Go never carries stale override wording.
+    """
+    uncertainties = getattr(result, "uncertainties", None) if result is not None else None
+    overridden = bool(accepted and check.verdict == VERDICT_NO_GO)
+    return {
+        "verdict": check.verdict,
+        "threshold_sigma": check.threshold_sigma,
+        "evaluated": check.evaluated,
+        "overridable": check.overridable,
+        "reasons": list(check.reasons),
+        "signature": signature,
+        "accepted": bool(accepted),
+        "overridden": overridden,
+        "override_note": override_note if overridden else "",
+        "override_justification": override_justification if overridden else "",
+        "correction_factor": _finite_or_none(getattr(result, "correction_factor", None)),
+        "ns_offset_deg": _finite_or_none(getattr(result, "ns_offset_deg", None)),
+        "ew_offset_deg": _finite_or_none(getattr(result, "ew_offset_deg", None)),
+        "ns_sigma_deg": _finite_or_none(getattr(uncertainties, "ns_sigma_deg", None)),
+        "ew_sigma_deg": _finite_or_none(getattr(uncertainties, "ew_sigma_deg", None)),
+        "pc_sigma": _finite_or_none(getattr(uncertainties, "pc_sigma", None)),
+        "ns_ratio": _finite_or_none(check.ns_ratio),
+        "ew_ratio": _finite_or_none(check.ew_ratio),
+    }

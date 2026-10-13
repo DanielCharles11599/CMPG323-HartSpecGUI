@@ -1,4 +1,5 @@
-# 06_Pointing_Correction.py — FR-12/13: compass-grid pointing scans (user-picked peaks) + offset calculation.
+# 06_Pointing_Correction.py — FR-12/13: compass-grid pointing scans (user-picked peaks), offset calculation and the
+# 2.5-sigma Go / No-Go quality check with the RULE-05 override workflow.
 #
 # How it works (UAT feedback: "black points that you click / enter values"):
 #   1. clc/File_check.py (run from Page 01) sorted the selected files into observation blocks. A pointing scan is the
@@ -12,6 +13,10 @@
 #      REAL clc.Point_cor.pointcor() -- via utils/pointing_logic.compute_pointing(), which leaves Point_cor.py
 #      untouched (see that module's header for the `global hp` / "../plots/" mitigation).
 #   4. Below the results, the (LCP + RCP) * Pointing Correction graph shows the correction applied to the spectrum.
+#   5. FR-13: utils/pointing_logic.evaluate_pointing_check() gives a Go / No-Go verdict (|offset| < 2.5 sigma). The
+#      stage only completes -- and the correction factor is only published to Pages 07/08 -- after the user accepts a
+#      Go, or signs off a No-Go with an override note + scientific justification (RULE-05). Verdict, override text
+#      and all pointing values are stored in pipeline_data[...]["pointing_check"] (session JSON / checkpoints).
 #
 # If the session has no complete pointing scan (File_check was skipped/failed, or the selection had none), the page
 # falls back to typing the five powers and the beam width by hand -- real inputs only, never mock values.
@@ -23,6 +28,7 @@
 #   # value per direction.
 from __future__ import annotations
 
+import html
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,6 +51,10 @@ NEXT_PAGE = "pages/07_Spectral_Fitting.py"
 DIRECTIONS = list(pointing_logic.ROLES)  # N, S, E, W, Centre -- left-to-right per build spec §7
 RESULT_CACHE_KEY = "pointing_result_cache"
 LOGGED_SIGNATURE_KEY = "pointing_logged_signature"
+OVERRIDE_OPEN_KEY = "pointing_override_open"
+OVERRIDE_NOTE_KEY = "pointing_override_note"
+OVERRIDE_JUSTIFICATION_KEY = "pointing_override_justification"
+OVERRIDE_SIGNATURE_KEY = "pointing_override_signature"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +243,162 @@ def _render_pointing_product_graph(pointing_factor: float, theme: dict[str, str]
         st.caption(f"Spectrum source: {resolved.source_label}")
 
 
+# ---------------------------------------------------------------------------
+# FR-13: verdict, persistence and the RULE-05 override workflow
+# ---------------------------------------------------------------------------
+def _saved_check(signature_id: str) -> Optional[dict[str, Any]]:
+    """The stored pointing_check record, but only if it belongs to exactly the current inputs."""
+    stage = st.session_state.get("pipeline_data", {}).get(PAGE_STAGE_KEY)
+    record = stage.get("pointing_check") if isinstance(stage, dict) else None
+    if isinstance(record, dict) and record.get("signature") == signature_id:
+        return record
+    return None
+
+
+def _reset_override_widgets(signature_id: str) -> None:
+    """Drop override text/state when the inputs changed: a sign-off never carries over to a different result."""
+    if st.session_state.get(OVERRIDE_SIGNATURE_KEY) != signature_id:
+        for key in (OVERRIDE_NOTE_KEY, OVERRIDE_JUSTIFICATION_KEY, OVERRIDE_OPEN_KEY):
+            st.session_state.pop(key, None)
+        st.session_state[OVERRIDE_SIGNATURE_KEY] = signature_id
+
+
+def _toggle_override() -> None:
+    st.session_state[OVERRIDE_OPEN_KEY] = not st.session_state.get(OVERRIDE_OPEN_KEY, False)
+
+
+def _stage_record(
+    *, result: Any, check: Any, signature_id: str, accepted: bool, saved: Optional[dict[str, Any]],
+    input_source: str, scan_key: str, scan_files: dict[str, str], picked: dict[str, float],
+    powers: dict[str, float], hpbw: Optional[float], offsets: dict[str, str],
+) -> dict[str, Any]:
+    """pipeline_data entry for this page.
+
+    ``correction_factor`` -- the only value Pages 07/08 read -- is published only once the result is accepted, so a
+    No-Go that has not been signed off can never reach the fit or the export. Everything else (including the factor,
+    inside ``pointing_check``) is stored immediately for the audit trail.
+    """
+    previous = saved or {}
+    stage: dict[str, Any] = {
+        "input_source": input_source,
+        "scan_key": scan_key,
+        "scan_files": dict(scan_files),
+        "picked_velocities": picked,
+        "peak_powers": {role: float(powers[role]) for role in DIRECTIONS},
+        "hpbw_deg": None if hpbw is None else float(hpbw),
+        "pointing_check": pointing_logic.check_record(
+            check, result, signature=signature_id, accepted=accepted,
+            override_note=str(previous.get("override_note", "")),
+            override_justification=str(previous.get("override_justification", "")),
+        ),
+    }
+    if result is not None:
+        stage.update(ns_offset_deg=result.ns_offset_deg, ew_offset_deg=result.ew_offset_deg,
+                     hpbw_deg=result.hpbw_deg, **offsets)
+        if accepted:
+            stage["correction_factor"] = result.correction_factor
+    return stage
+
+
+def _commit_acceptance(result: Any, check: Any, signature_id: str, note: str = "", justification: str = "") -> None:
+    """Accept a Go, or record a signed-off No-Go override; completes the stage and checkpoints."""
+    stage = st.session_state["pipeline_data"][PAGE_STAGE_KEY]
+    stage["correction_factor"] = result.correction_factor
+    stage["pointing_check"] = pointing_logic.check_record(
+        check, result, signature=signature_id, accepted=True,
+        override_note=note, override_justification=justification,
+    )
+    session_store.mark_stage_complete(PAGE_STAGE_KEY)
+    if check.verdict == pointing_logic.VERDICT_NO_GO:
+        session_store.log_event("Pointing No-Go overridden (RULE-05) — override note and justification recorded")
+    else:
+        session_store.log_event("Pointing check Go — correction accepted")
+    session_store.checkpoint_session("Pointing correction accepted")
+
+
+# ---------------------------------------------------------------------------
+# FR-12/13 presentation
+# ---------------------------------------------------------------------------
+def _render_metric_cards(result: Any, check: Any, theme: dict[str, str]) -> None:
+    """pc, NS and EW offsets with their fit uncertainties (or an explicit 'not available')."""
+    unc = getattr(result, "uncertainties", None)
+    cards = (
+        ("Pointing correction (pc)", f"{result.correction_factor:.4f}", getattr(unc, "pc_sigma", None), "", None),
+        ("North-South offset", f"{result.ns_offset_deg:+.4f}°", getattr(unc, "ns_sigma_deg", None), "°",
+         check.ns_ratio),
+        ("East-West offset", f"{result.ew_offset_deg:+.4f}°", getattr(unc, "ew_sigma_deg", None), "°",
+         check.ew_ratio),
+    )
+    box = (f"background-color:{theme['bg-panel']}; border:1px solid {theme['border-subtle']}; "
+           f"border-radius:{styles.PANEL_RADIUS}px; padding:12px 16px;")
+    cells = ""
+    for label, value, sigma, unit, ratio in cards:
+        sigma_text = "uncertainty not available" if sigma is None else f"± {sigma:.4f}{unit}"
+        ratio_html = ""
+        if ratio is not None:
+            ratio_text = f"|offset| / σ = {ratio:.2f} (Go below {check.threshold_sigma:g})"
+            ratio_html = f'<div style="font-size:0.625rem; color:{theme["text-muted"]};">{ratio_text}</div>'
+        cells += (
+            f'<div style="{box}">'
+            f'<div style="font-size:0.625rem; font-weight:600; color:{theme["text-muted"]};">{html.escape(label)}</div>'
+            f'<div style="font-size:1.25rem; font-weight:700; color:{theme["text-heading"]};">{value}</div>'
+            f'<div style="font-size:0.6875rem; color:{theme["text-body"]};">{sigma_text}</div>{ratio_html}</div>'
+        )
+    st.markdown(f'<div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px;">{cells}</div>',
+                unsafe_allow_html=True)
+
+
+def _render_verdict_panel(check: Any, accepted: bool, theme: dict[str, str]) -> None:
+    """Go / No-Go status badge plus the reasons behind a No-Go."""
+    if check.verdict == pointing_logic.VERDICT_GO:
+        badge = styles.render_badge("Go", "ok")
+    elif accepted:
+        badge = styles.render_badge("No-Go — overridden", "warning")
+    else:
+        badge = styles.render_badge("No-Go", "error")
+    reasons = "".join(f"<li>{html.escape(reason)}</li>" for reason in check.reasons)
+    reasons_html = (f'<ul style="margin:8px 0 0 18px; font-size:0.75rem; color:{theme["text-body"]};">{reasons}</ul>'
+                    if reasons else "")
+    st.markdown(
+        f'<div style="margin:{styles.SECTION_GAP}px 0 4px;">{badge} '
+        f'<span style="font-size:0.75rem; color:{theme["text-body"]};">'
+        f'Pointing check — offsets must be below {check.threshold_sigma:g}σ</span>{reasons_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_actions(result: Any, check: Any, signature_id: str, accepted: bool) -> None:
+    """Accept & proceed (Go), or the override form (No-Go). Nothing proceeds without one of the two."""
+    if result is None:
+        st.button("Accept & Proceed to Spectral Fitting →", type="primary", disabled=True, key="pointing_next_btn")
+        return
+    if accepted:
+        if st.button("Continue to Spectral Fitting →", type="primary", key="pointing_next_btn"):
+            st.switch_page(NEXT_PAGE)
+        return
+    if check.verdict == pointing_logic.VERDICT_GO:
+        if st.button("Accept & Proceed to Spectral Fitting →", type="primary", key="pointing_next_btn"):
+            _commit_acceptance(result, check, signature_id)
+            st.switch_page(NEXT_PAGE)
+        return
+
+    st.button("Hide override form" if st.session_state.get(OVERRIDE_OPEN_KEY) else "Override No-Go…",
+              key="pointing_override_toggle", on_click=_toggle_override)
+    st.caption("To stop the reduction here, simply do not proceed: without an accepted result no correction "
+               "factor is passed to Spectral Fitting or Export.")
+    if not st.session_state.get(OVERRIDE_OPEN_KEY):
+        return
+    st.markdown('<div class="hs-eyebrow">Override (RULE-05)</div>', unsafe_allow_html=True)
+    note = st.text_area("Override note", key=OVERRIDE_NOTE_KEY, height=80)
+    justification = st.text_area("Scientific justification", key=OVERRIDE_JUSTIFICATION_KEY, height=120)
+    st.caption("Both fields are required. They are saved with the verdict and pointing values in the session record.")
+    ready = bool(note.strip() and justification.strip())
+    if st.button("Record override & proceed to Spectral Fitting →", type="primary", disabled=not ready,
+                 key="pointing_override_confirm_btn"):
+        _commit_acceptance(result, check, signature_id, note.strip(), justification.strip())
+        st.switch_page(NEXT_PAGE)
+
+
 def main() -> None:
     """Render the Pointing Correction page (FR-12/13)."""
     st.set_page_config(page_title="HARTSPEC -- Pointing Correction", layout="wide")
@@ -269,7 +435,8 @@ def main() -> None:
         scan_key, dirname, input_source = scan.key, scan.block, f"pointing scan: {scan.label}"
         st.caption(
             "Click a spectrum (if click-to-pick is installed) or type a velocity to move the black point onto the "
-            "peak. Each panel's value is the mean of LCP and RCP at that channel."
+            "peak. Each panel's value is the mean of LCP and RCP at that channel. The panels stay on screen for the "
+            "whole session so the fit can be re-examined."
         )
         for column, role in zip(st.columns(5), DIRECTIONS):
             with column, st.container(border=True):
@@ -291,10 +458,26 @@ def main() -> None:
     else:
         st.caption("Enter a positive power for all five directions and a beam width to calculate the correction.")
 
-    result = entry["result"] if entry else None
-    if entry and entry["error"]:
+    if entry is None:
+        st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+        st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+        session_store.checkpoint_session("Pointing parameters recorded")
+        _render_actions(None, None, "", False)
+        return
+
+    result = entry["result"]
+    if entry["error"]:
         st.warning(f"clc.Point_cor.pointcor() could not compute the correction: {entry['error']}")
 
+    # FR-13: verdict for exactly these inputs; an earlier sign-off only counts if the inputs are unchanged.
+    signature_id = pointing_logic.signature_id(entry["signature"])
+    check = (pointing_logic.evaluate_pointing_check(result) if result is not None
+             else pointing_logic.failed_fit_check(entry["error"] or "no result"))
+    _reset_override_widgets(signature_id)
+    saved = _saved_check(signature_id)
+    accepted = bool(result is not None and saved and saved.get("accepted") and saved.get("verdict") == check.verdict)
+
+    offsets: dict[str, str] = {}
     if result is not None:
         offsets = {
             "North-South offset": f"{result.ns_offset_deg}°",
@@ -302,44 +485,45 @@ def main() -> None:
             "Pointing correction factor": f"{result.correction_factor:.4f}",
             "Half-power beam width used": f"{result.hpbw_deg:g}°",
         }
-        render_offset_table(offsets, theme)
-
-        st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
-            # Numeric values are what Pages 07/08 read (fitting_inputs.pointing_factor_from_pipeline).
-            "correction_factor": result.correction_factor,
-            "ns_offset_deg": result.ns_offset_deg,
-            "ew_offset_deg": result.ew_offset_deg,
-            "hpbw_deg": result.hpbw_deg,
-            "peak_powers": result.powers,
-            "input_source": input_source,
-            "scan_key": scan_key,
-            "scan_files": dict(scan.files) if scans else {},
-            "picked_velocities": {
-                role: float(st.session_state[f"pointing_pick::{scan_key}::{role}"])
-                for role in DIRECTIONS
-            } if scans else {},
-            **offsets,
-        }
+    picked = {
+        role: float(st.session_state[f"pointing_pick::{scan_key}::{role}"]) for role in DIRECTIONS
+    } if scans else {}
+    st.session_state["pipeline_data"][PAGE_STAGE_KEY] = _stage_record(
+        result=result, check=check, signature_id=signature_id, accepted=accepted, saved=saved,
+        input_source=input_source, scan_key=scan_key, scan_files=dict(scan.files) if scans else {},
+        picked=picked, powers=powers, hpbw=hpbw, offsets=offsets,
+    )
+    if accepted:
         session_store.mark_stage_complete(PAGE_STAGE_KEY)
-        if st.session_state.get(LOGGED_SIGNATURE_KEY) != entry["signature"]:
-            st.session_state[LOGGED_SIGNATURE_KEY] = entry["signature"]
-            session_store.log_event(
-                f"Pointing correction computed ({input_source}) — NS {result.ns_offset_deg}°, "
-                f"EW {result.ew_offset_deg}°, correction factor {result.correction_factor:.4f}"
-            )
-
-        st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
-        _render_pointing_product_graph(result.correction_factor, theme)
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
-        st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+
+    if st.session_state.get(LOGGED_SIGNATURE_KEY) != entry["signature"]:
+        st.session_state[LOGGED_SIGNATURE_KEY] = entry["signature"]
+        if result is not None:
+            session_store.log_event(
+                f"Pointing correction computed ({input_source}) — NS {result.ns_offset_deg}°, "
+                f"EW {result.ew_offset_deg}°, correction factor {result.correction_factor:.4f} — "
+                f"check: {check.verdict}"
+            )
+        else:
+            session_store.log_event(f"Pointing fit did not converge ({input_source}) — check: {check.verdict}")
+
+    if result is not None:
+        _render_metric_cards(result, check, theme)
+    _render_verdict_panel(check, accepted, theme)
+    # Results table stays hidden while the override form is open (keeps the form uncluttered; cards show the values).
+    if result is not None and not st.session_state.get(OVERRIDE_OPEN_KEY):
+        st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
+        render_offset_table(offsets, theme)
+    if result is not None:
+        st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
+        _render_pointing_product_graph(result.correction_factor, theme)
 
     session_store.checkpoint_session("Pointing parameters recorded")
-
-    if st.button("Continue to Spectral Fitting →", type="primary", disabled=result is None,
-                 key="pointing_next_btn"):
-        st.switch_page(NEXT_PAGE)
+    _render_actions(result, check, signature_id, accepted)
 
 
 if __name__ == "__main__":
     main()
+    
