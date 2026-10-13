@@ -87,6 +87,8 @@ pss_history = None
 pss_window = None
 pss_averages = None
 pss_30day_stats = None
+pss_monthly_averages = None
+pss_monthly_error = None
 pss_error = None
 calibration_error = None
 
@@ -117,6 +119,18 @@ if loaded_spectrum is not None:
         )
     except Exception as exc:
         pss_error = str(exc)
+
+    # Independent display calculation; calibration remains unchanged.
+    monthly_resolver = getattr(
+        calibration_logic, "get_pss_calendar_month_averages", None
+    )
+    if pss_history is not None and callable(monthly_resolver):
+        try:
+            pss_monthly_averages = monthly_resolver(
+                pss_history, loaded_spectrum["date"]
+            )
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            pss_monthly_error = str(exc)
 
 was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
 # Page 05 rebuilds its calibration payload on reruns. Retain the nested FR-09
@@ -210,6 +224,15 @@ if loaded_spectrum is not None:
                 else float(pss_averages["rcp"])
             ),
             "source_files": dict(pss_history["source_files"]),
+            "calendar_month": (
+                None if pss_monthly_averages is None else {
+                    "label": pss_monthly_averages["month_label"],
+                    "start_mjd": pss_monthly_averages["start_mjd"],
+                    "end_mjd_exclusive": pss_monthly_averages["end_mjd_exclusive"],
+                    "lcp_mean": pss_monthly_averages["lcp"],
+                    "rcp_mean": pss_monthly_averages["rcp"],
+                }
+            ),
             "trailing_30_day": (
                 None
                 if pss_30day_stats is None
@@ -391,6 +414,28 @@ with st.container(border=True):
     with pss_metric_cols[1]:
         st.metric("RCP ±15-day mean", rcp_mean_value)
 
+    if pss_monthly_averages is not None:
+        st.caption(
+            f"Calendar-month PSS means — "
+            f"{pss_monthly_averages['month_label']} (Jy/K)"
+        )
+        monthly_cols = st.columns(2)
+
+        for col, label, key in (
+            (monthly_cols[0], "LCP monthly mean", "lcp"),
+            (monthly_cols[1], "RCP monthly mean", "rcp"),
+        ):
+            value = pss_monthly_averages[key]
+            with col:
+                st.metric(
+                    label,
+                    "Not available" if value is None else f"{value:.4f}",
+                )
+    elif pss_monthly_error is not None:
+        st.warning(
+            f"Monthly PSS means unavailable: {pss_monthly_error}"
+        )
+
     if loaded_spectrum is None:
         st.markdown(
             f"""
@@ -490,7 +535,7 @@ with st.container(border=True):
                 zeroline=False,
             ),
             yaxis=dict(
-                title="PSS",
+                title="PSS (Jy/K)",
                 showgrid=True,
                 gridcolor=_theme["border-subtle"],
                 linecolor=_theme["border-subtle"],
@@ -620,7 +665,7 @@ with st.container(border=True):
                 zeroline=False,
             ),
             yaxis=dict(
-                title="PSS",
+                title="PSS (Jy/K)",
                 showgrid=True,
                 gridcolor=_theme["border-subtle"],
                 linecolor=_theme["border-subtle"],

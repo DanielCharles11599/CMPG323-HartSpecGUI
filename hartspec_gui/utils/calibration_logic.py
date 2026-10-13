@@ -155,6 +155,46 @@ def get_pss_window_averages(pss_history, pss_window):
     }
 
 
+def get_pss_calendar_month_averages(pss_history, observation_date):
+    """Calculate calendar-month LCP/RCP means without changing calibration."""
+    if pss_history is None:
+        raise ValueError("PSS history is required.")
+
+    mjd = get_observation_mjd(observation_date)
+    observed = Time(mjd, format="mjd").datetime
+    year, month = observed.year, observed.month
+
+    next_year, next_month = (
+        (year + 1, 1) if month == 12 else (year, month + 1)
+    )
+
+    start = float(
+        Time(f"{year:04d}-{month:02d}-01T00:00:00", format="isot").mjd
+    )
+    end = float(
+        Time(
+            f"{next_year:04d}-{next_month:02d}-01T00:00:00",
+            format="isot",
+        ).mjd
+    )
+
+    def calculate(series):
+        values = [
+            float(pss)
+            for date, pss in zip(series["mjd"], series["pss"])
+            if start <= float(date) < end
+        ]
+        return float(np.mean(values)) if values else None
+
+    return {
+        "month_label": observed.strftime("%B %Y"),
+        "start_mjd": start,
+        "end_mjd_exclusive": end,
+        "lcp": calculate(pss_history["lcp"]),
+        "rcp": calculate(pss_history["rcp"]),
+    }
+
+
 def get_pss_trailing_statistics(pss_history, observation_mjd, days=30):
     """Return trailing-window PSS mean, sample standard deviation and count."""
     if pss_history is None:

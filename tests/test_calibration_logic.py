@@ -476,3 +476,60 @@ class TestSelectedPairCalibrationMetadata:
             "pipeline_data": {},
         }
         assert calibration_logic.metadata_for_selected_pair(state) is spectrum
+
+
+class TestPssCalendarMonthAverages:
+    def test_uses_calendar_month_not_adjacent_dates(self):
+        start = calibration_logic.get_observation_mjd(
+            "2024-02-01T00:00:00"
+        )
+        end = calibration_logic.get_observation_mjd(
+            "2024-03-01T00:00:00"
+        )
+        history = {
+            "lcp": {
+                "mjd": [start - 1, start, start + 10, end - 0.5, end],
+                "pss": [99, 2, 4, 6, 100],
+            },
+            "rcp": {
+                "mjd": [start, start + 10, end],
+                "pss": [3, 7, 77],
+            },
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2024-02-12T10:00:00"
+        )
+        assert result["month_label"] == "February 2024"
+        assert result["start_mjd"] == pytest.approx(start)
+        assert result["end_mjd_exclusive"] == pytest.approx(end)
+        assert result["lcp"] == pytest.approx(4.0)
+        assert result["rcp"] == pytest.approx(5.0)
+
+    def test_december_rolls_over_into_next_year(self):
+        start = calibration_logic.get_observation_mjd(
+            "2025-12-01T00:00:00"
+        )
+        end = calibration_logic.get_observation_mjd(
+            "2026-01-01T00:00:00"
+        )
+        history = {
+            "lcp": {"mjd": [start, end], "pss": [5, 70]},
+            "rcp": {"mjd": [start, end], "pss": [4, 90]},
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2025-12-31T23:59:00"
+        )
+        assert result["end_mjd_exclusive"] == pytest.approx(end)
+        assert result["lcp"] == pytest.approx(5.0)
+        assert result["rcp"] == pytest.approx(4.0)
+
+    def test_missing_monthly_samples_gives_none(self):
+        history = {
+            "lcp": {"mjd": [100.0], "pss": [1]},
+            "rcp": {"mjd": [100.0], "pss": [2]},
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2024-06-15T00:00:00"
+        )
+        assert result["lcp"] is None
+        assert result["rcp"] is None
