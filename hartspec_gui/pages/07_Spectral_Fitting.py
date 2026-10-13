@@ -74,7 +74,7 @@ def _panel(title: str, fig: Optional[go.Figure], placeholder: str = "") -> None:
         if fig is None:
             st.info(placeholder)
         else:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
+            styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
 
 
 # ---------------------------------------------------------------------
@@ -206,7 +206,7 @@ if pss is not None and pointing_factor is not None:
 styles.render_panel_open("Fit parameters")
 if result is not None and result.rows:
     param_df = pd.DataFrame(list(result.rows), columns=["Parameter", "Value", "± Error"])
-    st.dataframe(param_df, hide_index=True, use_container_width=True)
+    styles.render_dataframe(param_df, hide_index=True, use_container_width=True)
 else:
     st.caption("No fit parameters -- the fit did not produce a result.")
 styles.render_panel_close()

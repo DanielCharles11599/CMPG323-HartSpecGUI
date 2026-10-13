@@ -704,6 +704,7 @@ def test_manual_mode_hpbw_override_is_not_clobbered_by_raw_dump(fits_archive):
     # the raw dump must still be visible too, just relabeled
     assert "HPBW (raw)" in df.columns
 
+
 def test_reset_manual_mapping_restores_defaults(fits_archive):
     at = _app_for("good_date.fits")
     at.run(timeout=30)
@@ -719,4 +720,3 @@ def test_reset_manual_mapping_restores_defaults(fits_archive):
     mapping = at.session_state["file_loader_manual_mapping_global"]
     assert mapping["Object"] == "HDU0:OBJECT"
     assert mapping["RA/Dec"] is None
-    

@@ -51,7 +51,7 @@ def render_export_preview(result: ExportPreviewResult, theme: dict[str, str], he
         yaxis=dict(title="Flux density (Jy)", showgrid=False, zeroline=False, color=theme["text-muted"]),
     )
     fig.update_annotations(font=dict(color=theme["text-body"]))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
+    styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
     st.caption(
         "RMS and maximum follow the legacy CLC final-spectrum path and are Stokes I statistics. "
         "LCP/RCP are shown after the same pointing × per-polarisation PSS calibration. "

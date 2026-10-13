@@ -177,7 +177,7 @@ def _render_selection_guidance() -> None:
         <div style="background:{theme['bg-panel']}; border:1px solid {theme['border-default']};
                     border-left:4px solid {theme['accent']}; border-radius:{styles.PANEL_RADIUS}px;
                     padding:12px 14px; margin-bottom:{styles.SECTION_GAP}px;
-                    color:{theme['text-body']}; font-size:12px; line-height:1.55;">
+                    color:{theme['text-body']}; font-size:0.75rem; line-height:1.55;">
           <div style="font-weight:600; margin-bottom:4px;">How to choose baseline regions</div>
           Select only the <strong>flat, line-free</strong> parts of the spectrum. These ranges are
           inputs to the baseline fit; they are <strong>not masked or removed</strong>. Emission and
@@ -261,6 +261,7 @@ def main() -> None:
         session_id=st.session_state["session_id"],
         spectrum=corrected,
         theme=styles.get_theme_name(),
+        font_scale=styles.get_font_scale(),
         bandpass_mode=bandpass_mode,
         checkpoint_token=st.session_state.get("checkpoint_token"),
         restored_parameters=st.session_state["pipeline_data"].get(PAGE_STAGE_KEY),
@@ -276,12 +277,16 @@ def main() -> None:
     # callback to re-read the bridge instead of leaving an old blank graph.
     revision = (
         f"{bridge['spectrum_fingerprint'][:12]}-"
-        f"{styles.get_theme_name()}-flat-regions-v2"
+        f"{styles.get_theme_name()}-{styles.get_font_scale()}-flat-regions-v2"
+    )
+    st.caption(
+        "Baseline editor: Tab enters its controls. Use Region to edit and numeric velocities; dragging is optional. "
+        "Tab after its last control returns to the page."
     )
     components.iframe(
         _dash_url(port, st.session_state["session_id"], revision),
-        height=IFRAME_HEIGHT,
-        scrolling=False,
+        height=round(IFRAME_HEIGHT * styles.get_font_scale() / 100),
+        scrolling=True,
     )
 
     # Keep the next pipeline action directly below the embedded editor so the

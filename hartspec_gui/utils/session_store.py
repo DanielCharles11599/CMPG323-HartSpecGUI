@@ -24,6 +24,7 @@ from typing import Any, Mapping, MutableMapping
 import streamlit as st
 
 from utils import checkpoint_store
+from utils.accessibility import preferences, restore_preferences
 from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()  # same defense-in-depth reason fits_ingest.py does this
@@ -448,7 +449,7 @@ def _session_payload() -> dict[str, Any]:
         "audit_log": state["audit_log"],
         "ui_state": applied_ui,
         "baseline_event_ids": state.get("baseline_editor_seen_event_ids", []),
-        "preferences": {"theme": state.get("theme", "light")},
+        "preferences": preferences(state),
     })
 
 
@@ -572,6 +573,7 @@ def _activate_pending_snapshot() -> None:
             return
         from utils import baseline_editor_bridge
         bridge["theme"] = state.get("theme", "light")
+        bridge["font_scale"] = preferences(state)["font_scale"]
         bridge["checkpoint_token"] = state.get("checkpoint_token")
         baseline_editor_bridge.write_bridge(state["session_id"], bridge)
         state.pop("checkpoint_pending_bridge", None)
@@ -708,9 +710,7 @@ def recover_checkpoint(path: Path, *, navigate: bool = True, warning: str = "") 
     state["pipeline_data"] = data["pipeline_data"]
     state["completed_stages"] = set(data["completed_stages"])
     state["audit_log"] = data["audit_log"]
-    preferences = data.get("preferences", {})
-    if isinstance(preferences, Mapping) and preferences.get("theme") in ("light", "dark"):
-        state["theme"] = preferences["theme"]
+    restore_preferences(state, data.get("preferences"))
     _seed_reduction_controls(state, data["pipeline_data"])
     _restore_extra_controls(data)
     _new_checkpoint_stream()

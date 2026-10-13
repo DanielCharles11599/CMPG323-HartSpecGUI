@@ -90,7 +90,7 @@ def render_feature_detection(
         st.error(f"Feature detection could not run: {exc}")
         return False
 
-    st.plotly_chart(
+    styles.render_plotly_chart(
         build_feature_figure(result, theme),
         use_container_width=True,
         config={"displayModeBar": True},
@@ -108,7 +108,7 @@ def render_feature_detection(
     rows = event_rows(result)
     if rows:
         frame = pd.DataFrame(rows)
-        st.dataframe(frame, use_container_width=True, height=min(260, 32 + 28 * len(frame)))
+        styles.render_dataframe(frame, use_container_width=True, height=min(260, 32 + 28 * len(frame)))
     else:
         st.info("No appeared or disappeared feature channels were detected by the supplied CLC thresholds.")
 

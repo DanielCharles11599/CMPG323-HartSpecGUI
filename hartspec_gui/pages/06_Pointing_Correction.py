@@ -109,7 +109,11 @@ def _render_direction_panel(role: str, spectrum: dict[str, Any], scan_key: str, 
     # The figure must be drawn from the CURRENT pick, but a click is only known after the chart renders -- so apply a
     # new click to session_state first (before the number_input below is created, which is the only legal moment).
     figure = _panel_figure(spectrum, pointing_logic.nearest_channel(vlsr, st.session_state[pick_key]), theme)
+    keyboard_chart = styles.get_font_scale() > 100
     if plotly_events is not None:
+        keyboard_chart = st.checkbox("Keyboard-accessible chart controls", value=keyboard_chart,
+                                     key=f"pointing_keyboard::{scan_key}::{role}")
+    if plotly_events is not None and not keyboard_chart:
         clicks = plotly_events(figure, click_event=True, override_height=170, key=f"pointing_click::{scan_key}::{role}")
         seen_key = f"pointing_click_seen::{scan_key}::{role}"
         if clicks and st.session_state.get(seen_key) != clicks[0]["x"]:
@@ -117,11 +121,11 @@ def _render_direction_panel(role: str, spectrum: dict[str, Any], scan_key: str, 
             st.session_state[pick_key] = float(clicks[0]["x"])
             st.rerun()
     else:
-        st.plotly_chart(figure, use_container_width=True, theme=None, config={"displayModeBar": False})
+        styles.render_plotly_chart(figure, use_container_width=True, theme=None, config={"displayModeBar": False})
 
     st.number_input(
         f"{role} peak velocity (km/s)", min_value=float(np.nanmin(vlsr)), max_value=float(np.nanmax(vlsr)),
-        step=0.1, format="%.2f", key=pick_key, label_visibility="collapsed",
+        step=0.1, format="%.2f", key=pick_key, label_visibility="visible",
     )
     channel = pointing_logic.nearest_channel(vlsr, st.session_state[pick_key])
     power = pointing_logic.power_at_channel(lcp, rcp, channel)
@@ -160,8 +164,8 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
         stripe = theme["bg-panel"] if index % 2 == 0 else theme["bg-panel-alt"]
         rows_html += (
             f'<tr style="height:{styles.TABLE_ROW_HEIGHT}px; background-color:{stripe};">'
-            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:60%;">{metric}</td>'
-            f'<td style="padding:10px; font-size:10.5px; color:{theme["text-body"]}; width:40%;">{value}</td>'
+            f'<td style="padding:10px; font-size:0.65625rem; color:{theme["text-body"]}; width:60%;">{metric}</td>'
+            f'<td style="padding:10px; font-size:0.65625rem; color:{theme["text-body"]}; width:40%;">{value}</td>'
             "</tr>"
         )
     st.markdown(
@@ -171,9 +175,9 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
             <table style="width:100%; border-collapse:collapse;">
                 <thead>
                     <tr style="height:{styles.TABLE_HEADER_HEIGHT}px; background-color:{theme['table-header-bg']};">
-                        <th style="text-align:left; padding:10px; font-size:10px; font-weight:600;
+                        <th style="text-align:left; padding:10px; font-size:0.625rem; font-weight:600;
                                    color:{theme['table-header-text']}; width:60%;">Metric</th>
-                        <th style="text-align:left; padding:10px; font-size:10px; font-weight:600;
+                        <th style="text-align:left; padding:10px; font-size:0.625rem; font-weight:600;
                                    color:{theme['table-header-text']}; width:40%;">Value</th>
                     </tr>
                 </thead>
@@ -225,7 +229,7 @@ def _render_pointing_product_graph(pointing_factor: float, theme: dict[str, str]
             yaxis=dict(title=f"Intensity ({resolved.intensity_unit})", showgrid=False, zeroline=False,
                        color=theme["text-muted"]),
         )
-        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+        styles.render_plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         st.caption(f"Spectrum source: {resolved.source_label}")
 
 

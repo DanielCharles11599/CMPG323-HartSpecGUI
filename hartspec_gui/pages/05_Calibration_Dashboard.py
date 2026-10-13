@@ -1,4 +1,4 @@
-# 05_Calibration_Dashboard.py — FR-10 / FR-11
+# 05_Calibration_Dashboard.py — FR-09 / FR-10 / FR-11
 #
 # Calibration Dashboard for atmospheric calibration and Point Source
 # Sensitivity (PSS) visualisation.
@@ -6,17 +6,22 @@
 # Atmospheric calculations use the existing CLC calibration module.
 # Page 05 only handles the GUI and integration around those calculations.
 
+from typing import Mapping
+
 import plotly.graph_objects as go
 import streamlit as st
 
 from utils import calibration_logic, session_store, sidebar, styles
+from utils.polarization_logic import SETTINGS_KEY as POLARIZATION_SETTINGS_KEY
+from utils.polarization_panel import render_polarization_panel
+from utils.spectrum_resolution import CALIBRATED_UNIT, UNCALIBRATED_UNIT
 
 
 CURRENT_STAGE = 5
 PAGE_STAGE_KEY = "05_calibration_dashboard"
 
 PAGE_TITLE = "Calibration Dashboard"
-PAGE_SUBTITLE = "FR-10 / FR-11 — atmospheric and PSS calibration"
+PAGE_SUBTITLE = "FR-09 / FR-10 / FR-11 — polarisation overlay, atmospheric and PSS calibration"
 
 st.set_page_config(
     page_title="HARTSPEC — Calibration Dashboard",
@@ -26,6 +31,8 @@ st.set_page_config(
 
 session_store.init_session_state()
 sidebar.render_sidebar(current_stage=CURRENT_STAGE)
+# Pull the latest Dash result before reading any baseline-dependent view or calibration.
+session_store.sync_baseline_state()
 styles.inject_base_css()
 
 _theme = styles.get_theme()
@@ -95,9 +102,20 @@ if loaded_spectrum is not None:
         pss_error = str(exc)
 
 was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
+# Page 05 rebuilds its calibration payload on reruns. Retain the nested FR-09
+# view preferences; upstream invalidation removes this whole payload as before.
+_saved_calibration_stage = st.session_state["pipeline_data"].get(PAGE_STAGE_KEY, {})
+if not isinstance(_saved_calibration_stage, Mapping):
+    # The session loader validates the envelope, not each stage's nested schema.
+    # Recompute calibration below; never trust a malformed saved completion record.
+    st.warning("Saved calibration stage data is malformed; this page will rebuild it from the current inputs.")
+    _saved_calibration_stage = {}
+_saved_polarization_display = _saved_calibration_stage.get(POLARIZATION_SETTINGS_KEY)
 
 baseline_ready = (
-    "04_baseline_editor" in st.session_state["completed_stages"]
+    all(key in st.session_state["completed_stages"] for key in (
+        "01_source_browser", "file_loader", "03_bandpass_correction", "04_baseline_editor",
+    ))
     and st.session_state.get("baseline_corrected_spectrum") is not None
 )
 
@@ -143,6 +161,9 @@ if loaded_spectrum is not None:
         "atmospheric": None,
         "pss": None,
     }
+
+    if _saved_polarization_display is not None:
+        page_payload[POLARIZATION_SETTINGS_KEY] = _saved_polarization_display
 
     if atmospheric_result is not None:
         page_payload["atmospheric"] = {
@@ -210,7 +231,15 @@ if loaded_spectrum is not None:
     else:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
 else:
-    st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
+    # FR-09 can display a verified baseline even without atmospheric metadata.
+    # Keep its view settings on that fallback path without completing calibration.
+    if baseline_ready and _saved_polarization_display is not None:
+        st.session_state["pipeline_data"][PAGE_STAGE_KEY] = {
+            "complete": False, "atmospheric": None, "pss": None,
+            POLARIZATION_SETTINGS_KEY: _saved_polarization_display,
+        }
+    else:
+        st.session_state["pipeline_data"].pop(PAGE_STAGE_KEY, None)
     st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
     st.session_state.pop("calibrated_spectrum", None)
 
@@ -223,7 +252,7 @@ styles.render_page_header(
     title=PAGE_TITLE,
     subtitle=PAGE_SUBTITLE,
     current_stage=CURRENT_STAGE,
-    completed_stages=session_store.completed_count(),
+    completed_stages=session_store.completed_before(CURRENT_STAGE),
 )
 
 st.markdown(
@@ -495,7 +524,7 @@ with st.container(border=True):
             ),
         )
 
-    st.plotly_chart(
+    styles.render_plotly_chart(
         pss_fig,
         use_container_width=True,
         config={"displayModeBar": False},
@@ -589,7 +618,7 @@ with st.container(border=True):
             ),
         )
 
-        st.plotly_chart(
+        styles.render_plotly_chart(
             variability_fig,
             use_container_width=True,
             config={"displayModeBar": False},
@@ -625,6 +654,39 @@ with st.container(border=True):
             """,
             unsafe_allow_html=True,
         )
+
+
+def _record_polarization_change(message: str) -> None:
+    """Send view-only FR-09 changes through the existing audit/checkpoint hooks."""
+    session_store.log_event(message)
+    session_store.checkpoint_session("Polarization display settings recorded")
+
+
+# TODO: confirm against design — FR-09 was absent from the original mockups.
+# Keep the eight-stage navigation: this reusable panel is part of Page 05.
+_polarization_input = None
+_polarization_source = "baseline"
+_polarization_label = "Baseline-flattened spectrum (Stage 04; calibration not yet applied)"
+_polarization_unit = UNCALIBRATED_UNIT
+if baseline_ready:
+    _polarization_input = st.session_state.get("baseline_corrected_spectrum")
+    if (
+        PAGE_STAGE_KEY in st.session_state["completed_stages"]
+        and st.session_state.get("calibrated_spectrum") is not None
+    ):
+        _polarization_input = st.session_state["calibrated_spectrum"]
+        _polarization_source = "calibrated"
+        _polarization_label = "Calibrated spectrum (Stage 05 output)"
+        _polarization_unit = CALIBRATED_UNIT
+
+render_polarization_panel(
+    _polarization_input,
+    source_key=_polarization_source,
+    source_label=_polarization_label,
+    intensity_unit=_polarization_unit,
+    stage_key=PAGE_STAGE_KEY,
+    on_change=_record_polarization_change,
+)
 
 st.markdown(
     f"<div style='height:{styles.SECTION_GAP}px'></div>",

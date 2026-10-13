@@ -23,6 +23,10 @@ selectors below use the older, stable ``data-testid`` attributes instead.
 from __future__ import annotations
 
 from typing import Literal
+from pathlib import Path
+from html import escape
+
+from utils.accessibility import accessible_theme, normalize_font_scale
 
 import streamlit as st
 
@@ -65,6 +69,11 @@ HARTRAO_DARK_BLUE = "#395790"
 
 LCP_COLOR = "#1F77B4"
 RCP_COLOR = "#FF7F0E"
+
+# FR-09 derived traces: shared across panels and identical in both themes.
+# TODO: confirm against design — mean/Stokes I tokens were not in the original style guide.
+MEAN_COLOR = "#2CA02C"
+STOKES_I_COLOR = "#9467BD"
 
 FIT_LINE_COLOR: dict[ThemeName, str] = {
     "light": "#DC2626",
@@ -150,12 +159,16 @@ STATUS_BADGES: dict[ThemeName, dict[StatusName, tuple[str, str]]] = {
 
 def get_theme_name() -> ThemeName:
     """Return the active theme name, defaulting to ``"light"`` on first run."""
-    return st.session_state.setdefault("theme", "light")
+    name = st.session_state.get("theme", "light")
+    if name not in ("light", "dark"):
+        name = "light"
+    st.session_state["theme"] = name
+    return name
 
 
 def get_theme() -> dict[str, str]:
     """Return the token dict for the currently active theme."""
-    return THEMES[get_theme_name()]
+    return accessible_theme(THEMES[get_theme_name()])
 
 
 def get_status_badges() -> dict[StatusName, tuple[str, str]]:
@@ -231,6 +244,11 @@ def plotly_layout_theme(theme: dict[str, str] | None = None) -> dict:
     }
 
 
+def get_font_scale() -> int:
+    """Return the validated percentage, separate from page-owned widget state."""
+    return normalize_font_scale(st.session_state.get("font_scale", 100))
+
+
 def inject_base_css() -> None:
     """Inject global CSS for the active theme.
 
@@ -238,6 +256,11 @@ def inject_base_css() -> None:
     and ``sidebar.render_sidebar``, before any other UI is rendered.
     """
     theme = get_theme()
+    # Reset counters only after a chart/table has actually created them. Avoid
+    # modifying a source-browsing session just by injecting display CSS.
+    for key in ("_a11y_chart_counter", "_a11y_table_counter"):
+        if key in st.session_state:
+            st.session_state[key] = 0
 
     st.markdown(
         f"""
@@ -273,7 +296,7 @@ def inject_base_css() -> None:
 
         /* Hide Streamlit's chrome + default multipage nav -- the custom
            sidebar in utils/sidebar.py replaces the nav entirely. */
-        #MainMenu, footer, header {{ visibility: hidden; }}
+        #MainMenu, footer {{ visibility: hidden; }}
         [data-testid="stSidebarNav"] {{ display: none; }}
 
         .stApp {{
@@ -303,7 +326,7 @@ def inject_base_css() -> None:
             border: none !important;
             box-shadow: none !important;
             color: {theme['sidebar-text-inactive']} !important;
-            font-size: 12px !important;
+            font-size: 0.75rem !important;
             font-weight: 400 !important;
             text-align: left !important;
             justify-content: flex-start !important;
@@ -331,12 +354,12 @@ def inject_base_css() -> None:
 
         .hs-subtitle {{
             color: {theme['text-muted']};
-            font-size: 13px;
+            font-size: 0.8125rem;
         }}
 
         .hs-eyebrow {{
             color: {theme['text-muted']};
-            font-size: 10px;
+            font-size: 0.625rem;
             font-weight: 600;
             letter-spacing: 0.06em;
             text-transform: uppercase;
@@ -353,7 +376,7 @@ def inject_base_css() -> None:
 
         .hs-panel-title {{
             color: {theme['text-body']};
-            font-size: 10.5px;
+            font-size: 0.65625rem;
             font-weight: 600;
             margin-bottom: 12px;
         }}
@@ -362,7 +385,7 @@ def inject_base_css() -> None:
             display: inline-block;
             border-radius: {BADGE_RADIUS}px;
             padding: 3px 10px;
-            font-size: 10px;
+            font-size: 0.625rem;
             font-weight: 600;
             line-height: 1;
             white-space: nowrap;
@@ -373,7 +396,7 @@ def inject_base_css() -> None:
         button[data-testid="baseButton-primary"] {{
             background-color: {theme['accent']} !important;
             border: none !important;
-            color: #FFFFFF !important;
+            color: {theme['text-on-accent']} !important;
             border-radius: {BUTTON_RADIUS}px !important;
             font-weight: 600 !important;
         }}
@@ -405,10 +428,48 @@ def inject_base_css() -> None:
         [data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {{
             color: {theme['text-body']} !important;
         }}
+        /* FR-09 native controls/captions must follow the runtime theme too. */
+        [data-testid="stCheckbox"] label p,
+        [data-testid="stNumberInput"] label p {{
+            color: {theme['text-body']} !important;
+        }}
+        [data-testid="stCaptionContainer"] p {{
+            color: {theme['text-muted']} !important;
+        }}
+        [data-testid="stNumberInput"] input {{
+            color: {theme['text-body']} !important;
+            background-color: {theme['bg-panel']} !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+    # TODO: confirm against design — see build spec §3. Enlarged text and safe
+    # contrast intentionally override the original fixed-height small-text rules.
+    variables = {
+        "root-size": f"{16 * get_font_scale() / 100:g}px",
+        "sidebar-width": f"{SIDEBAR_WIDTH * get_font_scale() / 100:g}px",
+        "text-body": theme["text-body"], "text-muted": theme["text-muted"],
+        "bg-panel": theme["bg-panel"], "bg-panel-alt": theme["bg-panel-alt"],
+        "control-border": theme["control-border"], "text-on-accent": theme["text-on-accent"],
+        "sidebar-text": theme["sidebar-text-inactive"],
+    }
+    custom = ";".join(f"--hs-{key}:{value}" for key, value in variables.items())
+    css = Path(__file__).with_name("accessibility.css").read_text(encoding="utf-8")
+    st.markdown(f"<style>:root{{{custom}}}\n{css}</style>", unsafe_allow_html=True)
+
+
+def render_plotly_chart(figure, **kwargs):
+    """Render a chart with scalable text and equivalent keyboard view controls."""
+    from utils.accessibility_ui import render_plotly_chart as render
+    return render(figure, **kwargs)
+
+
+def render_dataframe(data, **kwargs):
+    """Keep the native grid plus an accessible, scalable read-only table view."""
+    from utils.accessibility_ui import render_dataframe as render
+    return render(data, **kwargs)
 
 
 def render_badge(label: str, status: StatusName) -> str:
@@ -453,28 +514,30 @@ def render_page_header(title: str, subtitle: str, current_stage: int, completed_
     """
     pct = max(0.0, min(1.0, completed_stages / TOTAL_STAGES))
     fill_width = max(4, round(PROGRESS_BAR_WIDTH * pct))
-    colors = PROGRESS_BAR_COLORS
+    colors = dict(PROGRESS_BAR_COLORS, label=get_theme()["text-muted"], caption=get_theme()["text-muted"])
     theme = get_theme()
 
     st.markdown(
         f"""
-        <div style="display:flex; justify-content:space-between; align-items:flex-start;
+        <div class="hs-page-header" style="display:flex; justify-content:space-between; align-items:flex-start;
                     border-bottom:1px solid {theme['border-subtle']};
                     padding-bottom:16px; margin-bottom:{SECTION_GAP}px;">
           <div>
-            <div class="hs-title" style="font-size:24px;">{title}</div>
-            <div class="hs-subtitle">{subtitle}</div>
+            <h1 id="hs-main-content" tabindex="-1" class="hs-title">{escape(title)}</h1>
+            <div class="hs-subtitle">{escape(subtitle)}</div>
           </div>
-          <div style="width:{PROGRESS_BAR_WIDTH}px; text-align:right; flex-shrink:0;">
-            <div style="font-size:10px; font-weight:600; color:{colors['label']};">
+          <div class="hs-progress" style="width:{PROGRESS_BAR_WIDTH}px; text-align:right; flex-shrink:0;">
+            <div style="font-size:0.625rem; font-weight:600; color:{colors['label']};">
                 Stage {current_stage} of {TOTAL_STAGES}
             </div>
-            <div style="width:100%; height:{PROGRESS_BAR_HEIGHT}px; border-radius:{PROGRESS_BAR_RADIUS}px;
+            <div role="progressbar" aria-label="Pipeline stages complete" aria-valuemin="0"
+                 aria-valuemax="8" aria-valuenow="{max(0, min(8, completed_stages))}"
+                 style="width:100%; height:{PROGRESS_BAR_HEIGHT}px; border-radius:{PROGRESS_BAR_RADIUS}px;
                         background-color:{colors['track']}; margin:6px 0 4px;">
               <div style="width:{fill_width}px; height:100%; border-radius:{PROGRESS_BAR_RADIUS}px;
                           background-color:{colors['fill']};"></div>
             </div>
-            <div style="font-size:9px; color:{colors['caption']};">
+            <div style="font-size:0.5625rem; color:{colors['caption']};">
                 {completed_stages}/{TOTAL_STAGES} stages complete
             </div>
           </div>

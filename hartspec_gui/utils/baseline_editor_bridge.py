@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 
 from utils.session_store import SESSIONS_DIR
+from utils.accessibility import normalize_font_scale
 
 _LOCK = threading.RLock()
 
@@ -128,6 +129,7 @@ def initialize_bridge(
     bandpass_mode: str,
     checkpoint_token: str | None = None,
     restored_parameters: Mapping[str, Any] | None = None,
+    font_scale: int = 100,
 ) -> dict[str, Any]:
     """Create/refresh the bridge input while preserving valid Dash-side editor state."""
     fingerprint = spectrum_fingerprint(spectrum)
@@ -146,6 +148,7 @@ def initialize_bridge(
         "checkpoint_token": checkpoint_token or existing.get("checkpoint_token"),
         "selection_semantics": existing.get("selection_semantics", "flat_baseline_fit_regions_v2"),
         "theme": theme,
+        "font_scale": normalize_font_scale(font_scale),
         "bandpass_mode": bandpass_mode,
         "spectrum_fingerprint": fingerprint,
         "spectrum": _json_spectrum(spectrum),

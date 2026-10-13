@@ -12,6 +12,7 @@ from __future__ import annotations
 import streamlit as st
 
 from utils import session_store, styles
+from utils.accessibility import FONT_SCALES, normalize_font_scale
 
 # (path relative to the app's root script, page label as shown in the nav)
 STAGES: list[tuple[str, str]] = [
@@ -24,6 +25,18 @@ STAGES: list[tuple[str, str]] = [
     ("pages/07_Spectral_Fitting.py", "07  Spectral Fitting"),
     ("pages/08_Export_and_Session.py", "08  Export & Session"),
 ]
+
+
+def _set_theme(name: str) -> None:
+    """Commit display-only preferences before rerun; preserve all pipeline outputs."""
+    st.session_state["theme"] = name
+    session_store.checkpoint_session("Display theme changed", allow_empty=True)
+
+
+def _set_font_scale() -> None:
+    """Copy the temporary widget into a page-independent, checkpointed preference."""
+    st.session_state["font_scale"] = normalize_font_scale(st.session_state["_a11y_font_scale"])
+    session_store.checkpoint_session("Display font size changed", allow_empty=True)
 
 
 def render_sidebar(current_stage: int) -> None:
@@ -43,8 +56,10 @@ def render_sidebar(current_stage: int) -> None:
     theme = styles.get_theme()
 
     with st.sidebar:
+        st.markdown('<a class="hs-skip-link" href="#hs-main-content">Skip to page content</a>',
+                    unsafe_allow_html=True)
         st.markdown(
-            '<div style="padding:24px 24px 12px; font-size:18px; font-weight:700; '
+            '<div style="padding:24px 24px 12px; font-size:1.125rem; font-weight:700; '
             'color:#FFFFFF;">HARTSPEC</div>',
             unsafe_allow_html=True,
         )
@@ -52,10 +67,11 @@ def render_sidebar(current_stage: int) -> None:
         for idx, (page_path, label) in enumerate(STAGES, start=1):
             if idx == current_stage:
                 st.markdown(
-                    f'<div style="margin:2px 12px 2px; padding:8px 12px; border-radius:6px; '
+                    f'<div class="hs-active-nav" aria-current="page" '
+                    f'style="margin:2px 12px 2px; padding:8px 12px; border-radius:6px; '
                     # font-size intentionally omitted here -- standardizes label size
                     # between the active (filled pill) and inactive (button) nav items
-                    f'background-color:{theme["accent"]}; color:#FFFFFF; '
+                    f'background-color:{theme["accent"]}; color:{theme["text-on-accent"]}; '
                     f'font-weight:600;">{label}</div>',
                     unsafe_allow_html=True,
                 )
@@ -68,13 +84,29 @@ def render_sidebar(current_stage: int) -> None:
         st.caption("THEME")
         col_light, col_dark = st.columns(2)
         with col_light:
-            if st.button("☀ Light", key="theme_light", use_container_width=True):
-                st.session_state["theme"] = "light"
-                st.rerun()
+            st.button("☀ Light", key="theme_light", use_container_width=True,
+                      on_click=_set_theme, args=("light",))
         with col_dark:
-            if st.button("🌙 Dark", key="theme_dark", use_container_width=True):
-                st.session_state["theme"] = "dark"
-                st.rerun()
+            st.button("🌙 Dark", key="theme_dark", use_container_width=True,
+                      on_click=_set_theme, args=("dark",))
+
+        st.caption(f"Current theme: {styles.get_theme_name().title()}")
+        # The permanent key must not be owned by Streamlit's per-page widget cleanup.
+        st.session_state["_a11y_font_scale"] = styles.get_font_scale()
+        # Display numeric percentages directly: Streamlit 1.32's AppTest
+        # selectbox cannot round-trip format_func labels like "200%" when the
+        # stored widget value is the integer 200. Keep the unit in the label.
+        st.selectbox("Font size (%)", FONT_SCALES, key="_a11y_font_scale", on_change=_set_font_scale)
+        with st.expander("Keyboard and accessibility help"):
+            st.markdown(
+                "Use **Tab / Shift+Tab** to move, **Enter / Space** to activate controls, "
+                "and **arrow keys** in lists and number inputs. **Escape** closes an open list. "
+                "Use the browser's zoom controls for additional enlargement. "
+                "Each chart has keyboard view controls and a value inspector; tables have an "
+                "accessible read-only view. In the baseline editor, select a region with "
+                "**Region to edit**, enter its limits, then use Add, Update or Delete. "
+                "Tab past the final editor control to return to this page."
+            )
 
         st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
         st.caption("SESSION")

@@ -414,6 +414,9 @@ def panel(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
+    # FR-22 owns table accessibility in a separately tested presentation adapter.
+    # Keep this unit test focused on the FR-20 report/session non-mutation contract.
+    monkeypatch.setattr(module, "styles", types.SimpleNamespace(render_dataframe=fake.dataframe))
     return module, fake
 
 
@@ -503,7 +506,9 @@ def test_view_controls_do_not_change_the_real_checkpoint_payload(recorded_sessio
     tree = ast.parse(path.read_text(encoding="utf-8"))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                     and node.name == "_session_payload")
-    namespace = {"Any": object, "st": types.SimpleNamespace(session_state=recorded_session),
+    from utils.accessibility import preferences
+    namespace = {"Any": object, "preferences": preferences,
+                 "st": types.SimpleNamespace(session_state=recorded_session),
                  "checkpoint_store": types.SimpleNamespace(json_safe=copy.deepcopy)}
     code = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
     exec(compile(code, str(path), "exec"), namespace)

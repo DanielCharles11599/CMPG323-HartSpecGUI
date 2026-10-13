@@ -11,6 +11,10 @@ import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_update
 
 from utils import styles
+from utils.accessibility import (
+    accessible_theme, normalize_font_scale, region_options, selected_region_index, validate_view_range,
+)
+from utils.accessibility_plotly import scaled_figure
 from utils.baseline_editor_selection_logic import (
     RegionValidationError, add_region, update_region, delete_region,
     region_from_plotly_selection, spectrum_velocity_bounds,
@@ -38,10 +42,10 @@ _SERVER_PORT: int | None = None
 
 def _theme_tokens(theme_name: str) -> dict[str, str]:
     """Return a valid shared theme token set for the iframe."""
-    return styles.THEMES["dark" if theme_name == "dark" else "light"]
+    return accessible_theme(styles.THEMES["dark" if theme_name == "dark" else "light"])
 
 
-def _root_style(theme_name: str) -> dict[str, str]:
+def _root_style(theme_name: str, font_scale: int = 100) -> dict[str, str]:
     """Expose shared Streamlit theme tokens to Dash CSS custom properties."""
     theme = _theme_tokens(theme_name)
     error_fill, error_text = styles.STATUS_BADGES["dark" if theme_name == "dark" else "light"]["error"]
@@ -60,6 +64,10 @@ def _root_style(theme_name: str) -> dict[str, str]:
         "--hs-text-muted": theme["text-muted"],
         "--hs-text-faint": theme["text-faint"],
         "--hs-accent": theme["accent"],
+        "--hs-font-scale": str(normalize_font_scale(font_scale) / 100),
+        "--hs-root-size": f"{16 * normalize_font_scale(font_scale) / 100:g}px",
+        "--hs-text-on-accent": theme["text-on-accent"],
+        "--hs-control-border": theme["control-border"],
         "--hs-error-fill": error_fill,
         "--hs-error-text": error_text,
     }
@@ -251,40 +259,39 @@ def _fit_panel_figure(
 
 
 def _table() -> dash_table.DataTable:
-    """Create the editable FR-05 block table with inline × delete cells."""
+    """Show committed regions; the labelled selector/buttons provide keyboard editing."""
     return dash_table.DataTable(
         id="block-table",
         columns=[
             {"name": "Block", "id": "block", "editable": False, "type": "numeric"},
             {"name": "Start (km/s)", "id": "start", "editable": False, "type": "numeric"},
             {"name": "End (km/s)", "id": "end", "editable": False, "type": "numeric"},
-            {"name": "", "id": "delete", "editable": False},
         ],
         data=[],
         editable=False,
         row_selectable="single",
         selected_rows=[],
-        cell_selectable=True,
+        cell_selectable=False,
         page_action="none",
         # Grow with the selection list; users should not scroll after just two rows.
-        style_table={"overflowY": "visible", "overflowX": "hidden"},
+        style_table={"overflowY": "visible", "overflowX": "auto"},
         style_header={
-            "height": "32px",
-            "minHeight": "32px",
-            "maxHeight": "32px",
+            "height": "auto",
+            "minHeight": "2rem",
+            "maxHeight": "none",
             "backgroundColor": styles.HARTRAO_DARK_BLUE,
             "color": "#F1F5F9",
-            "fontSize": "10px",
+            "fontSize": "0.625rem",
             "fontWeight": 600,
             "border": "0",
             "paddingLeft": "10px",
             "textAlign": "left",
         },
         style_cell={
-            "height": "28px",
-            "minHeight": "28px",
-            "maxHeight": "28px",
-            "fontSize": "10.5px",
+            "height": "auto",
+            "minHeight": "1.75rem",
+            "maxHeight": "none",
+            "fontSize": "0.65625rem",
             "fontFamily": "Inter, -apple-system, 'Segoe UI', sans-serif",
             "backgroundColor": "var(--hs-bg-panel)",
             "color": "var(--hs-text-body)",
@@ -312,7 +319,7 @@ def _order_dropdown(component_id: str) -> dcc.Dropdown:
         clearable=False,
         searchable=False,
         disabled=True,
-        style={"width": "72px", "fontSize": "11px"},
+        style={"width": "5rem", "fontSize": "0.75rem"},
     )
 
 
@@ -323,6 +330,8 @@ def create_app() -> Dash:
     app.layout = html.Div(
         id="root",
         className="hs-dash-root",
+        role="region",
+        **{"aria-label": "Baseline region editor"},
         children=[
             dcc.Location(id="url", refresh=False),
             dcc.Store(id="session-store"),
@@ -330,6 +339,9 @@ def create_app() -> Dash:
             dcc.Store(id="selected-orders-store"),
             dcc.Store(id="persist-version"),
             dcc.Store(id="region-edit-version"),
+            dcc.Store(id="view-range-store"),
+            html.A("Skip chart to region controls", href="#region-controls", className="hs-skip-link"),
+            html.H2("Baseline editor", className="hs-panel-title"),
             html.Div(id="checkpoint-message", role="status", className="hs-selection-feedback"),
             html.Div(
                 className="hs-dash-panel hs-canvas-panel",
@@ -342,21 +354,24 @@ def create_app() -> Dash:
                         id="spectrum-graph",
                         figure=_empty_figure("light", height=270),
                         config={"displayModeBar": False, "scrollZoom": True},
-                        style={"height": "270px"},
+                        style={"height": "calc(270px * var(--hs-font-scale, 1))"},
                     ),
                 ],
             ),
             html.Div(className="hs-dash-panel hs-block-panel", children=[
                 html.Div([
-                    html.Label("Start velocity (km/s)"),
+                    html.Label("Region to edit", htmlFor="region-choice"),
+                    dcc.Dropdown(id="region-choice", options=[], value=None, clearable=True,
+                                 placeholder="Choose a region", style={"minWidth": "14rem"}),
+                    html.Label("Start velocity (km/s)", htmlFor="region-start"),
                     dcc.Input(id="region-start", type="number", step=0.1, debounce=True),
-                    html.Label("End velocity (km/s)"),
+                    html.Label("End velocity (km/s)", htmlFor="region-end"),
                     dcc.Input(id="region-end", type="number", step=0.1, debounce=True),
                     html.Button("Add flat region", id="add-region", n_clicks=0),
                     html.Button("Update selected", id="update-region", n_clicks=0),
                     html.Button("Delete selected", id="delete-region", n_clicks=0),
                     html.Span(id="region-error", role="alert", className="hs-validation"),
-                 ], className="hs-region-controls"),
+                 ], id="region-controls", tabIndex=-1, className="hs-region-controls"),
                 _table(),
             ]),
             html.Div("Six-panel polynomial order comparison", className="hs-grid-label"),
@@ -368,7 +383,7 @@ def create_app() -> Dash:
                             id=f"fit-panel-{index}",
                             figure=_empty_figure("light"),
                             config={"displayModeBar": False},
-                            style={"height": "98px"},
+                            style={"height": "calc(98px * var(--hs-font-scale, 1))"},
                         ),
                         className="hs-fit-cell",
                     )
@@ -386,15 +401,31 @@ def create_app() -> Dash:
                         inline=True,
                         className="hs-radio",
                     ),
-                    html.Span("LCP", className="hs-order-label"),
+                    html.Label("LCP order", htmlFor="manual-order-lcp", className="hs-order-label"),
                     _order_dropdown("manual-order-lcp"),
-                    html.Span("RCP", className="hs-order-label"),
+                    html.Label("RCP order", htmlFor="manual-order-rcp", className="hs-order-label"),
                     _order_dropdown("manual-order-rcp"),
                     html.Button("Fit Polynomial", id="fit-polynomial", className="hs-fit-button", n_clicks=0),
-                    html.Span(id="selection-feedback", className="hs-selection-feedback"),
-                    html.Span(id="validation-message", className="hs-validation"),
+                    html.Span(id="selection-feedback", role="status", className="hs-selection-feedback"),
+                    html.Span(id="validation-message", role="status", className="hs-validation"),
                 ],
             ),
+            html.Details([
+                html.Summary("Keyboard chart view and values"),
+                html.P("Display only: changing the view does not change baseline regions or polynomial fits."),
+                html.Label("View start velocity (km/s)", htmlFor="view-start"),
+                dcc.Input(id="view-start", type="number", step=0.1),
+                html.Label("View end velocity (km/s)", htmlFor="view-end"),
+                dcc.Input(id="view-end", type="number", step=0.1),
+                html.Button("Apply chart view", id="view-apply", n_clicks=0),
+                html.Button("Reset chart view", id="view-reset", n_clicks=0),
+                html.Div(id="view-error", role="alert"),
+                html.Label("Spectrum sample (first = 1)", htmlFor="sample-number"),
+                dcc.Input(id="sample-number", type="number", min=1, step=1, value=1, debounce=True),
+                html.Div(id="sample-values", role="status"),
+                html.Div(id="fit-values"),
+            ], className="hs-dash-panel hs-keyboard-tools"),
+            html.P("End of editor. Press Tab to continue to the Streamlit page.", id="editor-end", tabIndex=0),
         ],
     )
 
@@ -419,7 +450,7 @@ def create_app() -> Dash:
         }
         manual_orders = state.get("manual_orders") or {"LCP": 3, "RCP": 3}
         return (
-            _root_style(state.get("theme", "light")),
+            _root_style(state.get("theme", "light"), state.get("font_scale", 100)),
             state,
             state.get("blocks", []),
             state.get("selection_mode", "Automatic"),
@@ -436,14 +467,14 @@ def create_app() -> Dash:
         Input("update-region", "n_clicks"),
         Input("delete-region", "n_clicks"),
         State("block-table", "data"),
-        State("block-table", "selected_rows"),
+        State("region-choice", "value"),
         State("region-start", "value"),
         State("region-end", "value"),
         State("session-store", "data"),
         prevent_initial_call=True,
     )
     def edit_flat_regions(selected_data, add_clicks, update_clicks, delete_clicks,
-                          rows, selected_rows, start_value, end_value, state):
+                          rows, region_choice, start_value, end_value, state):
         """Only commit valid line-free selections; preserve old rows on errors."""
         if not state or not (state.get("spectrum") or {}).get("Vlsr"):
             return no_update, "No corrected spectrum available."
@@ -458,9 +489,10 @@ def create_app() -> Dash:
             elif trigger == "add-region":
                 new_rows = add_region(rows, start_value, end_value, lower, upper)
             elif trigger in ("update-region", "delete-region"):
-                if not selected_rows:
-                    raise RegionValidationError("Choose a region row first.")
-                index = selected_rows[0]
+                try:
+                    index = selected_region_index(region_choice, rows)
+                except ValueError as exc:
+                    raise RegionValidationError(str(exc)) from exc
                 if trigger == "update-region":
                     new_rows = update_region(rows, index, start_value, end_value, lower, upper)
                 else:
@@ -472,18 +504,92 @@ def create_app() -> Dash:
             return no_update, str(exc)
 
     @app.callback(
-        Output("region-start", "value"),
-        Output("region-end", "value"),
-        Input("block-table", "selected_rows"),
-        State("block-table", "data"),
+        Output("region-choice", "options"), Output("region-choice", "value"),
+        Input("block-table", "data"), Input("block-table", "selected_rows"),
+    )
+    def choose_region(rows, selected_rows):
+        """Row clicks and keyboard selection share the same committed region list.
+
+        Clear selection after any edit/add/delete so a re-numbered next row
+        cannot be accidentally updated or deleted by a second activation.
+        """
+        chosen = None
+        if ctx.triggered_id == "block-table" and ctx.triggered_prop_ids.get("block-table.selected_rows"):
+            if selected_rows and 0 <= selected_rows[0] < len(rows or []):
+                chosen = selected_rows[0]
+        return region_options(rows), chosen
+
+    @app.callback(
+        Output("region-start", "value"), Output("region-end", "value"),
+        Input("region-choice", "value"), State("block-table", "data"),
         prevent_initial_call=True,
     )
-    def populate_region_inputs(selected_rows, rows):
-        """Load the chosen region's exact boundaries into editable number boxes."""
-        if not selected_rows or not rows or selected_rows[0] >= len(rows):
+    def populate_region_inputs(chosen, rows):
+        """Load exact values into labelled fields without relying on table focus."""
+        try:
+            row = (rows or [])[selected_region_index(chosen, rows)]
+        except ValueError:
             return no_update, no_update
-        row = rows[selected_rows[0]]
         return row["start"], row["end"]
+
+    @app.callback(
+        Output("view-range-store", "data"), Output("view-error", "children"),
+        Input("view-apply", "n_clicks"), Input("view-reset", "n_clicks"),
+        State("view-start", "value"), State("view-end", "value"), prevent_initial_call=True,
+    )
+    def change_view(_apply, _reset, start, end):
+        """Adjust only the viewport; invalid entries retain the previous valid view."""
+        if ctx.triggered_id == "view-reset":
+            return None, ""
+        try:
+            return list(validate_view_range(start, end)), ""
+        except ValueError as exc:
+            return no_update, str(exc)
+
+    @app.callback(
+        Output("sample-values", "children"), Output("sample-number", "max"),
+        Input("sample-number", "value"), Input("session-store", "data"),
+    )
+    def inspect_sample(number, state):
+        """Expose original sample values in a semantic table, not hover-only text."""
+        spectrum = (state or {}).get("spectrum") or {}
+        velocity = spectrum.get("Vlsr") or []
+        if not velocity:
+            return "No corrected spectrum available.", 1
+        if (isinstance(number, bool) or not isinstance(number, (int, float))
+                or not 1 <= number <= len(velocity) or number != int(number)):
+            return f"Enter a sample from 1 to {len(velocity)}.", len(velocity)
+        index = int(number) - 1
+        values = [velocity[index]] + [
+            (spectrum.get(pol) or [])[index]
+            if index < len(spectrum.get(pol) or []) else "Unavailable"
+            for pol in ("LCP", "RCP")
+        ]
+        return html.Table([
+            html.Caption(f"Spectrum sample {index + 1}"),
+            html.Thead(html.Tr([html.Th(text, scope="col") for text in ("Vlsr (km/s)", "LCP", "RCP")])),
+            html.Tbody(html.Tr([html.Td(str(value)) for value in values])),
+        ]), len(velocity)
+
+    @app.callback(
+        Output("fit-values", "children"), Input("fit-result-store", "data"),
+        Input("selected-orders-store", "data"),
+    )
+    def inspect_fits(result, selected):
+        """Provide a text equivalent of all six polynomial comparison scores."""
+        panels = (result or {}).get("panels") or []
+        if not panels:
+            return html.P("Fit the polynomial to inspect comparison scores.")
+        return html.Table([
+            html.Caption("Polynomial comparison"),
+            html.Thead(html.Tr([html.Th(text, scope="col") for text in
+                               ("Polarisation", "Order", "Chi-squared", "Selected")])),
+            html.Tbody([html.Tr([html.Td(str(panel.get("polarization", ""))),
+                                html.Td(str(panel.get("order", ""))),
+                                html.Td(str(panel.get("chi_squared", "Unavailable"))),
+                                html.Td("Yes" if (selected or {}).get(panel.get("polarization")) ==
+                                        panel.get("order") else "No")]) for panel in panels]),
+        ])
 
     @app.callback(
         Output("fit-result-store", "data", allow_duplicate=True),
@@ -562,9 +668,10 @@ def create_app() -> Dash:
         Input("manual-order-lcp", "value"),
         Input("manual-order-rcp", "value"),
         Input("fit-result-store", "data"),
+        Input("view-range-store", "data"),
         State("session-store", "data"),
     )
-    def render_editor(rows, selection_mode, manual_order_lcp, manual_order_rcp, fit_result, state):
+    def render_editor(rows, selection_mode, manual_order_lcp, manual_order_rcp, fit_result, view_range, state):
         state = state or {"theme": "light"}
         theme_name = state.get("theme", "light")
         normalized, errors = normalize_blocks(rows)
@@ -581,6 +688,12 @@ def create_app() -> Dash:
             _fit_panel_figure(panel, fit_result, theme_name, selected_orders)
             for panel in comparison_panels()
         ]
+
+        if view_range:
+            spectrum_fig.update_xaxes(range=view_range, autorange=False)
+        scale = normalize_font_scale(state.get("font_scale", 100))
+        spectrum_fig = scaled_figure(spectrum_fig, scale)
+        fit_figures = [scaled_figure(figure, scale) for figure in fit_figures]
 
         integration_error = None
         session_id = state.get("session_id")

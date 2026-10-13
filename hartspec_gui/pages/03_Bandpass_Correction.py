@@ -568,7 +568,7 @@ def _render_before_after(result: Mapping[str, Any]) -> None:
             tickfont=dict(color=theme["text-body"], size=11),
         )
         fig.update_annotations(font=dict(color=theme["text-body"]))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, theme=None)
+        styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": True}, theme=None)
         if len(common_range) == 2:
             st.caption(f"Highlighted common velocity range: {common_range[0]:.3f} to {common_range[1]:.3f} km/s.")
         else:

@@ -12,6 +12,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from utils import styles
+
 from .observation_log_logic import (
     STAGES,
     build_log_download,
@@ -76,8 +78,10 @@ def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str]
                  "Message": row.message, "Record note": row.note}
                 for row in events
             ]
-            st.dataframe(_styled_frame(event_rows, theme, monospace=True), height=height,
-                         use_container_width=True, hide_index=True)
+            styles.render_dataframe(
+                _styled_frame(event_rows, theme, monospace=True),
+                height=height, use_container_width=True, hide_index=True,
+            )
         else:
             st.caption("No events match this search." if log.events else "No actions recorded yet this session.")
 
@@ -101,8 +105,10 @@ def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str]
                      "Recorded stage status": row.status, "Field in pipeline_data": row.field}
                     for row in parameters
                 ]
-                st.dataframe(_styled_frame(parameter_rows, theme), height=320,
-                             use_container_width=True, hide_index=True)
+                styles.render_dataframe(
+                    _styled_frame(parameter_rows, theme),
+                    height=320, use_container_width=True, hide_index=True,
+                )
             else:
                 st.caption("No parameters match this view.")
 

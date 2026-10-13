@@ -226,13 +226,13 @@ FLAGGED_CELL_STYLE = "display:flex; align-items:center; min-height:20px; padding
 def _render_table_header(columns: list[tuple[str, str]]) -> None:
     theme = styles.get_theme()
     cells = "".join(
-        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10px; '
+        f'<div style="flex:0 0 {width}; padding-left:10px; font-size:0.625rem; '
         f'font-weight:600; color:{theme["table-header-text"]};">{label}</div>'
         for label, width in columns
     )
     st.markdown(
         f"""
-        <div style="display:flex; align-items:center; height:{styles.TABLE_HEADER_HEIGHT}px;
+        <div style="display:flex; align-items:center; min-height:{styles.TABLE_HEADER_HEIGHT}px;
                     background-color:{theme['table-header-bg']}; border-radius:{styles.PANEL_RADIUS}px
                     {styles.PANEL_RADIUS}px 0 0;">
           {cells}
@@ -256,12 +256,12 @@ def _render_table_rows(rows: list[tuple[list[tuple[str, str]], bool]]) -> None:
     for cells_html, striped in rows:
         bg = theme["bg-panel-alt"] if striped else theme["bg-panel"]
         cells = "".join(
-            f'<div style="flex:0 0 {width}; padding-left:10px; font-size:10.5px; display:flex; '
+            f'<div style="flex:0 0 {width}; padding-left:10px; font-size:0.65625rem; display:flex; '
             f'align-items:center; margin:0; line-height:1.2; color:{theme["text-body"]};">{content}</div>'
             for content, width in cells_html
         )
         html_rows.append(
-            f'<div style="display:flex; align-items:center; height:{VALIDATION_ROW_HEIGHT}px; '
+            f'<div style="display:flex; align-items:center; min-height:{VALIDATION_ROW_HEIGHT}px; '
             f'box-sizing:border-box; margin:0; padding:0; background-color:{bg}; '
             f'border-bottom:1px solid {theme["border-subtle"]};">{cells}</div>'
         )
@@ -473,13 +473,13 @@ def _render_load_progress() -> None:
             fill_width = round(1140 * frac)
             progress_slot.markdown(
                 f"""
-                <div style="font-size:14px; color:{theme['text-body']};">{label}</div>
+                <div style="font-size:0.875rem; color:{theme['text-body']};">{label}</div>
                 <div style="width:100%; height:10px; border-radius:5px;
                             background-color:{theme['border-subtle']}; margin:14px 0 8px;">
                   <div style="width:{fill_width}px; height:100%; border-radius:5px;
                               background-color:{theme['accent']};"></div>
                 </div>
-                <div style="font-size:11px; color:{theme['text-muted']};">{caption}</div>
+                <div style="font-size:0.6875rem; color:{theme['text-muted']};">{caption}</div>
                 """,
                 unsafe_allow_html=True,
             )
@@ -784,7 +784,7 @@ def _render_validation_table() -> None:
                 col_file, col_issue, col_status, col_action = st.columns(VALIDATION_FLAGGED_WEIGHTS)
                 with col_file:
                     st.markdown(
-                        f'<div style="{FLAGGED_CELL_STYLE} font-size:10.5px; color:{theme["text-body"]};">'
+                        f'<div style="{FLAGGED_CELL_STYLE} font-size:0.65625rem; color:{theme["text-body"]};">'
                         f'{row["file"]}</div>',
                         unsafe_allow_html=True,
                     )
@@ -799,8 +799,8 @@ def _render_validation_table() -> None:
                     tooltip = "&#10;".join(html.escape(part, quote=True) for part in issue_parts)
                     if not is_pending:  # while confirming, only the confirmation message is shown
                         st.markdown(
-                            f'<div style="{FLAGGED_CELL_STYLE} font-size:10.5px; color:{theme["text-body"]}; '
-                            f'white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{tooltip}">'
+                            f'<div style="{FLAGGED_CELL_STYLE} font-size:0.65625rem; color:{theme["text-body"]}; '
+                            f'white-space:normal; overflow-wrap:anywhere;" title="{tooltip}">'
                             f'{row["issue"]}</div>',
                             unsafe_allow_html=True,
                         )
@@ -1355,7 +1355,7 @@ def _header_table_html(df: pd.DataFrame, theme: Mapping[str, str]) -> str:
     """
     font = "'Inter', -apple-system, 'Segoe UI', sans-serif"
     head = "".join(
-        f'<th class="{"first" if i == 0 else ""}">{html.escape(str(name))}</th>'
+        f'<th scope="col" class="{"first" if i == 0 else ""}">{html.escape(str(name))}</th>'
         for i, name in enumerate(["File", *df.columns])
     )
     body_rows = []
@@ -1367,20 +1367,24 @@ def _header_table_html(df: pd.DataFrame, theme: Mapping[str, str]) -> str:
             cells.append(f'<td title="{html.escape(text, quote=True)}">{html.escape(text)}</td>')
         body_rows.append(f'<tr class="{"alt" if row_index % 2 else ""}">{"".join(cells)}</tr>')
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-html, body {{ margin:0; padding:0; background:transparent; font-family:{font}; }}
+html, body {{ margin:0; padding:0; background:transparent; font-family:{font};
+              font-size:{16 * styles.get_font_scale() / 100:g}px; }}
+.wrap:focus-visible {{ outline:3px solid {theme.get('control-border', theme['text-body'])}; outline-offset:-3px; }}
 .wrap {{ height:{HEADER_TABLE_HEIGHT - 2}px; overflow:auto; box-sizing:border-box; background:{theme['bg-panel']};
          border:1px solid {theme['border-subtle']}; border-radius:{styles.PANEL_RADIUS}px; }}
 table {{ border-collapse:separate; border-spacing:0; min-width:100%; width:max-content; }}
-th {{ position:sticky; top:0; z-index:2; height:{styles.TABLE_HEADER_HEIGHT}px; padding:0 10px; text-align:left;
-      white-space:nowrap; font-size:10px; font-weight:600; background:{theme['table-header-bg']};
+th {{ position:sticky; top:0; z-index:2; min-height:{styles.TABLE_HEADER_HEIGHT}px; padding:0 10px; text-align:left;
+      white-space:nowrap; font-size:0.625rem; font-weight:600; background:{theme['table-header-bg']};
       color:{theme['table-header-text']}; }}
-td {{ height:{HEADER_TABLE_ROW_HEIGHT}px; padding:0 10px; white-space:nowrap; max-width:280px; overflow:hidden;
-      text-overflow:ellipsis; font-size:10.5px; color:{theme['text-body']}; background:{theme['bg-panel']};
+td {{ min-height:{HEADER_TABLE_ROW_HEIGHT}px; padding:4px 10px; white-space:normal; max-width:28rem;
+      text-overflow:ellipsis; font-size:0.65625rem; color:{theme['text-body']}; background:{theme['bg-panel']};
       border-bottom:1px solid {theme['border-subtle']}; }}
 tr.alt td {{ background:{theme['bg-panel-alt']}; }}
 th.first, td.first {{ position:sticky; left:0; z-index:1; }}
 th.first {{ z-index:3; }}
-</style></head><body><div class="wrap"><table><thead><tr>{head}</tr></thead>
+</style></head><body><div class="wrap" tabindex="0" role="region" aria-label="FITS headers: use arrow keys to scroll">
+<table><caption style="text-align:left; color:{theme['text-body']}">FITS header fields</caption>
+<thead><tr>{head}</tr></thead>
 <tbody>{"".join(body_rows)}</tbody></table></div></body></html>"""
 
 
@@ -1510,7 +1514,7 @@ def _render_header_fields_table() -> None:
                 if HEADER_TABLE_RENDERER == "html":
                     components.html(_header_table_html(df, theme), height=HEADER_TABLE_HEIGHT, scrolling=False)
                 else:
-                    st.dataframe(_themed_header_styler(df, theme), use_container_width=True, hide_index=True)
+                    styles.render_dataframe(_themed_header_styler(df, theme), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
@@ -1718,9 +1722,9 @@ def main() -> None:
         }}
         .element-container:has(.hs-compact-btn-marker) + .element-container button {{
             padding: 2px 10px !important;
-            font-size: 10px !important;
+            font-size: 0.625rem !important;
             min-height: 24px !important;
-            height: 24px !important;
+            height: auto !important;
             line-height: 1 !important;
         }}
         </style>
@@ -1768,4 +1772,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

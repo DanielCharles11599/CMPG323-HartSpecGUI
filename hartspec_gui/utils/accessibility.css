@@ -1,0 +1,91 @@
+/* FR-22: root rem scaling, keyboard focus and reflow. Injected after base CSS. */
+html { font-size: var(--hs-root-size, 16px) !important; }
+.stApp { color: var(--hs-text-body); }
+/* Hide only branding/menu chrome: retain the sidebar reopen control at zoom. */
+header[data-testid="stHeader"] { visibility: visible !important; background: transparent; }
+[data-testid="stToolbar"] { visibility: hidden; }
+[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { visibility: visible !important; }
+[data-testid="stSidebar"] { width: var(--hs-sidebar-width) !important; min-width: 0 !important; }
+[data-testid="stSidebar"] [data-testid="stSidebarContent"] { overflow-y: auto; }
+[data-testid="stAppViewContainer"] .block-container { min-width: 0; }
+.hs-page-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 1rem; }
+.hs-page-header h1 { margin: 0; padding: 0; font-size: 1.5rem; line-height: 1.3; }
+.hs-progress { max-width: 100%; }
+.hs-skip-link { position: absolute; left: -10000px; top: auto; }
+.hs-skip-link:focus { position: relative; left: auto; display: block; padding: .65rem;
+  background: #FFFFFF; color: #000000 !important; z-index: 99999; }
+/* Two-colour focus survives white, navy, blue and status surfaces. */
+.stApp :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible,
+.stApp label:has(input:focus-visible), .stApp [data-baseweb="select"]:focus-within {
+  outline: 3px solid #FFFFFF !important; outline-offset: 2px !important;
+  box-shadow: 0 0 0 6px #000000 !important;
+}
+.stApp :is(input, select, textarea, button) { font-size: inherit; }
+.stApp button { min-height: 2rem; height: auto; white-space: normal; }
+.stApp button p { font-size: .75rem; line-height: 1.5; white-space: normal; }
+.stApp :is([data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div) {
+  color: var(--hs-text-body) !important; background: var(--hs-bg-panel) !important;
+  border-color: var(--hs-control-border) !important; min-height: 2.25rem; height: auto;
+}
+.stApp :is(input, textarea) { color: var(--hs-text-body) !important; background: var(--hs-bg-panel) !important; }
+.stApp :is(input, textarea)::placeholder { color: var(--hs-text-muted) !important; opacity: 1; }
+.stApp [data-baseweb="select"] span { color: var(--hs-text-body) !important; }
+.stApp [data-testid="stWidgetLabel"] p, .stApp [data-testid="stRadio"] label p,
+.stApp [data-testid="stCheckbox"] label p { color: var(--hs-text-body) !important; }
+.stApp [data-testid="stCaptionContainer"] p { color: var(--hs-text-muted) !important; }
+.stApp [data-testid="stExpander"] details { background: var(--hs-bg-panel); color: var(--hs-text-body); }
+.stApp [data-testid="stExpander"] summary, .stApp [data-testid="stExpander"] summary p {
+  color: var(--hs-text-body) !important; white-space: normal;
+}
+[data-baseweb="popover"] :is(ul, li), [data-baseweb="menu"], [role="listbox"] {
+  background: var(--hs-bg-panel) !important; color: var(--hs-text-body) !important;
+  font-size: .875rem;
+}
+[data-baseweb="popover"] [aria-selected="true"] { outline: 2px solid var(--hs-control-border); outline-offset: -2px; }
+.stApp button[data-testid="baseButton-primary"],
+.stApp button[data-testid="baseButton-primary"] p { color: var(--hs-text-on-accent) !important; }
+.stApp [data-testid="stSidebar"] button:not([data-testid="baseButton-primary"]),
+.stApp [data-testid="stSidebar"] button:not([data-testid="baseButton-primary"]) p {
+  background: var(--hs-bg-panel); color: var(--hs-text-body) !important;
+}
+/* Navigation has its own contrasting sidebar surface rather than a panel. */
+.stApp [data-testid="stSidebar"] .element-container:has(.hs-nav-marker) + .element-container button,
+.stApp [data-testid="stSidebar"] .element-container:has(.hs-nav-marker) + .element-container button p {
+  color: var(--hs-sidebar-text) !important; background: transparent !important;
+}
+.stApp [data-testid="stSidebar"] > div { min-width: 0; }
+.stApp [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+  color: var(--hs-sidebar-text) !important;
+}
+.stApp [data-testid="stSidebar"] .hs-active-nav { color: var(--hs-text-on-accent) !important; font-size: .75rem; }
+/* Inputs live on panel-coloured surfaces; their labels live on the sidebar. */
+.stApp [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: var(--hs-sidebar-text) !important; }
+.stApp [data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stWidgetLabel"] p {
+  color: var(--hs-text-body) !important;
+}
+.stApp [data-testid="stSidebar"] [data-testid="stExpander"] :is(p, span) { color: var(--hs-text-body); }
+.hs-accessible-table { overflow: auto; max-width: 100%; border: 1px solid var(--hs-control-border);
+  border-radius: 6px; background: var(--hs-bg-panel); color: var(--hs-text-body); }
+.hs-accessible-table table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+.hs-accessible-table caption { text-align: left; padding: .5rem; color: var(--hs-text-body); }
+.hs-accessible-table th { background: #395790; color: #F1F5F9; }
+.hs-accessible-table :is(td, th) { padding: .5rem; text-align: left; vertical-align: top; white-space: normal;
+  overflow-wrap: anywhere; border-bottom: 1px solid var(--hs-control-border); }
+.hs-accessible-table tr:nth-child(even) td { background: var(--hs-bg-panel-alt); }
+/* Header/validation rows are allowed to grow instead of clipping 200% text. */
+.hs-scale-enabled [data-testid="stHorizontalBlock"] { align-items: start; }
+@media (max-width: 900px) {
+  .stApp [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+  .stApp [data-testid="column"] { min-width: min(100%, 16rem) !important; flex: 1 1 16rem !important; }
+  .stApp [data-testid="stSidebar"] { max-width: 90vw !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stApp *, .stApp *::before, .stApp *::after { scroll-behavior: auto !important; animation: none !important; }
+}
+.stApp [data-testid="stMarkdownContainer"] > p,
+.stApp [data-testid="stMarkdownContainer"] > :is(ul, ol) { color: var(--hs-text-body); }
+.stApp [data-testid="stMarkdownContainer"] > :is(h1, h2, h3, h4) { color: var(--hs-text-body); }
+.stApp [data-testid="stAlert"] { background: var(--hs-bg-panel); color: var(--hs-text-body); }
+.stApp [data-testid="stAlert"] p { color: var(--hs-text-body) !important; }
+.stApp .hs-file-name, .stApp .hs-summary-text { overflow-wrap: anywhere; }
+.stApp button[data-testid="baseButton-secondary"] { border-color: var(--hs-control-border) !important; }

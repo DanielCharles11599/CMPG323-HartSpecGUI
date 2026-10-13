@@ -114,17 +114,17 @@ st.markdown(
     f"""
     <style>
     .hs-file-name {{
-        font-size: 13px;
+        font-size: 0.8125rem;
         color: {_theme['text-body']};
         line-height: 1.3;
     }}
     .hs-file-caption {{
-        font-size: 11px;
+        font-size: 0.6875rem;
         color: {_theme['text-muted']};
         margin-bottom: 8px;
     }}
     .hs-summary-text {{
-        font-size: 13px;
+        font-size: 0.8125rem;
         color: {_theme['text-body']};
     }}
     [data-testid="stVerticalBlockBorderWrapper"] {{

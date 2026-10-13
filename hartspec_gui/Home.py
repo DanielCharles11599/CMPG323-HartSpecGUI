@@ -25,7 +25,7 @@ from utils.env import load_dotenv_if_present
 
 load_dotenv_if_present()
 
-from utils import session_store
+from utils import session_store  # noqa: E402 — load .env before importing session code
 
 st.set_page_config(page_title="HARTSPEC — Session", layout="wide")
 session_store.init_session_state()

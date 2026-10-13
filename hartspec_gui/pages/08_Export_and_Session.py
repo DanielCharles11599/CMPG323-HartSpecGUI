@@ -152,7 +152,7 @@ def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: st
         xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
         yaxis=dict(title=y_title, showgrid=False, zeroline=False, color=theme["text-muted"]),
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
+    styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
     styles.render_panel_close()
 
 
@@ -327,7 +327,7 @@ def _format_timestamp(iso_ts: str) -> str:
         return iso_ts or ""
 
 
-st.markdown('<div class="hs-eyebrow" style="font-size:13px;text-transform:none;">Session history</div>',
+st.markdown('<div class="hs-eyebrow" style="font-size:0.8125rem;text-transform:none;">Session history</div>',
             unsafe_allow_html=True)
 
 recent_sessions = session_store.list_sessions()[:3]
@@ -344,8 +344,8 @@ else:
         ts_label = _format_timestamp(payload.get("saved_at", ""))
         desc = _describe_session(payload)
         c1, c2, c3 = st.columns([2, 6, 1])
-        c1.markdown(f'<span style="font-size:13px;">{ts_label}</span>', unsafe_allow_html=True)
-        c2.markdown(f'<span style="font-size:13px;">{desc}</span>', unsafe_allow_html=True)
+        c1.markdown(f'<span style="font-size:0.8125rem;">{ts_label}</span>', unsafe_allow_html=True)
+        c2.markdown(f'<span style="font-size:0.8125rem;">{desc}</span>', unsafe_allow_html=True)
         if c3.button("Load", key=f"load_{path.name}", type="secondary"):
             try:
                 # The shared action logs and navigates to the replay entry page

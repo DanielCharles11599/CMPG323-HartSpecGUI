@@ -24,7 +24,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 
 .hs-panel-title {
   height: 18px;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 600;
   color: var(--hs-text-body);
 }
@@ -37,7 +37,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 
 .hs-grid-label {
   height: 20px;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 600;
   color: var(--hs-text-body);
 }
@@ -70,7 +70,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 }
 
 .hs-controls-label {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   color: var(--hs-text-muted);
   text-transform: uppercase;
@@ -78,7 +78,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 }
 
 .hs-order-label {
-  font-size: 9.5px;
+  font-size: 0.59375rem;
   font-weight: 600;
   color: var(--hs-text-muted);
 }
@@ -92,7 +92,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
   border: 1px solid var(--hs-border-default);
   border-radius: 16px;
   color: var(--hs-text-body);
-  font-size: 11px;
+  font-size: 0.6875rem;
   background: var(--hs-bg-panel);
 }
 .hs-radio input { margin-right: 5px; accent-color: var(--hs-accent); }
@@ -102,7 +102,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
   border: 0;
   border-radius: 6px;
   padding: 0 12px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: #FFFFFF;
   background: var(--hs-accent);
@@ -116,12 +116,12 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
   max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--hs-text-muted);
   white-space: nowrap;
 }
 .hs-validation-error { color: var(--hs-error-text); }
-.hs-selection-feedback { font-size: 10px; font-weight: 600; color: var(--hs-text-body); white-space: nowrap; }
+.hs-selection-feedback { font-size: 0.625rem; font-weight: 600; color: var(--hs-text-body); white-space: nowrap; }
 
 .Select-control,
 .Select-menu-outer,
@@ -139,9 +139,57 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 .hs-block-panel .dash-spreadsheet-container,
 .hs-block-panel .dash-spreadsheet-inner { max-height: none !important; overflow-y: visible !important; }
 .hs-block-panel .hs-region-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 9px 10px; margin: 0; height: auto; min-height: 56px; border: 0; border-radius: 0; }
-.hs-region-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--hs-text-muted); }
+.hs-region-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 0.625rem; color: var(--hs-text-muted); }
 .hs-region-controls input { width: 116px; height: 29px; padding: 4px 7px; border-radius: 6px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); }
 .hs-region-controls button { min-height: 29px; border-radius: 6px; padding: 0 9px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); cursor: pointer; }
 .hs-region-controls button:first-of-type { background: var(--hs-accent); color: white; border-color: var(--hs-accent); }
 .hs-region-controls .hs-validation { margin-left: 0; max-width: none; white-space: normal; }
 .hs-dash-root { min-height: 830px; overflow: visible; }
+
+/* FR-22: enlarge text without clipping controls, errors, rows or fit labels.
+   TODO: confirm against design — see build spec §3: variable-height panels
+   intentionally supersede the mockup's fixed heights when users enlarge text. */
+.hs-dash-root { padding: 8px; }
+.hs-dash-root h2 { margin: 0 0 .5rem; height: auto; }
+.hs-dash-root :is(button, input, select) { font-family: inherit; font-size: .875rem; }
+.hs-dash-root :is(button, input) { min-height: 2rem; height: auto; }
+.hs-dash-root :is(a, button, input, select, summary, [tabindex]):focus-visible,
+.hs-dash-root .Select:focus-within, .hs-dash-root label:has(input:focus-visible) {
+  outline: 3px solid #FFFFFF !important; outline-offset: 2px !important;
+  box-shadow: 0 0 0 6px #000000 !important;
+}
+.hs-skip-link { position: absolute; left: -10000px; }
+.hs-skip-link:focus { position: relative; left: auto; display: block; padding: .5rem;
+  background: #FFFFFF; color: #000000; }
+.hs-canvas-panel { height: auto; min-height: 320px; }
+.hs-panel-title, .hs-grid-label { height: auto; min-height: 1.25rem; }
+.hs-comparison-grid { grid-template-rows: none; grid-auto-rows: auto; }
+.hs-fit-cell { height: auto; min-height: 100px; overflow: visible; }
+.hs-controls-row { height: auto; flex-wrap: wrap; min-height: 3rem; }
+.hs-validation, .hs-selection-feedback { max-width: 100%; overflow: visible; white-space: normal; }
+.hs-region-controls input { width: 8rem; }
+.hs-region-controls :is(input, button), .hs-keyboard-tools :is(input, button), .Select-control {
+  border: 1px solid var(--hs-control-border) !important;
+  background: var(--hs-bg-panel); color: var(--hs-text-body);
+}
+.hs-fit-button, .hs-region-controls button:first-of-type { color: var(--hs-text-on-accent); }
+.hs-keyboard-tools { margin-top: 1rem; padding: 1rem; }
+.hs-keyboard-tools :is(label, input, button) { margin: .35rem; }
+.hs-keyboard-tools label { display: inline-block; }
+.hs-keyboard-tools table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .875rem; }
+.hs-keyboard-tools :is(td, th) { text-align: left; padding: .4rem; border: 1px solid var(--hs-control-border); }
+.hs-keyboard-tools th { background: #395790; color: #F1F5F9; }
+.hs-keyboard-tools summary { cursor: pointer; font-size: .875rem; }
+.hs-dash-root .Select-control { height: auto !important; min-height: 2.25rem; }
+.hs-dash-root .Select-value, .hs-dash-root .Select-placeholder { line-height: 2rem !important; }
+.hs-dash-root .Select-menu-outer { z-index: 1000; }
+.hs-dash-root .dash-spreadsheet td { white-space: normal !important; }
+@media (max-width: 760px) {
+  .hs-comparison-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .hs-comparison-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; }
+}
