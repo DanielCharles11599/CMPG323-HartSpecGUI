@@ -62,7 +62,24 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-loaded_spectrum = st.session_state.get("loaded_spectrum")
+observation_pair_error = None
+try:
+    _pair_resolver = getattr(calibration_logic, "metadata_for_selected_pair", None)
+    if callable(_pair_resolver):
+        loaded_spectrum = _pair_resolver(st.session_state)
+    elif "loaded_spectra" not in st.session_state:
+        # Legacy single-spectrum sessions and minimal FR-09 test doubles.
+        loaded_spectrum = st.session_state.get("loaded_spectrum")
+    else:
+        raise ValueError("Selected-pair metadata resolver is unavailable.")
+except ValueError as exc:
+    loaded_spectrum = None
+    observation_pair_error = str(exc)
+
+if observation_pair_error:
+    st.error(
+        f"Selected observation metadata unavailable: {observation_pair_error}"
+    )
 atmospheric_result = None
 atmospheric_error = None
 

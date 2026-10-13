@@ -394,3 +394,85 @@ class TestPage05PolarizationExport:
             calibration_logic.polarization_trace_csv(
                 spectrum, "LCP", "Jy"
             )
+
+
+class TestSelectedPairCalibrationMetadata:
+    @staticmethod
+    def _spectrum(date, frequency=6668518000.0):
+        return {
+            "date": date,
+            "longitude": 27.0,
+            "latitude": -25.0,
+            "Tamb": 20.0,
+            "Humid": 40.0,
+            "restfreq": frequency,
+        }
+
+    def test_uses_selected_pair_instead_of_first_loaded_file(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        selected = self._spectrum("2012-05-05T03:00:00")
+        partner = self._spectrum("2012-05-05T03:02:00")
+
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, selected, partner],
+            "pipeline_data": {
+                "file_loader": {
+                    "eligible_files": ["first.fits", "selected.fits", "partner.fits"],
+                },
+                "03_bandpass_correction": {
+                    "filename1": "selected.fits",
+                    "filename2": "partner.fits",
+                },
+            },
+        }
+
+        assert calibration_logic.metadata_for_selected_pair(state) is selected
+        assert state["loaded_spectrum"] is first
+
+    def test_rejects_missing_selected_file(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        second = self._spectrum("2011-01-01T00:02:00")
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, second],
+            "pipeline_data": {
+                "file_loader": {"eligible_files": ["a.fits", "b.fits"]},
+                "03_bandpass_correction": {
+                    "filename1": "missing.fits",
+                    "filename2": "b.fits",
+                },
+            },
+        }
+
+        with pytest.raises(ValueError, match="missing from Page 02"):
+            calibration_logic.metadata_for_selected_pair(state)
+
+    def test_rejects_mismatched_pair_frequency(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        second = self._spectrum(
+            "2011-01-01T00:02:00", frequency=22235000000.0
+        )
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, second],
+            "pipeline_data": {
+                "file_loader": {"eligible_files": ["a.fits", "b.fits"]},
+                "03_bandpass_correction": {
+                    "filename1": "a.fits",
+                    "filename2": "b.fits",
+                },
+            },
+        }
+
+        with pytest.raises(ValueError, match="mismatched rest frequencies"):
+            calibration_logic.metadata_for_selected_pair(state)
+
+    def test_legacy_single_spectrum_remains_compatible(self):
+        spectrum = self._spectrum("2011-01-01T00:00:00")
+        state = {
+            "loaded_spectrum": spectrum,
+            "loaded_spectra": [spectrum],
+            "pipeline_data": {},
+        }
+        assert calibration_logic.metadata_for_selected_pair(state) is spectrum

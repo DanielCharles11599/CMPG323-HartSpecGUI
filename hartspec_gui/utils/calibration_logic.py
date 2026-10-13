@@ -196,6 +196,80 @@ def get_pss_trailing_statistics(pss_history, observation_mjd, days=30):
     }
 
 
+
+def metadata_for_selected_pair(state):
+    """Use the applied Page 03 pair, not the first loaded FITS file."""
+    from collections.abc import Mapping
+
+    pipeline = state.get("pipeline_data", {})
+    stage3 = (
+        pipeline.get("03_bandpass_correction")
+        if isinstance(pipeline, Mapping) else None
+    )
+    spectra = state.get("loaded_spectra")
+
+    if not isinstance(stage3, Mapping):
+        if isinstance(spectra, (list, tuple)) and len(spectra) > 1:
+            raise ValueError(
+                "Select and apply a Page 03 pair before Page 05 calibration."
+            )
+        return state.get("loaded_spectrum")
+
+    first_name = stage3.get("filename1")
+    second_name = stage3.get("filename2")
+
+    if not all(
+        isinstance(name, str) and bool(name)
+        for name in (first_name, second_name)
+    ):
+        if isinstance(spectra, (list, tuple)) and len(spectra) > 1:
+            raise ValueError("Page 03 did not record the selected pair.")
+        return state.get("loaded_spectrum")
+
+    if first_name == second_name:
+        raise ValueError("The selected pair contains the same file twice.")
+
+    loader = pipeline.get("file_loader", {})
+    filenames = (
+        loader.get("eligible_files")
+        if isinstance(loader, Mapping) else None
+    )
+
+    if (
+        not isinstance(filenames, (list, tuple))
+        or not isinstance(spectra, (list, tuple))
+        or len(filenames) != len(spectra)
+        or not all(isinstance(name, str) for name in filenames)
+        or len(set(filenames)) != len(filenames)
+    ):
+        raise ValueError(
+            "Page 02 files cannot be matched safely to the Page 03 pair."
+        )
+
+    try:
+        first = spectra[filenames.index(first_name)]
+        second = spectra[filenames.index(second_name)]
+    except ValueError as exc:
+        raise ValueError(
+            "The selected Page 03 pair is missing from Page 02 loaded files."
+        ) from exc
+
+    if not isinstance(first, Mapping) or not isinstance(second, Mapping):
+        raise ValueError("Selected pair spectra have invalid metadata.")
+
+    if any(first.get(key) is None for key in REQUIRED_METADATA):
+        raise ValueError(
+            "The selected pair lacks required atmospheric/PSS metadata."
+        )
+
+    if str(first["restfreq"])[:5] != str(second.get("restfreq"))[:5]:
+        raise ValueError(
+            "The selected pair has mismatched rest frequencies."
+        )
+
+    return first
+
+
 def get_atmospheric_calibration(spectrum):
     """Run the existing HartSpec atmospheric calibration for one spectrum."""
     if not spectrum:
