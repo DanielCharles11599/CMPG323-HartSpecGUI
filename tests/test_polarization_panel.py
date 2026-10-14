@@ -340,18 +340,24 @@ def page05_context(panel_context, monkeypatch):
         completed_count=lambda: len(state["completed_stages"]),
         completed_before=lambda stage: sum(key in state["completed_stages"] for key in UPSTREAM),
     )
-    atmos = dict(frequency="66685", pwv=1., elevation=60., azimuth=180., atcor=1.1, optical_depth=0.03)
+    atmos = dict(frequency="66685", pwv=1., elevation=60., azimuth=180., atcor=1.1,
+                 nd_lcp=1., nd_rcp=1., optical_depth=0.03)
     series = dict(mjd=[100.], pss=[2.], error=[0.1])
     stats = dict(mean=2., std=None, count=1)
+    def fake_calibrate(spectrum, atcor, lcp_pss, rcp_pss, nd_lcp, nd_rcp):
+        return {
+            "Vlsr": spectrum["Vlsr"].copy(),
+            "LCP": spectrum["LCP"] * (nd_lcp * atcor * lcp_pss),
+            "RCP": spectrum["RCP"] * (nd_rcp * atcor * rcp_pss),
+        }
+
     calibration = SimpleNamespace(
         get_atmospheric_calibration=lambda spec: atmos.copy(),
         get_pss_history=lambda freq: dict(frequency="66685", lcp=series, rcp=series, source_files={}),
         get_pss_window=lambda date: dict(observation_mjd=100., start_mjd=85., end_mjd=115., days=15),
         get_pss_window_averages=lambda history, window: dict(lcp=2., rcp=2.),
         get_pss_trailing_statistics=lambda history, mjd, days: dict(start_mjd=70., end_mjd=100., lcp=stats, rcp=stats),
-        apply_calibration_to_spectrum=lambda spectrum, atcor, pss: {
-            key: values.copy() if key == "Vlsr" else values * atcor * pss for key, values in spectrum.items()
-        },
+        apply_calibration_to_spectrum=fake_calibrate,
     )
     for key, module in (("session_store", session), ("sidebar", SimpleNamespace(render_sidebar=lambda **kw: None)),
                         ("calibration_logic", calibration), ("polarization_panel", c.panel)):

@@ -346,15 +346,30 @@ def get_atmospheric_calibration(spectrum):
     }
 
 
-def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
-    """Convert baseline-corrected K spectra to Jy without mutating inputs.
+def apply_calibration_to_spectrum(
+    spectrum, atcor, lcp_pss_jy_per_k, rcp_pss_jy_per_k, nd_lcp, nd_rcp
+):
+    """Convert K spectra to Jy using separate polarization calibration factors.
 
-    Uses the mean LCP/RCP PSS, matching Page 07's existing
-    system-owner Graph 3 convention.
+    The original CLC applies noise-diode and atmospheric factors before the
+    respective LCP/RCP PSS factors. Pointing belongs to the next stage.
+    Input arrays are not mutated. The PSS values are the specified +/-15-day
+    means, not the legacy Best_PSS implementation's differing window result.
     """
-    scale = float(atcor) * float(pss_jy_per_k)
-    if not np.isfinite(scale) or scale <= 0:
-        raise ValueError("ATcor and PSS must give a positive finite scale.")
+    try:
+        atcor, lcp_pss, rcp_pss, nd_lcp, nd_rcp = (
+            float(value) for value in (
+                atcor, lcp_pss_jy_per_k, rcp_pss_jy_per_k, nd_lcp, nd_rcp
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Calibration factors must be numeric.") from exc
+    if any(not np.isfinite(value) or value <= 0 for value in (
+        atcor, lcp_pss, rcp_pss, nd_lcp, nd_rcp
+    )):
+        raise ValueError("All calibration factors must be positive and finite.")
+    lcp_scale = nd_lcp * atcor * lcp_pss
+    rcp_scale = nd_rcp * atcor * rcp_pss
 
     arrays = {}
     for key in ("Vlsr", "LCP", "RCP"):
@@ -374,8 +389,8 @@ def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
 
     return {
         "Vlsr": arrays["Vlsr"].copy(),
-        "LCP": arrays["LCP"] * scale,
-        "RCP": arrays["RCP"] * scale,
+        "LCP": arrays["LCP"] * lcp_scale,
+        "RCP": arrays["RCP"] * rcp_scale,
     }
 
 

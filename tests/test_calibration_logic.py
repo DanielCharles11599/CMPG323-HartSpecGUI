@@ -3,11 +3,40 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
 import hartspec_gui.utils.calibration_logic as calibration_logic  # noqa: E402
+
+
+class TestPolarizationSpecificFluxCalibration:
+    def test_uses_separate_pss_and_noise_diode_factors(self):
+        spectrum = {
+            "Vlsr": np.array([0., 1., 2.]),
+            "LCP": np.array([1., 2., -3.]),
+            "RCP": np.array([4., -5., 6.]),
+        }
+        original = {key: value.copy() for key, value in spectrum.items()}
+        calibrated = calibration_logic.apply_calibration_to_spectrum(
+            spectrum, 1.1, 5.0, 3.0, 1.2, 0.8,
+        )
+        np.testing.assert_array_equal(calibrated["Vlsr"], original["Vlsr"])
+        np.testing.assert_allclose(calibrated["LCP"], original["LCP"] * (1.2 * 1.1 * 5.0))
+        np.testing.assert_allclose(calibrated["RCP"], original["RCP"] * (0.8 * 1.1 * 3.0))
+        for key in original:
+            np.testing.assert_array_equal(spectrum[key], original[key])
+            assert not np.shares_memory(calibrated[key], spectrum[key])
+
+    @pytest.mark.parametrize("index", range(5))
+    @pytest.mark.parametrize("bad_value", [0.0, -1.0, float("nan"), float("inf")])
+    def test_rejects_nonpositive_or_nonfinite_factor(self, index, bad_value):
+        spectrum = {"Vlsr": np.array([0.]), "LCP": np.array([1.]), "RCP": np.array([2.])}
+        factors = [1.1, 5.0, 3.0, 1.0, 1.0]
+        factors[index] = bad_value
+        with pytest.raises(ValueError, match="positive and finite"):
+            calibration_logic.apply_calibration_to_spectrum(spectrum, *factors)
 
 
 class TestObservationMjd:

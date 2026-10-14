@@ -167,15 +167,14 @@ if loaded_spectrum is not None:
     calibrated_spectrum = None
     if page_complete:
         try:
-            mean_pss = (
-                float(pss_averages["lcp"]) +
-                float(pss_averages["rcp"])
-            ) / 2.0
             calibrated_spectrum = (
                 calibration_logic.apply_calibration_to_spectrum(
                     st.session_state["baseline_corrected_spectrum"],
                     atmospheric_result["atcor"],
-                    mean_pss,
+                    pss_averages["lcp"],
+                    pss_averages["rcp"],
+                    atmospheric_result["nd_lcp"],
+                    atmospheric_result["nd_rcp"],
                 )
             )
         except (ValueError, TypeError, KeyError) as exc:
