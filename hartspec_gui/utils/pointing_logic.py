@@ -159,9 +159,8 @@ class PointingUncertainties:
 class PointingResult:
     """What pointcor() returned, with the inputs that produced it.
 
-    ``uncertainties`` stays None until they can be sourced: pointcor() returns only (factor, ns, ew), so the fit
-    covariance is not visible to the wrapper.
-    # TODO: confirm against design -- needs clc/Point_cor.py's fit code to extract the uncertainties safely.
+    ``uncertainties`` come from the two curve_fit calls inside pointcor() (captured by compute_pointing(), see
+    there); None if they could not be captured.
     """
 
     correction_factor: float
@@ -211,6 +210,65 @@ def _import_pointcor() -> Any:
     return Point_cor
 
 
+# pointcor() fits north-south first, then east-west (verified against clc/Point_cor.py); each fit is A, mu.
+FIT_PANELS = (
+    ("North-South", ("South", "Centre", "North")),
+    ("East-West", ("West", "Centre", "East")),
+)
+
+
+class PointingFitError(RuntimeError):
+    """A pointcor() Gaussian fit did not converge; names the compass panels that fit used (Use Case UC-08)."""
+
+    def __init__(self, axis: str, panels: Tuple[str, ...], original: Exception) -> None:
+        self.axis = axis
+        self.panels = tuple(panels)
+        super().__init__(f"the {axis} fit ({', '.join(panels)} panels) did not converge: {original}")
+
+
+def _recording_curve_fit(real: Callable[..., Any], fits: List[Tuple[np.ndarray, np.ndarray]],
+                         failure: Dict[str, Optional[int]]) -> Callable[..., Any]:
+    """curve_fit stand-in used inside Point_cor only: records (popt, pcov) per call and which call failed."""
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        try:
+            popt, pcov = real(*args, **kwargs)
+        except Exception:
+            failure["index"] = len(fits)
+            raise
+        fits.append((np.asarray(popt, dtype=float), np.asarray(pcov, dtype=float)))
+        return popt, pcov
+
+    return spy
+
+
+def _uncertainties_from_fits(
+    fits: Sequence[Tuple[np.ndarray, np.ndarray]], factor: float, hpbw_deg: float,
+) -> Optional[PointingUncertainties]:
+    """1-sigma on the NS / EW centres (sqrt of the mu variance) and first-order propagation onto pc.
+
+    pc = exp(ln2 (ns^2 + ew^2) / h^2), h = hpbw / 2, so
+    sigma_pc = pc * (2 ln2 / h^2) * sqrt((ns sigma_ns)^2 + (ew sigma_ew)^2), treating the two fits as independent.
+    # TODO: confirm against design -- the pc propagation is our derivation, not a clc/ output.
+    """
+    if len(fits) != len(FIT_PANELS):
+        return None
+    sigmas: List[Optional[float]] = []
+    centres: List[float] = []
+    for popt, pcov in fits:
+        if popt.shape != (2,) or pcov.shape != (2, 2):
+            return None
+        variance = float(pcov[1, 1])
+        sigmas.append(math.sqrt(variance) if math.isfinite(variance) and variance >= 0 else None)
+        centres.append(float(popt[1]))
+    pc_sigma: Optional[float] = None
+    if sigmas[0] is not None and sigmas[1] is not None and math.isfinite(factor):
+        half = hpbw_deg / 2.0
+        pc_sigma = factor * (2.0 * math.log(2.0) / half ** 2) * math.hypot(centres[0] * sigmas[0],
+                                                                           centres[1] * sigmas[1])
+    return PointingUncertainties(ns_sigma_deg=sigmas[0], ew_sigma_deg=sigmas[1], pc_sigma=pc_sigma)
+
+
 def compute_pointing(
     powers: Mapping[str, float],
     hpbw_deg: float,
@@ -238,15 +296,27 @@ def compute_pointing(
 
     pointcor_module = _import_pointcor()
     arguments = {_POINTCOR_ARGUMENT[role]: float(powers[role]) for role in ROLES}
+    fits: List[Tuple[np.ndarray, np.ndarray]] = []
+    failure: Dict[str, Optional[int]] = {"index": None}
     with _POINTCOR_LOCK:
         original_plt = pointcor_module.plt
+        original_fit = getattr(pointcor_module, "curve_fit", None)
         pointcor_module.plt = _PyplotProxy(original_plt, _redirected_savefig(original_plt, plot_dir))
+        if original_fit is not None:
+            pointcor_module.curve_fit = _recording_curve_fit(original_fit, fits, failure)
         try:
             factor, ns_offset, ew_offset = pointcor_module.pointcor(
                 hpbw=float(hpbw_deg), dirname=dirname, **arguments
             )
+        except Exception as exc:
+            if failure["index"] is not None and failure["index"] < len(FIT_PANELS):
+                axis, panels = FIT_PANELS[failure["index"]]
+                raise PointingFitError(axis, panels, exc) from exc
+            raise
         finally:
             pointcor_module.plt = original_plt
+            if original_fit is not None:
+                pointcor_module.curve_fit = original_fit
 
     return PointingResult(
         correction_factor=float(factor),
@@ -254,6 +324,7 @@ def compute_pointing(
         ew_offset_deg=float(ew_offset),
         hpbw_deg=float(hpbw_deg),
         powers={role: float(powers[role]) for role in ROLES},
+        uncertainties=_uncertainties_from_fits(fits, float(factor), float(hpbw_deg)),
     )
 
 
@@ -270,8 +341,9 @@ VERDICT_NO_GO = "No-Go"
 class PointingCheck:
     """Outcome of the pointing quality check.
 
-    ``evaluated`` is False when the 2.5-sigma test could not run (no usable uncertainties, or the fit failed); the
-    verdict is then No-Go. ``overridable`` is False only when there is no correction factor to apply at all.
+    ``evaluated`` is False when the 2.5-sigma test could not run (no usable uncertainty, or the fit failed); the
+    verdict is then No-Go. ``overridable`` is False for a non-converging fit (UC-08 exception flow): there is no
+    correction factor to apply, so RULE-05 does not apply. ``failed_panels`` names the panels of the failed fit.
     """
 
     verdict: str
@@ -280,7 +352,7 @@ class PointingCheck:
     evaluated: bool
     overridable: bool
     ns_ratio: Optional[float] = None
-    ew_ratio: Optional[float] = None
+    failed_panels: Tuple[str, ...] = ()
 
 
 def _usable_sigma(value: Any) -> Optional[float]:
@@ -302,41 +374,40 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def evaluate_pointing_check(result: Any, threshold_sigma: float = THRESHOLD_SIGMA) -> PointingCheck:
-    """Go only if both |NS offset| and |EW offset| are strictly below ``threshold_sigma`` x their sigma.
+    """Go only if |NS offset| < threshold x sigma_NS (Technical Specification, confirmed: NS only).
 
-    # TODO: confirm against design -- the requirement text names |NS_off| only; EW is tested the same way here, and
-    # the exact sigma definition belongs to Stats_manager.Sig_point (not available in this session).
-    Missing / unusable uncertainties give a No-Go (cannot verify), never a silent Go.
+    The EW offset is derived and shown with its uncertainty but does not affect the verdict.
+    # TODO: confirm against design -- clc/Stats_manager.Sig_point tests something different (peak S/N >= 2.5 on all
+    # five pointings, else pc stays 1); sigma here is the NS fit uncertainty, per the spec wording.
+    A missing / unusable uncertainty gives a No-Go (cannot verify), never a silent Go.
     """
     uncertainties = getattr(result, "uncertainties", None)
     ns_sigma = _usable_sigma(getattr(uncertainties, "ns_sigma_deg", None))
-    ew_sigma = _usable_sigma(getattr(uncertainties, "ew_sigma_deg", None))
-    if ns_sigma is None or ew_sigma is None:
+    if ns_sigma is None:
         return PointingCheck(
             VERDICT_NO_GO, threshold_sigma,
-            ("The fit uncertainties needed for the %gσ check are not available, so the offsets cannot be "
+            ("The NS fit uncertainty needed for the %gσ check is not available, so the offset cannot be "
              "verified." % threshold_sigma,),
             evaluated=False, overridable=True,
         )
-    reasons: List[str] = []
-    ratios: Dict[str, float] = {}
-    for label, offset, sigma in (("NS", result.ns_offset_deg, ns_sigma), ("EW", result.ew_offset_deg, ew_sigma)):
-        ratio = abs(float(offset)) / sigma
-        ratios[label] = ratio
-        if not ratio < threshold_sigma:  # also catches NaN
-            reasons.append(f"|{label} offset| = {abs(float(offset)):.4f}° is {ratio:.2f}σ, "
-                           f"not below {threshold_sigma:g}σ.")
+    offset = abs(float(result.ns_offset_deg))
+    ratio = offset / ns_sigma
+    if ratio < threshold_sigma:  # strict; NaN falls through to No-Go
+        return PointingCheck(VERDICT_GO, threshold_sigma, (), evaluated=True, overridable=True, ns_ratio=ratio)
     return PointingCheck(
-        VERDICT_GO if not reasons else VERDICT_NO_GO, threshold_sigma, tuple(reasons),
-        evaluated=True, overridable=True, ns_ratio=ratios["NS"], ew_ratio=ratios["EW"],
+        VERDICT_NO_GO, threshold_sigma,
+        (f"|NS offset| = {offset:.4f}° is {ratio:.2f}σ, not below {threshold_sigma:g}σ.",),
+        evaluated=True, overridable=True, ns_ratio=ratio,
     )
 
 
-def failed_fit_check(message: str, threshold_sigma: float = THRESHOLD_SIGMA) -> PointingCheck:
+def failed_fit_check(
+    message: str, panels: Sequence[str] = (), threshold_sigma: float = THRESHOLD_SIGMA,
+) -> PointingCheck:
     """No-Go for a fit that did not converge. Not overridable: there is no correction factor to apply."""
     return PointingCheck(
         VERDICT_NO_GO, threshold_sigma, (f"The pointing fit did not converge: {message}",),
-        evaluated=False, overridable=False,
+        evaluated=False, overridable=False, failed_panels=tuple(panels),
     )
 
 
@@ -361,6 +432,7 @@ def check_record(
         "evaluated": check.evaluated,
         "overridable": check.overridable,
         "reasons": list(check.reasons),
+        "failed_panels": list(check.failed_panels),
         "signature": signature,
         "accepted": bool(accepted),
         "overridden": overridden,
@@ -373,5 +445,5 @@ def check_record(
         "ew_sigma_deg": _finite_or_none(getattr(uncertainties, "ew_sigma_deg", None)),
         "pc_sigma": _finite_or_none(getattr(uncertainties, "pc_sigma", None)),
         "ns_ratio": _finite_or_none(check.ns_ratio),
-        "ew_ratio": _finite_or_none(check.ew_ratio),
     }
+    

@@ -674,32 +674,91 @@ def _extract_function(path, name, namespace):
     return namespace[name]
 
 
-def test_pointing_page_checkpoints_actual_manual_commit_payload(browser):
-    ready(browser)
-    browser.ui.begin()
+PAGE06 = APP_ROOT / "pages/06_Pointing_Correction.py"
+
+
+def _page06(browser, result, powers):
+    """Real FR-13 helpers + main(); only the Streamlit-heavy renderers and the clc call are stubbed."""
+    from typing import Any, Optional
     import utils.styles as styles
-    powers = {"N": 1.1, "S": 1.2, "E": 1.3, "W": 1.4, "Centre": 2.0}
-    result = SimpleNamespace(ns_offset_deg=0.01, ew_offset_deg=0.02, correction_factor=1.2,
-                             hpbw_deg=0.1, powers=powers)
-    namespace = {
-        "st": browser.ui, "session_store": browser.store, "styles": styles,
-        "sidebar": SimpleNamespace(render_sidebar=lambda **kwargs: None),
+    from utils import pointing_logic
+    ns = {
+        "st": browser.ui, "session_store": browser.store, "styles": styles, "pointing_logic": pointing_logic,
+        "sidebar": SimpleNamespace(render_sidebar=lambda **kwargs: None), "Any": Any, "Optional": Optional,
         "CURRENT_STAGE": 6, "PAGE_STAGE_KEY": "06_pointing_correction",
-        "LOGGED_SIGNATURE_KEY": "pointing_logged_signature",
-        "NEXT_PAGE": "pages/07_Spectral_Fitting.py", "DIRECTIONS": list(powers),
+        "LOGGED_SIGNATURE_KEY": "pointing_logged_signature", "NEXT_PAGE": "pages/07_Spectral_Fitting.py",
+        "OVERRIDE_OPEN_KEY": "pointing_override_open", "OVERRIDE_NOTE_KEY": "pointing_override_note",
+        "OVERRIDE_JUSTIFICATION_KEY": "pointing_override_justification",
+        "OVERRIDE_SIGNATURE_KEY": "pointing_override_signature", "DIRECTIONS": list(powers),
         "_loaded_spectra_by_basename": lambda: {}, "_find_scans": lambda spectra: [],
         "_render_manual_entry": lambda: (powers, 0.1), "render_offset_table": lambda *args: None,
-        "_render_pointing_product_graph": lambda *args: None,
-        "_compute": lambda *args: {"result": result, "signature": "fixture-signature", "error": None},
+        "_render_pointing_product_graph": lambda *args: None, "_render_metric_cards": lambda *args: None,
+        "_render_verdict_panel": lambda *args: None, "_render_actions": lambda *args: None,
+        "_compute": lambda *args: {"result": result, "signature": "fixture-signature", "error": None,
+                                   "failed_panels": ()},
     }
-    _extract_function(APP_ROOT / "pages/06_Pointing_Correction.py", "main", namespace)()
+    for name in ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main"):
+        _extract_function(PAGE06, name, ns)
+    return ns
+
+
+def _fixture_result(ns_offset=0.01, sigma=0.05):
+    from utils import pointing_logic
+    powers = {"N": 1.1, "S": 1.2, "E": 1.3, "W": 1.4, "Centre": 2.0}
+    return powers, SimpleNamespace(
+        ns_offset_deg=ns_offset, ew_offset_deg=0.02, correction_factor=1.2, hpbw_deg=0.1, powers=powers,
+        uncertainties=pointing_logic.PointingUncertainties(sigma, sigma, 0.01))
+
+
+def _saved_page06(browser):
     data = json.loads(Path(browser.state["checkpoint_path"]).read_text(encoding="utf-8"))
-    saved = data["pipeline_data"]["06_pointing_correction"]
-    assert saved["peak_powers"] == powers
-    assert saved["input_source"] == "manual entry"
-    assert saved["scan_key"] == "manual"
-    assert "06_pointing_correction" in data["completed_stages"]
+    return data, data["pipeline_data"]["06_pointing_correction"]
+
+
+def test_pointing_page_keeps_factor_back_until_accepted(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result(ns_offset=0.5)  # 10 sigma -> No-Go
+    _page06(browser, result, powers)["main"]()
+    data, saved = _saved_page06(browser)
+    assert saved["peak_powers"] == powers and saved["input_source"] == "manual entry"
+    assert saved["pointing_check"]["verdict"] == "No-Go" and saved["pointing_check"]["accepted"] is False
+    assert saved["pointing_check"]["correction_factor"] == 1.2  # audited ...
+    assert "correction_factor" not in saved                      # ... but not published to Pages 07/08
+    assert "06_pointing_correction" not in data["completed_stages"]
     assert any("Pointing correction computed" in e["message"] for e in data["audit_log"])
+
+
+def test_pointing_go_accept_publishes_factor_and_completes(browser):
+    from utils import pointing_logic
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()
+    ns = _page06(browser, result, powers)
+    ns["main"]()
+    ns["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result),
+                             pointing_logic.signature_id("fixture-signature"))
+    data, saved = _saved_page06(browser)
+    assert saved["correction_factor"] == 1.2 and saved["pointing_check"]["verdict"] == "Go"
+    assert saved["pointing_check"]["accepted"] is True
+    assert "06_pointing_correction" in data["completed_stages"]
+
+
+def test_pointing_no_go_override_is_recorded_for_audit(browser):
+    from utils import pointing_logic
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result(ns_offset=0.5)
+    ns = _page06(browser, result, powers)
+    ns["main"]()
+    ns["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result),
+                             pointing_logic.signature_id("fixture-signature"), "note text", "because science")
+    data, saved = _saved_page06(browser)
+    record = saved["pointing_check"]
+    assert record["overridden"] and record["override_note"] == "note text"
+    assert record["override_justification"] == "because science" and saved["correction_factor"] == 1.2
+    assert "06_pointing_correction" in data["completed_stages"]
+    assert any("overridden (RULE-05)" in e["message"] for e in data["audit_log"])
 
 
 def test_fit_commit_records_parameters_and_log_before_checkpoint(browser):

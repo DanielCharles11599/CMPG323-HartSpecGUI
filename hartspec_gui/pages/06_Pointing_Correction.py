@@ -205,12 +205,13 @@ def _compute(powers: dict[str, float], hpbw: Optional[float], scan_key: str, dir
     cache = st.session_state.get(RESULT_CACHE_KEY)
     if cache and cache["signature"] == signature:
         return cache
-    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None}
+    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None, "failed_panels": ()}
     try:
         plot_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "plots"
         entry["result"] = pointing_logic.compute_pointing(powers, hpbw, dirname, plot_dir=plot_dir)
     except Exception as exc:  # noqa: BLE001 -- legacy fit code can fail in several ways; shown to the user below
         entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["failed_panels"] = tuple(getattr(exc, "panels", ()))
     st.session_state[RESULT_CACHE_KEY] = entry
     return entry
 
@@ -326,8 +327,7 @@ def _render_metric_cards(result: Any, check: Any, theme: dict[str, str]) -> None
         ("Pointing correction (pc)", f"{result.correction_factor:.4f}", getattr(unc, "pc_sigma", None), "", None),
         ("North-South offset", f"{result.ns_offset_deg:+.4f}°", getattr(unc, "ns_sigma_deg", None), "°",
          check.ns_ratio),
-        ("East-West offset", f"{result.ew_offset_deg:+.4f}°", getattr(unc, "ew_sigma_deg", None), "°",
-         check.ew_ratio),
+        ("East-West offset", f"{result.ew_offset_deg:+.4f}°", getattr(unc, "ew_sigma_deg", None), "°", None),
     )
     box = (f"background-color:{theme['bg-panel']}; border:1px solid {theme['border-subtle']}; "
            f"border-radius:{styles.PANEL_RADIUS}px; padding:12px 16px;")
@@ -362,7 +362,7 @@ def _render_verdict_panel(check: Any, accepted: bool, theme: dict[str, str]) -> 
     st.markdown(
         f'<div style="margin:{styles.SECTION_GAP}px 0 4px;">{badge} '
         f'<span style="font-size:0.75rem; color:{theme["text-body"]};">'
-        f'Pointing check — offsets must be below {check.threshold_sigma:g}σ</span>{reasons_html}</div>',
+        f'Pointing check — |NS offset| must be below {check.threshold_sigma:g}σ</span>{reasons_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -472,7 +472,7 @@ def main() -> None:
     # FR-13: verdict for exactly these inputs; an earlier sign-off only counts if the inputs are unchanged.
     signature_id = pointing_logic.signature_id(entry["signature"])
     check = (pointing_logic.evaluate_pointing_check(result) if result is not None
-             else pointing_logic.failed_fit_check(entry["error"] or "no result"))
+             else pointing_logic.failed_fit_check(entry["error"] or "no result", entry.get("failed_panels", ())))
     _reset_override_widgets(signature_id)
     saved = _saved_check(signature_id)
     accepted = bool(result is not None and saved and saved.get("accepted") and saved.get("verdict") == check.verdict)

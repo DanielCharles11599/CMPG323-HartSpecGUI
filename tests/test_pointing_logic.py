@@ -110,3 +110,63 @@ def test_compute_pointing_without_plot_dir_writes_nothing(tmp_path, real_pointco
 def test_compute_pointing_rejects_bad_inputs(powers, hpbw):
     with pytest.raises(ValueError):
         pl.compute_pointing(powers, hpbw, "20260812_0")
+
+
+def _result(ns=0.01, ew=0.02, sigmas=(0.01, 0.01, 0.001)):
+    unc = None if sigmas is None else pl.PointingUncertainties(*sigmas)
+    return pl.PointingResult(1.05, ns, ew, 0.23, {r: 1.0 for r in pl.ROLES}, unc)
+
+
+def test_check_is_go_on_ns_only_even_if_ew_is_far_out():
+    check = pl.evaluate_pointing_check(_result(ns=0.01, ew=0.20))
+    assert check.verdict == "Go" and check.evaluated and check.ns_ratio == pytest.approx(1.0)
+
+
+def test_check_boundary_is_strict_and_reason_names_ns():
+    check = pl.evaluate_pointing_check(_result(ns=2.5, sigmas=(1.0, 1.0, 0.1)))
+    assert check.verdict == "No-Go" and check.overridable
+    assert "NS offset" in check.reasons[0]
+
+
+def test_check_without_uncertainty_is_no_go_not_go():
+    check = pl.evaluate_pointing_check(_result(sigmas=None))
+    assert check.verdict == "No-Go" and not check.evaluated and check.overridable
+
+
+def test_failed_fit_check_is_not_overridable_and_keeps_panels():
+    check = pl.failed_fit_check("boom", ("West", "Centre", "East"))
+    assert check.verdict == "No-Go" and not check.overridable
+    assert pl.check_record(check, None, signature="s", accepted=False)["failed_panels"] == ["West", "Centre", "East"]
+
+
+def test_check_record_is_json_safe_and_override_text_only_for_accepted_no_go():
+    import json
+    no_go = pl.evaluate_pointing_check(_result(ns=1.0))
+    kept = pl.check_record(no_go, _result(ns=1.0), signature="s", accepted=True,
+                           override_note="n", override_justification="j")
+    assert json.loads(json.dumps(kept))["overridden"] and kept["override_justification"] == "j"
+    go = pl.evaluate_pointing_check(_result())
+    assert pl.check_record(go, _result(), signature="s", accepted=True, override_note="n")["override_note"] == ""
+
+
+def test_compute_pointing_returns_uncertainties_and_restores_curve_fit(real_pointcor):
+    from scipy.optimize import curve_fit
+    result = pl.compute_pointing({"N": 0.92, "S": 0.87, "E": 0.90, "W": 0.85, "Centre": 1.0}, 0.23, "20260812_0")
+    unc = result.uncertainties
+    assert unc.ns_sigma_deg > 0 and unc.ew_sigma_deg > 0 and unc.pc_sigma > 0
+    assert real_pointcor.curve_fit is curve_fit
+
+
+def test_compute_pointing_names_the_failed_panels(real_pointcor, monkeypatch):
+    real, calls = real_pointcor.curve_fit, []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("no convergence")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(real_pointcor, "curve_fit", flaky)
+    with pytest.raises(pl.PointingFitError) as excinfo:
+        pl.compute_pointing({"N": 0.92, "S": 0.87, "E": 0.90, "W": 0.85, "Centre": 1.0}, 0.23, "x")
+    assert excinfo.value.axis == "East-West" and excinfo.value.panels == ("West", "Centre", "East")
+    assert real_pointcor.curve_fit is flaky
