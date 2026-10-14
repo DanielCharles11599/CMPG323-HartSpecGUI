@@ -675,31 +675,51 @@ def _extract_function(path, name, namespace):
 
 
 PAGE06 = APP_ROOT / "pages/06_Pointing_Correction.py"
+PAGE06_FUNCTIONS = ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main")
 
 
-def _page06(browser, result, powers):
-    """Real FR-13 helpers + main(); only the Streamlit-heavy renderers and the clc call are stubbed."""
+def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
+    """Page 06's real FR-13 helpers + main(); only the Streamlit-heavy renderers and the clc calls are stubbed.
+
+    ``scan_mode`` simulates a complete pointing scan (condition B applies); the default is manual entry (B skipped).
+    """
     from typing import Any, Optional
     import utils.styles as styles
     from utils import pointing_logic
-    ns = {
+    snr = pointing_logic.SignalToNoiseCheck(
+        True, snr_passes, "Yes" if snr_passes else "No",
+        "" if snr_passes else "Sig_point: not all pointings reach 2.5σ.", peak_velocity_kms=-4.0,
+    )
+    scans, loaded = [], {}
+    if scan_mode:
+        scans = [SimpleNamespace(key="blk#1", label="blk · scan 1", block="blk",
+                                 files={role: f"{role}.fits" for role in powers})]
+        loaded = {f"{role}.fits": {"HPBW": 0.1} for role in powers}
+        for role in powers:
+            browser.state[f"pointing_pick::blk#1::{role}"] = -4.0
+    namespace = {
         "st": browser.ui, "session_store": browser.store, "styles": styles, "pointing_logic": pointing_logic,
         "sidebar": SimpleNamespace(render_sidebar=lambda **kwargs: None), "Any": Any, "Optional": Optional,
-        "CURRENT_STAGE": 6, "PAGE_STAGE_KEY": "06_pointing_correction",
+        "CURRENT_STAGE": 6, "PAGE_STAGE_KEY": "06_pointing_correction", "BASELINE_STAGE_KEY": "04_baseline_editor",
         "LOGGED_SIGNATURE_KEY": "pointing_logged_signature", "NEXT_PAGE": "pages/07_Spectral_Fitting.py",
         "OVERRIDE_OPEN_KEY": "pointing_override_open", "OVERRIDE_NOTE_KEY": "pointing_override_note",
         "OVERRIDE_JUSTIFICATION_KEY": "pointing_override_justification",
         "OVERRIDE_SIGNATURE_KEY": "pointing_override_signature", "DIRECTIONS": list(powers),
-        "_loaded_spectra_by_basename": lambda: {}, "_find_scans": lambda spectra: [],
+        "_loaded_spectra_by_basename": lambda: loaded, "_find_scans": lambda spectra: scans,
+        "_render_direction_panel": lambda role, spectrum, scan_key, theme: powers[role], "np": np,
         "_render_manual_entry": lambda: (powers, 0.1), "render_offset_table": lambda *args: None,
         "_render_pointing_product_graph": lambda *args: None, "_render_metric_cards": lambda *args: None,
         "_render_verdict_panel": lambda *args: None, "_render_actions": lambda *args: None,
-        "_compute": lambda *args: {"result": result, "signature": "fixture-signature", "error": None,
-                                   "failed_panels": ()},
+        "_render_pointing_fit": lambda *args: None, "_signal_to_noise": lambda *args: snr,
+        "_compute": lambda *args: {
+            "result": result, "signature": "fixture-signature", "error": None, "failed_panels": (),
+            "failed_axis": None, "partial_curves": {},
+        },
     }
-    for name in ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main"):
-        _extract_function(PAGE06, name, ns)
-    return ns
+    for name in PAGE06_FUNCTIONS + ("_as_positive_float",):
+        _extract_function(PAGE06, name, namespace)
+    namespace["_snr"] = snr
+    return namespace
 
 
 def _fixture_result(ns_offset=0.01, sigma=0.05):
@@ -707,7 +727,8 @@ def _fixture_result(ns_offset=0.01, sigma=0.05):
     powers = {"N": 1.1, "S": 1.2, "E": 1.3, "W": 1.4, "Centre": 2.0}
     return powers, SimpleNamespace(
         ns_offset_deg=ns_offset, ew_offset_deg=0.02, correction_factor=1.2, hpbw_deg=0.1, powers=powers,
-        uncertainties=pointing_logic.PointingUncertainties(sigma, sigma, 0.01))
+        uncertainties=pointing_logic.PointingUncertainties(sigma, sigma, 0.01), fit_curves={},
+    )
 
 
 def _saved_page06(browser):
@@ -715,18 +736,54 @@ def _saved_page06(browser):
     return data, data["pipeline_data"]["06_pointing_correction"]
 
 
-def test_pointing_page_keeps_factor_back_until_accepted(browser):
+def test_pointing_page_holds_the_factor_back_while_no_go_is_unsigned(browser):
     ready(browser)
     browser.ui.begin()
-    powers, result = _fixture_result(ns_offset=0.5)  # 10 sigma -> No-Go
+    powers, result = _fixture_result(ns_offset=0.5)  # 10 sigma -> condition A fails
     _page06(browser, result, powers)["main"]()
     data, saved = _saved_page06(browser)
     assert saved["peak_powers"] == powers and saved["input_source"] == "manual entry"
-    assert saved["pointing_check"]["verdict"] == "No-Go" and saved["pointing_check"]["accepted"] is False
-    assert saved["pointing_check"]["correction_factor"] == 1.2  # audited ...
-    assert "correction_factor" not in saved                      # ... but not published to Pages 07/08
+    assert saved["scan_key"] == "manual"
+    check = saved["pointing_check"]
+    assert check["verdict"] == "No-Go" and check["accepted"] is False and check["overridable"] is True
+    assert check["correction_factor"] == 1.2 and check["ns_sigma_deg"] == 0.05  # audited ...
+    assert "correction_factor" not in saved                                      # ... but not published to 07/08
     assert "06_pointing_correction" not in data["completed_stages"]
-    assert any("Pointing correction computed" in e["message"] for e in data["audit_log"])
+    assert any("Pointing correction computed" in e["message"] and "No-Go" in e["message"] for e in data["audit_log"])
+
+
+def test_pointing_page_no_go_from_condition_b_alone_for_a_real_scan(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()  # condition A passes (0.2 sigma)
+    _page06(browser, result, powers, snr_passes=False, scan_mode=True)["main"]()
+    data, saved = _saved_page06(browser)
+    assert saved["scan_key"] == "blk#1" and saved["picked_velocities"]["Centre"] == -4.0
+    assert saved["pointing_check"]["verdict"] == "No-Go" and "correction_factor" not in saved
+    assert saved["pointing_check"]["snr_check"]["sig_point"] == "No"
+    assert saved["pointing_check"]["snr_skipped"] is False
+    assert "06_pointing_correction" not in data["completed_stages"]
+
+
+def test_pointing_page_manual_entry_skips_condition_b(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()
+    _page06(browser, result, powers, snr_passes=False)["main"]()  # a failing B must be ignored: no spectra exist
+    _data, saved = _saved_page06(browser)
+    check = saved["pointing_check"]
+    assert saved["input_source"] == "manual entry"
+    assert check["verdict"] == "Go" and check["snr_skipped"] is True and check["snr_check"] is None
+    assert check["evaluated"] is True and "correction_factor" not in saved  # still needs the explicit accept
+
+
+def test_pointing_page_scan_go_when_both_conditions_pass(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()
+    _page06(browser, result, powers, scan_mode=True)["main"]()
+    _data, saved = _saved_page06(browser)
+    assert saved["pointing_check"]["verdict"] == "Go" and saved["pointing_check"]["snr_check"]["passed"] is True
 
 
 def test_pointing_go_accept_publishes_factor_and_completes(browser):
@@ -734,14 +791,17 @@ def test_pointing_go_accept_publishes_factor_and_completes(browser):
     ready(browser)
     browser.ui.begin()
     powers, result = _fixture_result()
-    ns = _page06(browser, result, powers)
-    ns["main"]()
-    ns["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result),
-                             pointing_logic.signature_id("fixture-signature"))
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    _data, before = _saved_page06(browser)
+    assert before["pointing_check"]["verdict"] == "Go" and "correction_factor" not in before  # not yet accepted
+    namespace["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result, None, snr_required=False),
+                                    pointing_logic.signature_id("fixture-signature"))
     data, saved = _saved_page06(browser)
-    assert saved["correction_factor"] == 1.2 and saved["pointing_check"]["verdict"] == "Go"
-    assert saved["pointing_check"]["accepted"] is True
+    assert saved["correction_factor"] == 1.2 and saved["pointing_check"]["accepted"] is True
+    assert saved["pointing_check"]["overridden"] is False
     assert "06_pointing_correction" in data["completed_stages"]
+    assert data["audit_log"][-1]["message"] == "Pointing check Go — correction accepted"
 
 
 def test_pointing_no_go_override_is_recorded_for_audit(browser):
@@ -749,16 +809,76 @@ def test_pointing_no_go_override_is_recorded_for_audit(browser):
     ready(browser)
     browser.ui.begin()
     powers, result = _fixture_result(ns_offset=0.5)
-    ns = _page06(browser, result, powers)
-    ns["main"]()
-    ns["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result),
-                             pointing_logic.signature_id("fixture-signature"), "note text", "because science")
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    namespace["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result, None, snr_required=False),
+                                    pointing_logic.signature_id("fixture-signature"), "note text", "because science")
     data, saved = _saved_page06(browser)
     record = saved["pointing_check"]
     assert record["overridden"] and record["override_note"] == "note text"
     assert record["override_justification"] == "because science" and saved["correction_factor"] == 1.2
     assert "06_pointing_correction" in data["completed_stages"]
     assert any("overridden (RULE-05)" in e["message"] for e in data["audit_log"])
+
+
+def test_pointing_sign_off_survives_a_rerun_with_unchanged_inputs_but_not_changed_ones(browser):
+    from utils import pointing_logic
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result(ns_offset=0.5)
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    namespace["_commit_acceptance"](result, pointing_logic.evaluate_pointing_check(result, None, snr_required=False),
+                                    pointing_logic.signature_id("fixture-signature"), "n", "j")
+    browser.ui.begin()
+    namespace["main"]()  # same inputs: the sign-off, the published factor and the completion all stay
+    data, saved = _saved_page06(browser)
+    assert saved["pointing_check"]["accepted"] and saved["correction_factor"] == 1.2
+    assert "06_pointing_correction" in data["completed_stages"]
+    browser.ui.begin()
+    changed = _page06(browser, result, powers)
+    changed["_compute"] = lambda *args: {"result": result, "signature": "different-picks", "error": None,
+                                         "failed_panels": (), "failed_axis": None, "partial_curves": {}}
+    changed["main"]()  # different inputs: the old sign-off must not carry over
+    data, saved = _saved_page06(browser)
+    assert saved["pointing_check"]["accepted"] is False and "correction_factor" not in saved
+    assert "06_pointing_correction" not in data["completed_stages"]
+    assert saved["pointing_check"]["override_note"] == ""
+
+
+def test_pointing_failed_fit_is_recorded_non_overridable_without_a_factor(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()
+    namespace = _page06(browser, result, powers)
+    namespace["_compute"] = lambda *args: {
+        "result": None, "signature": "fixture-signature", "failed_panels": ("West", "Centre", "East"),
+        "failed_axis": "East-West", "partial_curves": {},
+        "error": "PointingFitError: the East-West fit (West, Centre, East panels) did not converge: boom",
+    }
+    namespace["main"]()
+    data, saved = _saved_page06(browser)
+    check = saved["pointing_check"]
+    assert check["verdict"] == "No-Go" and check["overridable"] is False and check["accepted"] is False
+    assert check["failed_panels"] == ["West", "Centre", "East"] and check["correction_factor"] is None
+    assert "correction_factor" not in saved and saved["peak_powers"] == powers  # inputs kept so they can be restored
+    assert "06_pointing_correction" not in data["completed_stages"]
+    assert any("did not converge" in e["message"] for e in data["audit_log"])
+
+
+def test_pointing_incomplete_inputs_clear_the_stage(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result()
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    assert "06_pointing_correction" in browser.state["pipeline_data"]
+    browser.ui.begin()
+    empty = {role: 0.0 for role in powers}
+    namespace["_render_manual_entry"] = lambda: (empty, 0.1)
+    namespace["main"]()
+    assert "06_pointing_correction" not in browser.state["pipeline_data"]
+    assert "06_pointing_correction" not in browser.state["completed_stages"]
 
 
 def test_fit_commit_records_parameters_and_log_before_checkpoint(browser):
@@ -862,3 +982,4 @@ def test_unicode_audit_text_survives_checkpoint_and_manual_save_recovery(browser
     browser.store.load_session(manual_save, navigate=False)
     assert any(entry["message"] == message for entry in browser.state["audit_log"])
     assert all(path.read_bytes() == raw for path, raw in original_bytes.items())
+    

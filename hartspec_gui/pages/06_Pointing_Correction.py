@@ -13,7 +13,10 @@
 #      REAL clc.Point_cor.pointcor() -- via utils/pointing_logic.compute_pointing(), which leaves Point_cor.py
 #      untouched (see that module's header for the `global hp` / "../plots/" mitigation).
 #   4. Below the results, the (LCP + RCP) * Pointing Correction graph shows the correction applied to the spectrum.
-#   5. FR-13: utils/pointing_logic.evaluate_pointing_check() gives a Go / No-Go verdict (|offset| < 2.5 sigma). The
+#   5. FR-13: utils/pointing_logic.evaluate_pointing_check() gives a Go / No-Go verdict: A) |NS offset| < 2.5 sigma_NS
+#      AND B) the unmodified clc Stats_manager.Sig_point says every pointing peaks >= 2.5 sigma above the baseline
+#      noise. A non-converging fit is a hard, non-overridable exception (UC-08): the failing panels are flagged and
+#      the fits that did converge are still drawn. The
 #      stage only completes -- and the correction factor is only published to Pages 07/08 -- after the user accepts a
 #      Go, or signs off a No-Go with an override note + scientific justification (RULE-05). Verdict, override text
 #      and all pointing values are stored in pipeline_data[...]["pointing_check"] (session JSON / checkpoints).
@@ -51,6 +54,7 @@ NEXT_PAGE = "pages/07_Spectral_Fitting.py"
 DIRECTIONS = list(pointing_logic.ROLES)  # N, S, E, W, Centre -- left-to-right per build spec §7
 RESULT_CACHE_KEY = "pointing_result_cache"
 LOGGED_SIGNATURE_KEY = "pointing_logged_signature"
+BASELINE_STAGE_KEY = "04_baseline_editor"
 OVERRIDE_OPEN_KEY = "pointing_override_open"
 OVERRIDE_NOTE_KEY = "pointing_override_note"
 OVERRIDE_JUSTIFICATION_KEY = "pointing_override_justification"
@@ -205,13 +209,16 @@ def _compute(powers: dict[str, float], hpbw: Optional[float], scan_key: str, dir
     cache = st.session_state.get(RESULT_CACHE_KEY)
     if cache and cache["signature"] == signature:
         return cache
-    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None, "failed_panels": ()}
+    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None, "failed_panels": (),
+                             "failed_axis": None, "partial_curves": {}}
     try:
         plot_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "plots"
         entry["result"] = pointing_logic.compute_pointing(powers, hpbw, dirname, plot_dir=plot_dir)
     except Exception as exc:  # noqa: BLE001 -- legacy fit code can fail in several ways; shown to the user below
         entry["error"] = f"{type(exc).__name__}: {exc}"
         entry["failed_panels"] = tuple(getattr(exc, "panels", ()))
+        entry["failed_axis"] = getattr(exc, "axis", None)
+        entry["partial_curves"] = getattr(exc, "partial_curves", {})
     st.session_state[RESULT_CACHE_KEY] = entry
     return entry
 
@@ -242,6 +249,58 @@ def _render_pointing_product_graph(pointing_factor: float, theme: dict[str, str]
         )
         styles.render_plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         st.caption(f"Spectrum source: {resolved.source_label}")
+
+
+def _signal_to_noise(scan: Any, spectra: dict[str, dict[str, Any]], scan_key: str) -> Optional[Any]:
+    """Condition B inputs: the five scan spectra, the Page 04 baseline regions, the Centre panel's picked velocity.
+
+    None for manual entry: there are no spectra, so condition B is skipped (not failed) -- see main().
+    """
+    if scan is None:
+        return None
+    stage = st.session_state.get("pipeline_data", {}).get(BASELINE_STAGE_KEY, {})
+    blocks = stage.get("blocks") if isinstance(stage, dict) else None
+    return pointing_logic.evaluate_signal_to_noise(
+        {role: spectra[scan.files[role]] for role in DIRECTIONS}, blocks or [],
+        float(st.session_state[f"pointing_pick::{scan_key}::Centre"]),
+    )
+
+
+def _render_pointing_fit(entry: dict[str, Any], powers: dict[str, float], hpbw: Optional[float],
+                         theme: dict[str, str]) -> None:
+    """FR-12: the Gaussian fitted by Point_cor.py (dashed) over the measured half-power points, NS and EW.
+
+    Stays on screen for the whole session (US-12). A failed fit gets an inline error badge; a fit that never ran
+    because pointcor() stopped at an earlier failure is labelled as such. Fits that did converge are still drawn.
+    """
+    result = entry["result"]
+    curves = (result.fit_curves if result is not None else entry.get("partial_curves")) or {}
+    failed_axis = entry.get("failed_axis")
+    measured = pointing_logic.measured_points(powers, hpbw)
+    with st.container(border=True):
+        st.markdown('<div class="hs-panel-title">Pointing fit — measured half-power points and fitted Gaussian</div>',
+                    unsafe_allow_html=True)
+        for column, (axis, data) in zip(st.columns(2), measured.items()):
+            with column:
+                curve = curves.get(axis)
+                fig = go.Figure()
+                if curve is not None:
+                    fig.add_scatter(x=curve["x"], y=curve["y"], mode="lines", name="Fit",
+                                    line=dict(color=styles.get_fit_line_color(), width=1.6, dash="dash"))
+                fig.add_scatter(x=data["x"], y=data["y"], mode="markers+text", name="Measured",
+                                text=list(data["panels"]), textposition="top center",
+                                marker=dict(color=styles.LCP_COLOR, size=9))
+                fig.update_layout(**styles.plotly_layout_theme(theme))
+                fig.update_layout(height=240, margin=dict(l=40, r=20, t=10, b=40), showlegend=False,
+                                  xaxis=dict(title=f"{axis} offset (deg)"), yaxis=dict(title="Power"))
+                st.caption(axis)
+                styles.render_plotly_chart(fig, use_container_width=True, theme=None,
+                                           config={"displayModeBar": False})
+                if axis == failed_axis:
+                    st.markdown(styles.render_badge("Gaussian fit failed to converge", "error"),
+                                unsafe_allow_html=True)
+                elif curve is None and failed_axis:
+                    st.caption("Not fitted: Point_cor.py stopped at the earlier failure.")
 
 
 # ---------------------------------------------------------------------------
@@ -353,16 +412,31 @@ def _render_verdict_panel(check: Any, accepted: bool, theme: dict[str, str]) -> 
     if check.verdict == pointing_logic.VERDICT_GO:
         badge = styles.render_badge("Go", "ok")
     elif accepted:
-        badge = styles.render_badge("No-Go — overridden", "warning")
+        badge = styles.render_badge("No-Go — overridden", "info")
+    elif check.overridable:
+        badge = styles.render_badge("No-Go", "warning")
     else:
-        badge = styles.render_badge("No-Go", "error")
+        badge = styles.render_badge("No-Go — fit failed", "error")
     reasons = "".join(f"<li>{html.escape(reason)}</li>" for reason in check.reasons)
     reasons_html = (f'<ul style="margin:8px 0 0 18px; font-size:0.75rem; color:{theme["text-body"]};">{reasons}</ul>'
                     if reasons else "")
+    snr = check.snr
+    snr_html = ""
+    extra = (" (Sig_point not applicable to manual entry)" if check.snr_skipped
+             else " and Sig_point signal-to-noise")
+    if snr is not None and snr.evaluated and snr.panel_snr:
+        values = ", ".join(f"{role} {value:.1f}" for role, value in snr.panel_snr)
+        snr_html = (f'<div style="margin-top:6px; font-size:0.6875rem; color:{theme["text-muted"]};">'
+                    f'Peak / baseline rms at {snr.peak_velocity_kms:.2f} km/s — {html.escape(values)}</div>')
+        if snr.resampled:
+            snr_html += (f'<div style="margin-top:4px; font-size:0.6875rem; color:{theme["text-muted"]};">'
+                         f'Interpolated onto the Centre velocity grid for this check only: '
+                         f'{html.escape("; ".join(snr.resampled))}</div>')
     st.markdown(
         f'<div style="margin:{styles.SECTION_GAP}px 0 4px;">{badge} '
         f'<span style="font-size:0.75rem; color:{theme["text-body"]};">'
-        f'Pointing check — |NS offset| must be below {check.threshold_sigma:g}σ</span>{reasons_html}</div>',
+        f'Pointing check — |NS offset| below {check.threshold_sigma:g}σ{extra}</span>'
+        f'{reasons_html}{snr_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -419,6 +493,7 @@ def main() -> None:
     scans = _find_scans(spectra)
 
     powers: dict[str, float] = {}
+    slots: dict[str, Any] = {}
     hpbw: Optional[float] = None
     scan_key, dirname, input_source = "manual", "manual", "manual entry"
 
@@ -441,6 +516,7 @@ def main() -> None:
         for column, role in zip(st.columns(5), DIRECTIONS):
             with column, st.container(border=True):
                 powers[role] = _render_direction_panel(role, spectra[scan.files[role]], scan_key, theme)
+                slots[role] = st.empty()  # filled below if this panel's fit failed
         hpbw = _as_positive_float(spectra[scan.files["Centre"]].get("HPBW"))
         if hpbw is None:
             st.warning("The beam width (HPBW) could not be read from the on-source file's header. Enter it below.")
@@ -471,8 +547,16 @@ def main() -> None:
 
     # FR-13: verdict for exactly these inputs; an earlier sign-off only counts if the inputs are unchanged.
     signature_id = pointing_logic.signature_id(entry["signature"])
-    check = (pointing_logic.evaluate_pointing_check(result) if result is not None
+    snr = _signal_to_noise(scan if scans else None, spectra, scan_key) if result is not None else None
+    check = (pointing_logic.evaluate_pointing_check(result, snr, snr_required=bool(scans))
+             if result is not None
              else pointing_logic.failed_fit_check(entry["error"] or "no result", entry.get("failed_panels", ())))
+    if result is None:  # UC-08 exception flow: flag the affected panels (Centre is shared, so it is not flagged)
+        failed_badge = styles.render_badge("Gaussian fit failed to converge", "error")
+        for name in check.failed_panels:
+            role = pointing_logic.PANEL_ROLE.get(name, name)
+            if role != "Centre" and role in slots:
+                slots[role].markdown(failed_badge, unsafe_allow_html=True)
     _reset_override_widgets(signature_id)
     saved = _saved_check(signature_id)
     accepted = bool(result is not None and saved and saved.get("accepted") and saved.get("verdict") == check.verdict)
@@ -512,6 +596,7 @@ def main() -> None:
     if result is not None:
         _render_metric_cards(result, check, theme)
     _render_verdict_panel(check, accepted, theme)
+    _render_pointing_fit(entry, powers, hpbw, theme)
     # Results table stays hidden while the override form is open (keeps the form uncluttered; cards show the values).
     if result is not None and not st.session_state.get(OVERRIDE_OPEN_KEY):
         st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)

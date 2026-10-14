@@ -169,6 +169,8 @@ class PointingResult:
     hpbw_deg: float
     powers: Dict[str, float]
     uncertainties: Optional[PointingUncertainties] = None
+    # axis name -> {"x", "y" (the fitted Gaussian from Point_cor.gaussf), "centre", "amplitude"}; display only
+    fit_curves: Optional[Dict[str, Dict[str, Any]]] = None
 
 
 class _PyplotProxy:
@@ -217,13 +219,48 @@ FIT_PANELS = (
 )
 
 
-class PointingFitError(RuntimeError):
-    """A pointcor() Gaussian fit did not converge; names the compass panels that fit used (Use Case UC-08)."""
+# Display names used in FIT_PANELS / messages -> the role codes used for powers and page panels.
+PANEL_ROLE = {"North": "N", "South": "S", "East": "E", "West": "W", "Centre": "Centre"}
 
-    def __init__(self, axis: str, panels: Tuple[str, ...], original: Exception) -> None:
+
+class PointingFitError(RuntimeError):
+    """A pointcor() Gaussian fit did not converge; names the compass panels that fit used (Use Case UC-08).
+
+    ``partial_curves`` holds the fitted curves of any fit that completed before the failure (pointcor() stops at the
+    first one), so the page can still draw them.
+    """
+
+    def __init__(self, axis: str, panels: Tuple[str, ...], original: Exception,
+                 partial_curves: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         self.axis = axis
         self.panels = tuple(panels)
+        self.partial_curves = partial_curves or {}
         super().__init__(f"the {axis} fit ({', '.join(panels)} panels) did not converge: {original}")
+
+
+def measured_points(powers: Mapping[str, float], hpbw_deg: float) -> Dict[str, Dict[str, Any]]:
+    """The three measured points of each pointcor() fit: x = -h/2, 0, +h/2 (deg), y = the panel powers."""
+    half = float(hpbw_deg) / 2.0
+    return {
+        axis: {"panels": panels, "x": [-half, 0.0, half], "y": [float(powers[PANEL_ROLE[name]]) for name in panels]}
+        for axis, panels in FIT_PANELS
+    }
+
+
+def _fit_curves(module: Any, fits: Sequence[Tuple[np.ndarray, np.ndarray]], hpbw_deg: float,
+                ) -> Dict[str, Dict[str, Any]]:
+    """Fitted curves from Point_cor's own gaussf (same range as its PDF). Call inside _POINTCOR_LOCK: gaussf reads
+    the module-level ``hp`` that pointcor() has just set."""
+    curves: Dict[str, Dict[str, Any]] = {}
+    half = float(hpbw_deg) / 2.0
+    smooth = np.linspace(-4 * half, 4 * half, 100)
+    for (axis, _panels), (popt, _pcov) in zip(FIT_PANELS, fits):
+        try:
+            values = np.asarray(module.gaussf(smooth, *popt), dtype=float)
+        except Exception:  # noqa: BLE001 -- display only; never let a plot break the calculation
+            continue
+        curves[axis] = {"x": smooth, "y": values, "centre": float(popt[1]), "amplitude": float(popt[0])}
+    return curves
 
 
 def _recording_curve_fit(real: Callable[..., Any], fits: List[Tuple[np.ndarray, np.ndarray]],
@@ -308,10 +345,11 @@ def compute_pointing(
             factor, ns_offset, ew_offset = pointcor_module.pointcor(
                 hpbw=float(hpbw_deg), dirname=dirname, **arguments
             )
+            curves = _fit_curves(pointcor_module, fits, hpbw_deg)
         except Exception as exc:
             if failure["index"] is not None and failure["index"] < len(FIT_PANELS):
                 axis, panels = FIT_PANELS[failure["index"]]
-                raise PointingFitError(axis, panels, exc) from exc
+                raise PointingFitError(axis, panels, exc, _fit_curves(pointcor_module, fits, hpbw_deg)) from exc
             raise
         finally:
             pointcor_module.plt = original_plt
@@ -325,25 +363,45 @@ def compute_pointing(
         hpbw_deg=float(hpbw_deg),
         powers={role: float(powers[role]) for role in ROLES},
         uncertainties=_uncertainties_from_fits(fits, float(factor), float(hpbw_deg)),
+        fit_curves=curves,
     )
 
 
 # ---------------------------------------------------------------------------
-# FR-13: 2.5-sigma Go / No-Go quality check (pure -- no Streamlit)
+# FR-13: Go / No-Go quality check (pure -- no Streamlit)
+#   Condition A: |NS offset| < 2.5 x sigma_NS (fit uncertainty of the NS Gaussian centre)
+#   Condition B: clc Stats_manager.Sig_point -> "Yes" (every one of the five pointings peaks >= 2.5 x baseline rms)
 # ---------------------------------------------------------------------------
 
 THRESHOLD_SIGMA = 2.5
+SIG_POINT_THRESHOLD = 2.5  # hard-coded inside Stats_manager.Sig_point; used for messages only
 VERDICT_GO = "Go"
 VERDICT_NO_GO = "No-Go"
+
+
+@dataclass(frozen=True)
+class SignalToNoiseCheck:
+    """Condition B. ``sig_point`` is Sig_point's raw answer: "Yes" (all five >= 2.5), "No" (all below) or "" (mixed).
+
+    ``panel_snr`` (peak / baseline rms per panel) is informational; the verdict comes from Sig_point itself.
+    """
+
+    evaluated: bool
+    passed: bool
+    sig_point: str = ""
+    reason: str = ""
+    peak_velocity_kms: Optional[float] = None
+    panel_snr: Tuple[Tuple[str, float], ...] = ()
+    resampled: Tuple[str, ...] = ()  # spectra interpolated onto the Centre grid for this check, with the detail
 
 
 @dataclass(frozen=True)
 class PointingCheck:
     """Outcome of the pointing quality check.
 
-    ``evaluated`` is False when the 2.5-sigma test could not run (no usable uncertainty, or the fit failed); the
-    verdict is then No-Go. ``overridable`` is False for a non-converging fit (UC-08 exception flow): there is no
-    correction factor to apply, so RULE-05 does not apply. ``failed_panels`` names the panels of the failed fit.
+    ``evaluated`` is True only when both conditions could be run. Anything not evaluated or failed is a No-Go.
+    ``overridable`` is False for a non-converging fit (UC-08 exception flow): there is no correction factor to apply,
+    so RULE-05 does not apply. ``failed_panels`` names the panels of the failed fit.
     """
 
     verdict: str
@@ -353,6 +411,8 @@ class PointingCheck:
     overridable: bool
     ns_ratio: Optional[float] = None
     failed_panels: Tuple[str, ...] = ()
+    snr: Optional[SignalToNoiseCheck] = None
+    snr_skipped: bool = False  # condition B not applicable (manual entry: there are no spectra)
 
 
 def _usable_sigma(value: Any) -> Optional[float]:
@@ -373,31 +433,160 @@ def _finite_or_none(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
-def evaluate_pointing_check(result: Any, threshold_sigma: float = THRESHOLD_SIGMA) -> PointingCheck:
-    """Go only if |NS offset| < threshold x sigma_NS (Technical Specification, confirmed: NS only).
+def _import_stats_manager() -> Any:
+    """Import clc.Stats_manager lazily (heavy flat imports; keeps this module importable without clc)."""
+    try:
+        from clc import Stats_manager
+    except ImportError:
+        clc_dir = Path(__file__).resolve().parent.parent / "clc"
+        if str(clc_dir) not in sys.path:
+            sys.path.append(str(clc_dir))
+        import Stats_manager  # type: ignore
+    return Stats_manager
 
-    The EW offset is derived and shown with its uncertainty but does not affect the verdict.
-    # TODO: confirm against design -- clc/Stats_manager.Sig_point tests something different (peak S/N >= 2.5 on all
-    # five pointings, else pc stays 1); sigma here is the NS fit uncertainty, per the spec wording.
-    A missing / unusable uncertainty gives a No-Go (cannot verify), never a silent Go.
+
+def _align_amplitude(role: str, grid: np.ndarray, amplitude: np.ndarray, reference: np.ndarray,
+                     ) -> Tuple[np.ndarray, Optional[str]]:
+    """Put one spectrum on the reference (Centre) velocity grid; returns (amplitude, note or None).
+
+    The five scans are separate observations, so their Vlsr axes differ (LSR correction), sometimes by more than a
+    channel, and may differ in length, while Sig_point looks every spectrum up on ONE axis. An identical grid is used
+    untouched; otherwise the spectrum is linearly interpolated onto the reference grid, with NaN where it does not
+    reach (the caller then leaves those channels out of the noise estimate). This feeds only the signal-to-noise
+    gate -- never the powers given to pointcor() nor any exported spectrum.
+    # TODO: confirm against design -- the CLC flow may assume the five scans already share one grid.
     """
+    if grid.shape == reference.shape and np.allclose(grid, reference):
+        return amplitude, None
+    if grid.ndim != 1 or grid.size < 2 or amplitude.shape != grid.shape or not np.all(np.isfinite(grid)):
+        raise ValueError(f"the {role} spectrum has an unusable velocity axis")
+    order = np.argsort(grid)
+    axis = grid[order]
+    if np.any(np.diff(axis) <= 0):
+        raise ValueError(f"the {role} velocity axis has repeated values")
+    aligned = np.interp(reference, axis, amplitude[order], left=np.nan, right=np.nan)
+    if grid.shape == reference.shape:
+        detail = f"max shift {float(np.max(np.abs(grid - reference))):.4f} km/s"
+    else:
+        detail = f"{grid.size} vs {reference.size} channels"
+    missing = int(np.count_nonzero(np.isnan(aligned)))
+    if missing:
+        detail += f", {missing} channels outside its range left out of the noise"
+    return aligned, f"{role} ({detail})"
+
+
+def evaluate_signal_to_noise(
+    spectra: Mapping[str, Mapping[str, Any]], blocks: Sequence[Mapping[str, Any]], peak_velocity: float,
+    sig_point: Optional[Callable[..., Any]] = None,
+) -> SignalToNoiseCheck:
+    """Run the unmodified Stats_manager.Sig_point on the five pointing spectra (Condition B).
+
+    Args:
+        spectra: role (ROLES) -> loaded spectrum with Vlsr / LCP / RCP; all five must share one velocity grid.
+        blocks: committed Page 04 baseline regions; they define Sig_point's noise mask (0 = used for the rms).
+        peak_velocity: line velocity (km/s) -- the Centre panel's pick; snapped to a real channel.
+        sig_point: injectable for tests; defaults to clc Stats_manager.Sig_point.
+
+    Each pointing is the LCP/RCP mean, as for the powers handed to pointcor(). Never raises: anything that stops
+    Sig_point from running gives ``evaluated=False`` (a No-Go with the reason), never a silent pass.
+    # TODO: confirm against design -- the spectra are the loaded (raw) ones the peaks are picked on; whether the CLC
+    # flow baseline-flattens the pointing scans before Sig_point is not visible from the supplied files.
+    """
+
+    def unavailable(reason: str) -> SignalToNoiseCheck:
+        return SignalToNoiseCheck(evaluated=False, passed=False, reason=reason)
+
+    try:
+        if not blocks:
+            return unavailable("The baseline regions from Page 04 are not available, so the noise level cannot be "
+                               "measured for the Sig_point signal-to-noise check.")
+        reference = np.asarray(spectra["Centre"]["Vlsr"], dtype=float)
+        amplitudes = []
+        resampled: List[str] = []
+        for role in ROLES:
+            spectrum = spectra[role]
+            aligned, note = _align_amplitude(
+                role, np.asarray(spectrum["Vlsr"], dtype=float),
+                average_spectrum(spectrum["LCP"], spectrum["RCP"]), reference,
+            )
+            amplitudes.append(aligned)
+            if note:
+                resampled.append(note)
+        from utils.baseline_polynomial_adapter import build_clc_masks
+        mask = np.array(build_clc_masks(reference, [{"start": b["start"], "end": b["end"]} for b in blocks])[0])
+        peak_index = nearest_channel(reference, peak_velocity)
+        peak_vel = float(reference[peak_index])
+        uncovered = np.zeros(reference.shape, dtype=bool)
+        for amplitude in amplitudes:
+            uncovered |= np.isnan(amplitude)
+        if uncovered[peak_index]:
+            return unavailable(f"A pointing spectrum does not reach the peak velocity {peak_vel:.2f} km/s, so "
+                               "Sig_point cannot compare them.")
+        mask[uncovered] = 1  # shared noise mask: only channels every one of the five spectra covers
+        amplitudes = [np.nan_to_num(amplitude, nan=0.0) for amplitude in amplitudes]
+        if not np.any(mask == 0):
+            return unavailable("No baseline channel is covered by all five pointing spectra, so the noise cannot be "
+                               "measured.")
+        function = sig_point or _import_stats_manager().Sig_point
+        answer = str(function(*amplitudes, reference, mask, peak_vel))
+    except Exception as exc:  # noqa: BLE001 -- legacy code / malformed input: report, never crash the page
+        return unavailable(f"Sig_point could not be run: {exc}")
+
+    panel_snr = []
+    try:
+        for role, amplitude in zip(ROLES, amplitudes):
+            rms = float(np.sqrt(np.ma.mean(np.ma.array(amplitude, mask=mask) ** 2)))
+            peak = float(np.max(amplitude[reference == peak_vel]))
+            if math.isfinite(rms) and rms > 0 and math.isfinite(peak):
+                panel_snr.append((role, peak / rms))
+    except Exception:  # noqa: BLE001 -- informational only
+        panel_snr = []
+    if answer == "Yes":
+        reason = ""
+    elif answer == "No":
+        reason = (f"Sig_point: none of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the baseline noise "
+                  f"at {peak_vel:.2f} km/s.")
+    else:
+        reason = (f"Sig_point: not every one of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the "
+                  f"baseline noise at {peak_vel:.2f} km/s.")
+    return SignalToNoiseCheck(True, answer == "Yes", answer, reason, peak_vel, tuple(panel_snr),
+                              tuple(resampled))
+
+
+def evaluate_pointing_check(
+    result: Any, snr: Optional[SignalToNoiseCheck] = None, threshold_sigma: float = THRESHOLD_SIGMA,
+    *, snr_required: bool = True,
+) -> PointingCheck:
+    """Go only if A (|NS offset| < threshold x sigma_NS, strict) AND B (Sig_point says "Yes") both pass.
+
+    ``snr_required=False`` skips B entirely (manual entry has no spectra for Sig_point); A alone then decides.
+
+    The EW offset is shown with its uncertainty but does not affect the verdict (Technical Specification).
+    A condition that could not be evaluated is a No-Go with its reason -- never a silent Go.
+    """
+    reasons: List[str] = []
     uncertainties = getattr(result, "uncertainties", None)
     ns_sigma = _usable_sigma(getattr(uncertainties, "ns_sigma_deg", None))
+    ratio: Optional[float] = None
+    a_evaluated = ns_sigma is not None
     if ns_sigma is None:
-        return PointingCheck(
-            VERDICT_NO_GO, threshold_sigma,
-            ("The NS fit uncertainty needed for the %gσ check is not available, so the offset cannot be "
-             "verified." % threshold_sigma,),
-            evaluated=False, overridable=True,
-        )
-    offset = abs(float(result.ns_offset_deg))
-    ratio = offset / ns_sigma
-    if ratio < threshold_sigma:  # strict; NaN falls through to No-Go
-        return PointingCheck(VERDICT_GO, threshold_sigma, (), evaluated=True, overridable=True, ns_ratio=ratio)
+        reasons.append("The NS fit uncertainty needed for the %gσ check is not available, so the offset cannot be "
+                       "verified." % threshold_sigma)
+    else:
+        offset = abs(float(result.ns_offset_deg))
+        ratio = offset / ns_sigma
+        if not ratio < threshold_sigma:  # strict; NaN falls through to No-Go
+            reasons.append(f"|NS offset| = {offset:.4f}° is {ratio:.2f}σ, not below {threshold_sigma:g}σ.")
+    if snr_required:
+        if snr is None:
+            reasons.append("The Sig_point signal-to-noise check was not run.")
+        elif not (snr.evaluated and snr.passed):
+            reasons.append(snr.reason or "The Sig_point signal-to-noise check did not pass.")
+    b_evaluated = (not snr_required) or bool(snr is not None and snr.evaluated)
     return PointingCheck(
-        VERDICT_NO_GO, threshold_sigma,
-        (f"|NS offset| = {offset:.4f}° is {ratio:.2f}σ, not below {threshold_sigma:g}σ.",),
-        evaluated=True, overridable=True, ns_ratio=ratio,
+        VERDICT_GO if not reasons else VERDICT_NO_GO, threshold_sigma, tuple(reasons),
+        evaluated=a_evaluated and b_evaluated, overridable=True, ns_ratio=ratio,
+        snr=snr if snr_required else None, snr_skipped=not snr_required,
     )
 
 
@@ -426,6 +615,7 @@ def check_record(
     """
     uncertainties = getattr(result, "uncertainties", None) if result is not None else None
     overridden = bool(accepted and check.verdict == VERDICT_NO_GO)
+    snr = check.snr
     return {
         "verdict": check.verdict,
         "threshold_sigma": check.threshold_sigma,
@@ -445,5 +635,11 @@ def check_record(
         "ew_sigma_deg": _finite_or_none(getattr(uncertainties, "ew_sigma_deg", None)),
         "pc_sigma": _finite_or_none(getattr(uncertainties, "pc_sigma", None)),
         "ns_ratio": _finite_or_none(check.ns_ratio),
+        "snr_skipped": check.snr_skipped,
+        "snr_check": None if snr is None else {
+            "evaluated": snr.evaluated, "passed": snr.passed, "sig_point": snr.sig_point,
+            "peak_velocity_kms": _finite_or_none(snr.peak_velocity_kms),
+            "panel_snr": {role: _finite_or_none(value) for role, value in snr.panel_snr},
+            "resampled": list(snr.resampled),
+        },
     }
-    
