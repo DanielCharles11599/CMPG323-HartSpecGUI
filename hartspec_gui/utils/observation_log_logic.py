@@ -313,7 +313,7 @@ def build_log_download(log: ObservationLog) -> bytes:
     unchanged bytes and does not cause checkpoint churn.
     """
     lines = [
-        "HARTSPEC — Observation log review (FR-20)",
+        "HARTSPEC — Observation log review",
         f"Current reduction ID: {_quoted(log.session_id)}",
         "Read-only report; not a session replay file or a scientific spectrum export.",
         "Contains ALL recorded events and the CURRENT parameter summary; display filters do not apply.",

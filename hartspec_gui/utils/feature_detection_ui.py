@@ -77,7 +77,7 @@ def render_feature_detection(
 ) -> bool:
     """Render the FR-08 overlay and log; return True when detection ran successfully."""
     theme = styles.get_theme()
-    st.markdown('<div class="hs-eyebrow">FR-08 — sigma-clipping feature detection</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hs-eyebrow">Sigma-clipping feature detection</div>', unsafe_allow_html=True)
     st.caption(
         "Detection follows the supplied CLC Add_Remove_feature thresholds on the committed baseline-flattened "
         "LCP/RCP spectra. The review uses private mask copies; it does not edit your baseline regions "

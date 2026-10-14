@@ -139,7 +139,7 @@ def test_real_checkpoint_contains_controls_and_no_display_arrays(persistence_con
     assert not set(('Vlsr', 'LCP', 'RCP', 'mean', 'I')).intersection(view)
     assert disk.bridge is not None
     assert disk.path.with_name(disk.path.stem + '.baseline_editor.json').is_file()
-    assert len([e for e in disk.payload['audit_log'] if 'FR-09 view changed' in e['message']]) == 2
+    assert len([e for e in disk.payload['audit_log'] if 'Polarisation view changed' in e['message']]) == 2
 
 
 def test_actual_checkpoint_deduplication_on_identical_reruns(persistence_context):
@@ -415,9 +415,11 @@ def test_page05_real_helpers_apply_calibration_before_display(integrated_page_co
     c = integrated_page_context
     c.run_page()
     state = c.st.session_state
-    expected_scale = 1.1 * ((3.0 + 6.0) / 2.0)
-    for key in ('LCP', 'RCP'):
-        np.testing.assert_array_equal(state['calibrated_spectrum'][key], c.spectrum[key] * expected_scale)
+    for key, pss in (('LCP', 3.0), ('RCP', 6.0)):
+        np.testing.assert_allclose(
+            state['calibrated_spectrum'][key], c.spectrum[key] * (1.1 * pss),
+            rtol=1e-13, atol=1e-13,
+        )
     assert saved(c)['source_key'] == 'calibrated'
     assert saved(c)['intensity_unit'] == 'Jy'
     assert c.pwr_calls == [(

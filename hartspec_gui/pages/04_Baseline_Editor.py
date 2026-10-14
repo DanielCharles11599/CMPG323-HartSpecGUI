@@ -27,7 +27,7 @@ from utils.stage_invalidation import invalidate_baseline_dependents
 CURRENT_STAGE = 4
 PAGE_STAGE_KEY = THIS_STAGE_KEY
 PAGE_TITLE = "Baseline Block Editor"
-PAGE_SUBTITLE = "FR-05 / 06 / 07 — select flat baseline regions and compare polynomial fits"
+PAGE_SUBTITLE = "Select flat baseline regions and compare polynomial fits"
 # The Dash content currently ends shortly after the order-selection row. Keeping
 # the old 1050 px viewport left a large empty iframe tail (white in dark mode).
 # 880 px keeps the complete editor visible while bringing Streamlit actions up.
@@ -140,7 +140,7 @@ def _dash_url(port: int, session_id: str, revision: str) -> str:
     it, Streamlit can reuse the same iframe URL and the Dash app can keep an
     old/empty hydrated state even though the bridge JSON has been refreshed.
     """
-    base = os.environ.get("DASH_BRIDGE_URL", f"http://localhost:{port}").rstrip("/")
+    base = os.environ.get("DASH_BRIDGE_URL", f"http://127.0.0.1:{port}").rstrip("/")
     query = urlencode(
         {
             "session_id": session_id,
@@ -229,7 +229,7 @@ def main() -> None:
         _clear_page4_completion()
         st.error(
             "The Page 3 corrected spectrum is not present in this Streamlit session. "
-            "Return to Bandpass Correction and let FR-04 run again."
+            "Return to Bandpass Correction and let the correction run again."
         )
         if st.button("Return to Bandpass Correction", key="restore_bandpass_handoff"):
             st.switch_page("pages/03_Bandpass_Correction.py")
@@ -253,7 +253,7 @@ def main() -> None:
         _clear_page4_completion()
         st.error(
             "The Page 3 completion record has no valid bandpass mode. "
-            "Return to Bandpass Correction and run FR-04 again."
+            "Return to Bandpass Correction and run the correction again."
         )
         st.stop()
 
@@ -271,7 +271,11 @@ def main() -> None:
     # start_server() is already a process-level singleton guarded by a lock.
     # Calling it directly avoids Streamlit cache lifecycle warnings while
     # still ensuring only one Dash server is started per process.
-    port = start_server()
+    try:
+        port = start_server()
+    except (OSError, RuntimeError) as exc:
+        st.error(f"The embedded Baseline Editor could not start: {exc}")
+        st.stop()
 
     # Changing the revision changes the iframe src, forcing Dash's hydrate
     # callback to re-read the bridge instead of leaving an old blank graph.
@@ -313,7 +317,7 @@ def main() -> None:
             blocks,
         )
     else:
-        st.info("Complete the baseline fit above to run FR-08 feature detection.")
+        st.info("Complete the baseline fit above to run feature detection.")
 
     if st.button(
         "Continue to Calibration Dashboard →",
@@ -329,7 +333,7 @@ def main() -> None:
                 "range and each start must be smaller than its end."
             )
         else:
-            st.warning("Resolve the FR-08 feature-detection error shown above before continuing.")
+            st.warning("Resolve the feature-detection error shown above before continuing.")
 
 
 if __name__ == "__main__":

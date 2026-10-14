@@ -6,8 +6,8 @@ The panel never calls save/checkpoint/log_event or reads another session from di
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import Any, ContextManager
 
 import pandas as pd
 import streamlit as st
@@ -36,7 +36,11 @@ def _styled_frame(rows: list[dict[str, Any]], theme: Mapping[str, str], *, monos
     )
 
 
-def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str], height: int = 240) -> None:
+def render_observation_log(
+    state: Mapping[str, Any], *, theme: Mapping[str, str], height: int = 240,
+    panel_factory: Callable[[str], ContextManager[Any]] | None = None,
+    table_renderer: Callable[..., Any] | None = None,
+) -> None:
     """Display recorded events, a separate current-parameter summary and one full text download.
 
     Args:
@@ -44,12 +48,17 @@ def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str]
             are consumed by the report builder.
         theme: Existing styles.get_theme() tokens, passed by Page 08.
         height: Bounded event-table height; the parameter table is also bounded.
+        panel_factory: Optional presentation-only section container for Page 08.
+        table_renderer: Optional read-only table presentation; data/filters are unchanged.
     """
     log = build_observation_log(state)
     # TODO: confirm against design — see build spec §3. This approved FR-20
     # increment adds search/summary controls to the old fixed-height log section.
-    with st.container(border=True):
-        st.markdown('<div class="hs-panel-title">Observation Log Panel (FR-20)</div>', unsafe_allow_html=True)
+    panel = panel_factory("Observation log") if panel_factory is not None else st.container(border=True)
+    render_table = table_renderer if table_renderer is not None else styles.render_dataframe
+    with panel:
+        if panel_factory is None:
+            st.markdown('<div class="hs-panel-title">Observation Log Panel</div>', unsafe_allow_html=True)
         st.caption(
             "Read-only review. Events are shown exactly as recorded; missing dates and observer identities "
             "are not inferred. The current parameter summary below is separate from event history."
@@ -78,7 +87,7 @@ def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str]
                  "Message": row.message, "Record note": row.note}
                 for row in events
             ]
-            styles.render_dataframe(
+            render_table(
                 _styled_frame(event_rows, theme, monospace=True),
                 height=height, use_container_width=True, hide_index=True,
             )
@@ -105,7 +114,7 @@ def render_observation_log(state: Mapping[str, Any], *, theme: Mapping[str, str]
                      "Recorded stage status": row.status, "Field in pipeline_data": row.field}
                     for row in parameters
                 ]
-                styles.render_dataframe(
+                render_table(
                     _styled_frame(parameter_rows, theme),
                     height=320, use_container_width=True, hide_index=True,
                 )

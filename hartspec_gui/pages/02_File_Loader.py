@@ -402,10 +402,10 @@ def _run_real_verify(filename: str) -> fits_ingest.VerificationResult:
     st.session_state[cache_key] = result
 
     if result.ok:
-        session_store.log_event(f"{filename} passed structural verification (FR-03)")
+        session_store.log_event(f"{filename} passed structural verification")
     else:
         session_store.log_event(
-            f"{filename} FAILED structural verification (FR-03) -- {result.issues}"
+            f"{filename} FAILED structural verification -- {result.issues}"
         )
     return result
 
@@ -1371,7 +1371,8 @@ html, body {{ margin:0; padding:0; background:transparent; font-family:{font};
               font-size:{16 * styles.get_font_scale() / 100:g}px; }}
 .wrap:focus-visible {{ outline:3px solid {theme.get('control-border', theme['text-body'])}; outline-offset:-3px; }}
 .wrap {{ height:{HEADER_TABLE_HEIGHT - 2}px; overflow:auto; box-sizing:border-box; background:{theme['bg-panel']};
-         border:1px solid {theme['border-subtle']}; border-radius:{styles.PANEL_RADIUS}px; }}
+         border:1px solid {styles.surface_border_colour(theme, 'border-subtle')};
+         border-radius:{styles.PANEL_RADIUS}px; }}
 table {{ border-collapse:separate; border-spacing:0; min-width:100%; width:max-content; }}
 th {{ position:sticky; top:0; z-index:2; min-height:{styles.TABLE_HEADER_HEIGHT}px; padding:0 10px; text-align:left;
       white-space:nowrap; font-size:0.625rem; font-weight:600; background:{theme['table-header-bg']};
@@ -1734,7 +1735,7 @@ def main() -> None:
 
     styles.render_page_header(
         title="File Loader",
-        subtitle="FR-02 FITS load & FR-03 validation / quarantine",
+        subtitle="FITS load, validation & quarantine",
         current_stage=STAGE_NUMBER,
         completed_stages=session_store.completed_count(),
     )

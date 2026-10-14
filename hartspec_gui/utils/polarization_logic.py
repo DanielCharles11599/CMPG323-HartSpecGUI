@@ -56,7 +56,7 @@ def _load_pols() -> ModuleType:
     """
     path = CLC_DIR / "Pols.py"
     if not path.is_file():
-        raise PolarizationIntegrationError(f"FR-09 requires the original CLC module: {path}")
+        raise PolarizationIntegrationError(f"Polarisation averaging requires the original CLC module: {path}")
     try:
         import matplotlib
 

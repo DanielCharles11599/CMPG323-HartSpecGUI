@@ -32,7 +32,8 @@ def test_owned_css_scaling_and_visible_keyboard_focus(page, mode):
     css = (APP / "utils/accessibility.css").read_text(encoding="utf-8")
     background, text = ("#FFFFFF", "#334155") if mode == "light" else ("#1E293B", "#FFFFFF")
     page.set_content(f'''<style>:root {{ --hs-root-size:16px; --hs-bg-panel:{background};
-        --hs-text-body:{text}; --hs-sidebar-width:220px; --hs-text-on-accent:#000000; }}{css}</style>
+        --hs-text-body:{text}; --hs-focus-ring:{text};
+        --hs-sidebar-width:220px; --hs-text-on-accent:#000000; }}{css}</style>
         <div class="stApp" style="background:{background}">
         <a class="hs-skip-link" href="#hs-main-content">Skip to page content</a>
         <div class="hs-page-header"><h1 id="hs-main-content" tabindex="-1">Baseline regions</h1></div>
@@ -45,7 +46,8 @@ def test_owned_css_scaling_and_visible_keyboard_focus(page, mode):
     assert page.locator("#hs-main-content").evaluate("e => e === document.activeElement")
     page.keyboard.press("Tab")
     assert page.locator("#action").evaluate("e => e === document.activeElement")
-    assert page.locator("#action").evaluate("e => getComputedStyle(e).outlineWidth") == "3px"
+    assert page.locator("#action").evaluate("e => getComputedStyle(e).outlineWidth") == "2px"
+    assert page.locator("#action").evaluate("e => getComputedStyle(e).boxShadow") == "none"
     page.evaluate("document.documentElement.style.setProperty('--hs-root-size', '32px')")
     assert page.locator("#action p").evaluate("e => getComputedStyle(e).fontSize") == "24px"
     assert page.locator("#action").evaluate("e => e.scrollHeight <= e.clientHeight")

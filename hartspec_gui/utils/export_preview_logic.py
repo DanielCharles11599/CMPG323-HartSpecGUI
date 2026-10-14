@@ -253,7 +253,7 @@ def baseline_spectrum_for_preview(
         return None, "The Page 04 baseline bridge is unreadable; revisit Baseline Block Editor."
     flattened = bridge.get("flattened_spectrum")
     if not isinstance(flattened, Mapping):
-        return None, "Complete the Page 04 baseline fit before FR-18 RMS/peak statistics are available."
+        return None, "Complete the Page 04 baseline fit before RMS/peak statistics are available."
 
     current_bandpass = state.get("bandpass_corrected_spectrum")
     if isinstance(current_bandpass, Mapping):
@@ -291,12 +291,12 @@ def preview_from_pipeline(
     pss_stage = pipeline.get(PSS_STAGE_KEY) or {}
     pss = pss_stage.get("pss") if isinstance(pss_stage, Mapping) else None
     if not isinstance(pss, Mapping):
-        return ExportPreviewResult(None, "Page 05 LCP/RCP PSS values are required for the calibrated FR-18 preview.")
+        return ExportPreviewResult(None, "Page 05 LCP/RCP PSS values are required for the calibrated preview.")
 
     pointing = pipeline.get(POINTING_STAGE_KEY) or {}
     if not isinstance(pointing, Mapping) or str(pointing.get("input_source", "")).upper().startswith("MOCK"):
         return ExportPreviewResult(
-            None, "A real Page 06 pointing correction is required for the calibrated FR-18 preview."
+            None, "A real Page 06 pointing correction is required for the calibrated preview."
         )
 
     flattened, reason = baseline_spectrum_for_preview(state, read_bridge=read_bridge, fingerprint=fingerprint)

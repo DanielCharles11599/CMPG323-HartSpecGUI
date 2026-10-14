@@ -86,7 +86,7 @@ def _on_controls_changed(
         stage[SETTINGS_KEY] = updated
         if on_change is not None:
             on_change(
-                f"FR-09 view changed — Stokes I smoothing {'on' if enabled else 'off'}, "
+                f"Polarisation view changed — Stokes I smoothing {'on' if enabled else 'off'}, "
                 f"window {window}, order 3; pipeline spectra unchanged"
             )
 
@@ -109,7 +109,7 @@ def render_polarization_panel(
         True if an overlay was rendered, False for empty or invalid inputs.
     """
     with st.container(border=True):
-        st.markdown('<div class="hs-panel-title">Polarisation averaging — FR-09</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hs-panel-title">Polarisation averaging</div>', unsafe_allow_html=True)
         if spectrum is None:
             st.info("Complete the Baseline Block Editor to view LCP, RCP, mean and Stokes I. No demo data is shown.")
             return False
@@ -193,7 +193,7 @@ def render_polarization_panel(
             stage[SETTINGS_KEY] = record
             if on_change is not None:
                 on_change(
-                    f"FR-09 view recorded — {source_label}; Stokes I smoothing {'on' if enabled else 'off'}, "
+                    f"Polarisation view recorded — {source_label}; Stokes I smoothing {'on' if enabled else 'off'}, "
                     f"window {window}, order 3; pipeline spectra unchanged"
                 )
         return True

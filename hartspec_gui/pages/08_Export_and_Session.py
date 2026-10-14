@@ -33,7 +33,7 @@ import streamlit as st
 
 from utils import (
     baseline_editor_bridge, export_logic, export_preview_logic, export_preview_ui, fitting_inputs, session_store,
-    spectrum_resolution, styles,
+    spectrum_resolution, styles, export_page_ui,
 )
 from utils.sidebar import render_sidebar
 from utils.observation_log_ui import render_observation_log
@@ -49,12 +49,13 @@ render_sidebar(CURRENT_STAGE)
 styles.inject_base_css()
 styles.render_page_header(
     "Export & Session",
-    "FR-18 / 19 / 20 — export, session history, observation log",
+    "Export, session history, observation log",
     CURRENT_STAGE,
     # strictly-before-this-page count, per Build Spec section 6: this page must not read 8/8 while it is 8 of 8
     session_store.completed_before(CURRENT_STAGE),
 )
 theme = styles.get_theme()
+export_page_ui.inject_css(theme)
 
 # ---------------------------------------------------------------------
 # Resolve everything that goes into the export
@@ -137,28 +138,29 @@ elif latest_fit and not fit_matches and graph3_ready:
 # ---------------------------------------------------------------------
 # Charts (these are the graphs the PDF contains)
 # ---------------------------------------------------------------------
-def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: str, height: int = 260) -> None:
+def _chart(title: str, traces: list[tuple[str, Any, Any, str, str]], y_title: str, height: int = 300) -> None:
     """Themed full-width panel with one chart; backgrounds follow bg-panel (Plotly doesn't inherit them)."""
-    styles.render_panel_open(title)
-    fig = go.Figure()
-    for name, x, y, color, dash in traces:
-        fig.add_scatter(x=x, y=y, mode="lines", line=dict(color=color, width=1.6, dash=dash), name=name)
-    fig.update_layout(**styles.plotly_layout_theme(theme))
-    fig.update_layout(
-        height=height, margin=dict(l=40, r=20, t=10, b=40),
-        paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
-        font=dict(color=theme["text-body"]),
-        legend=dict(orientation="h", y=-0.25),
-        xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
-        yaxis=dict(title=y_title, showgrid=False, zeroline=False, color=theme["text-muted"]),
-    )
-    styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
-    styles.render_panel_close()
+    with export_page_ui.section(title):
+        fig = go.Figure()
+        for name, x, y, color, dash in traces:
+            fig.add_scatter(x=x, y=y, mode="lines", line=dict(color=color, width=1.6, dash=dash), name=name)
+        fig.update_layout(**styles.plotly_layout_theme(theme))
+        fig.update_layout(
+            height=height, margin=dict(l=64, r=24, t=20, b=64),
+            paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
+            font=dict(color=theme["text-body"]),
+            legend=dict(orientation="h", y=-0.25),
+            xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
+            yaxis=dict(title=y_title, showgrid=False, zeroline=False, color=theme["text-muted"]),
+        )
+        styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
 
 
 _chart("LCP and RCP", [("LCP", vlsr, lcp, styles.LCP_COLOR, "solid"), ("RCP", vlsr, rcp, styles.RCP_COLOR, "solid")],
        f"Intensity ({unit})")
-export_preview_ui.render_export_preview(export_preview, theme=theme)
+export_preview_ui.render_export_preview(
+    export_preview, theme=theme, height=340, panel_factory=export_page_ui.section,
+)
 if graph3 is not None:
     traces = [("Graph 3", vlsr, graph3, theme["accent"], "solid")]
     if fit_curve is not None:
@@ -266,23 +268,22 @@ if not export_blocked:
     except Exception as exc:  # noqa: BLE001 -- shown to the user instead of crashing the page
         pdf_error = f"The PDF could not be built: {exc}"
 
-col_csv, col_pdf, _ = st.columns([1, 1.3, 3])
-with col_csv:
-    if st.download_button(
-        "Export CSV", csv_bytes, file_name="hartspec_spectrum.csv", mime="text/csv", type="secondary",
-        use_container_width=True, disabled=export_blocked,
-    ):
-        session_store.log_event(f"Spectrum exported — CSV ({resolved.source_key}, LCP + RCP, {unit})")
-with col_pdf:
-    if st.download_button(
-        "Export graphs (PDF)", pdf_bytes or b"", file_name="hartspec_graphs.pdf", mime="application/pdf",
-        type="secondary", use_container_width=True, disabled=export_blocked or pdf_bytes is None,
-    ):
-        session_store.log_event(f"Graphs exported — PDF ({resolved.source_key})")
-if pdf_error:
-    st.caption(pdf_error)
-
-st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+with export_page_ui.section("Download results"):
+    col_csv, col_pdf = st.columns(2)
+    with col_csv:
+        if st.download_button(
+            "Export CSV", csv_bytes, file_name="hartspec_spectrum.csv", mime="text/csv", type="secondary",
+            use_container_width=True, disabled=export_blocked,
+        ):
+            session_store.log_event(f"Spectrum exported — CSV ({resolved.source_key}, LCP + RCP, {unit})")
+    with col_pdf:
+        if st.download_button(
+            "Export graphs (PDF)", pdf_bytes or b"", file_name="hartspec_graphs.pdf", mime="application/pdf",
+            type="secondary", use_container_width=True, disabled=export_blocked or pdf_bytes is None,
+        ):
+            session_store.log_event(f"Graphs exported — PDF ({resolved.source_key})")
+    if pdf_error:
+        st.caption(pdf_error)
 
 
 # ---------------------------------------------------------------------
@@ -327,42 +328,42 @@ def _format_timestamp(iso_ts: str) -> str:
         return iso_ts or ""
 
 
-st.markdown('<div class="hs-eyebrow" style="font-size:0.8125rem;text-transform:none;">Session history</div>',
-            unsafe_allow_html=True)
-
-recent_sessions = session_store.list_sessions()[:3]
-if not recent_sessions:
-    st.caption("No saved sessions yet — use “Save Session” in the sidebar.")
-else:
-    for path in recent_sessions:
-        try:
-            payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        ts_label = _format_timestamp(payload.get("saved_at", ""))
-        desc = _describe_session(payload)
-        c1, c2, c3 = st.columns([2, 6, 1])
-        c1.markdown(f'<span style="font-size:0.8125rem;">{ts_label}</span>', unsafe_allow_html=True)
-        c2.markdown(f'<span style="font-size:0.8125rem;">{desc}</span>', unsafe_allow_html=True)
-        if c3.button("Load", key=f"load_{path.name}", type="secondary"):
+with export_page_ui.section("Session history"):
+    recent_sessions = session_store.list_sessions()[:3]
+    if not recent_sessions:
+        st.caption("No saved sessions yet — use “Save Session” in the sidebar.")
+    else:
+        for row_index, path in enumerate(recent_sessions):
             try:
-                # The shared action logs and navigates to the replay entry page
-                # on success, before this page can process the new session.
-                session_store.load_session(path)
-            except (OSError, UnicodeError, ValueError) as exc:
-                # The store validates before changing state; keep the current
-                # reduction usable when a saved file is damaged or not a session.
-                st.error(f"Could not load session; the current session is unchanged. {exc}")
+                payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            ts_label = _format_timestamp(payload.get("saved_at", ""))
+            desc = _describe_session(payload)
+            with export_page_ui.history_row(row_index):
+                c1, c2, c3 = st.columns([2, 6, 1])
+                c1.markdown(export_page_ui.history_text(ts_label), unsafe_allow_html=True)
+                c2.markdown(export_page_ui.history_text(desc), unsafe_allow_html=True)
+                if c3.button("Load", key=f"load_{path.name}", type="secondary"):
+                    try:
+                        # The shared action logs and navigates to the replay entry page
+                        # on success, before this page can process the new session.
+                        session_store.load_session(path)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        # The store validates before changing state; keep the current
+                        # reduction usable when a saved file is damaged or not a session.
+                        st.error(f"Could not load session; the current session is unchanged. {exc}")
 
-st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
 # Observation Log Panel (FR-20) — read-only events and current recorded parameters.
 # The new panel does not append events, change stage data or alter checkpoint behaviour.
 # ---------------------------------------------------------------------
-render_observation_log(st.session_state, theme=theme, height=LOG_PANEL_HEIGHT)
+render_observation_log(st.session_state, theme=theme, height=LOG_PANEL_HEIGHT,
+                       panel_factory=export_page_ui.section,
+                       table_renderer=export_page_ui.render_review_table)
 
 # ---------------------------------------------------------------------
 # Mark export stage complete — the last stage key, so the progress bar reads 8/8 once this fires (on later

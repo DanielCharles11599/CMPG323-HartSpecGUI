@@ -39,7 +39,7 @@ render_sidebar(CURRENT_STAGE)
 styles.inject_base_css()
 styles.render_page_header(
     "Spectral Fitting",
-    "FR-14–17 — Gaussian / polynomial / multi-component fits",
+    "Gaussian / polynomial / multi-component fits",
     CURRENT_STAGE,
     # strictly-before-this-page count, per Build Spec section 6 (completed_count() also counted this page)
     session_store.completed_before(CURRENT_STAGE),
@@ -84,7 +84,19 @@ st.markdown('<div class="hs-eyebrow">Fit Type</div>', unsafe_allow_html=True)
 # st.radio, not custom pill buttons -- utils/styles.py's inject_base_css() already carries a specific fix for
 # "Page 07's Fit type" radio label contrast, confirming this is the established widget choice for this control.
 fit_type = st.radio("Fit type", FIT_TYPES, horizontal=True, label_visibility="collapsed", key="fit_type")
-st.caption("The fit is applied to Graph 3.")
+st.caption("The fit is applied to Graph 3 and shown in Graph 4. Graphs 1 and 2 show the input channels.")
+# Describe the existing implementation honestly; do not change fitting algorithms here.
+if fit_type == "2D Gaussian":
+    st.info(
+        "Current implementation: two Gaussian components on a 1D velocity spectrum, "
+        "not a spatial 2D Gaussian fit. The full image/heatmap fit is not implemented here."
+    )
+elif fit_type == "Multi-component":
+    st.info(
+        "Current implementation: a fixed three-component Gaussian fit, "
+        "not the full editable, iterative decomposition. "
+        "Any single-Gaussian fallback is reported below."
+    )
 
 # ---------------------------------------------------------------------
 # Resolve inputs

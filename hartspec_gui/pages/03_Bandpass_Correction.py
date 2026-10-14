@@ -32,7 +32,7 @@ from utils.stage_invalidation import invalidate_baseline_dependents
 PAGE_STAGE_KEY = THIS_STAGE_KEY
 CURRENT_STAGE = 3
 PAGE_TITLE = "Bandpass Correction"
-PAGE_SUBTITLE = "FR-04 — pair and mode selection + before/after spectra"
+PAGE_SUBTITLE = "Pair and mode selection + before/after spectra"
 UPSTREAM_STAGE_KEYS = ("01_source_browser", "file_loader")
 DOWNSTREAM_STAGE_KEYS = (
     "04_baseline_editor", "05_calibration_dashboard", "06_pointing_correction",
@@ -680,5 +680,5 @@ if st.session_state.get("bandpass_error"):
 stored_result = st.session_state.get("bandpass_display_result")
 if stored_result and stored_result.get("mode") == st.session_state["bandpass_mode"]:
     _render_before_after(stored_result)
-    if st.button("Continue to Baseline Block Editor →", key="continue_to_baseline"):
+    if st.button("Continue to Baseline Block Editor →", type="primary", key="continue_to_baseline"):
         st.switch_page("pages/04_Baseline_Editor.py")

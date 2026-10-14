@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import os
 import threading
+import time
 from typing import Any, Mapping
 from urllib.parse import parse_qs
 
@@ -60,14 +62,21 @@ def _root_style(theme_name: str, font_scale: int = 100) -> dict[str, str]:
         "--hs-bg-panel-alt": theme["bg-panel-alt"],
         "--hs-border-default": theme["border-default"],
         "--hs-border-subtle": theme["border-subtle"],
+        "--hs-surface-border": theme["table-header-bg"] if theme_name == "dark" else theme["border-default"],
         "--hs-text-body": theme["text-body"],
         "--hs-text-muted": theme["text-muted"],
         "--hs-text-faint": theme["text-faint"],
         "--hs-accent": theme["accent"],
+        "--hs-table-header-bg": theme["table-header-bg"],
+        "--hs-table-header-text": theme["table-header-text"],
+        "--hs-section-header-bg": theme["table-header-bg"] if theme_name == "dark" else "transparent",
+        "--hs-section-header-text": theme["table-header-text"] if theme_name == "dark" else theme["text-body"],
+        "--hs-section-header-padding": ".5rem .75rem" if theme_name == "dark" else "0",
         "--hs-font-scale": str(normalize_font_scale(font_scale) / 100),
         "--hs-root-size": f"{16 * normalize_font_scale(font_scale) / 100:g}px",
         "--hs-text-on-accent": theme["text-on-accent"],
         "--hs-control-border": theme["control-border"],
+        "--hs-focus-ring": theme["focus-ring"],
         "--hs-error-fill": error_fill,
         "--hs-error-text": error_text,
     }
@@ -279,7 +288,7 @@ def _table() -> dash_table.DataTable:
             "height": "auto",
             "minHeight": "2rem",
             "maxHeight": "none",
-            "backgroundColor": styles.HARTRAO_DARK_BLUE,
+            "backgroundColor": "var(--hs-table-header-bg)",
             "color": "#F1F5F9",
             "fontSize": "0.625rem",
             "fontWeight": 600,
@@ -811,8 +820,46 @@ def create_app() -> Dash:
 _APP = create_app()
 
 
+def _dash_responding(port: int) -> bool:
+    """Check that the expected Dash app is serving its layout on IPv4 loopback.
+
+    A live Python thread does not mean Dash has bound its HTTP port yet. Probe
+    the actual Dash layout endpoint instead of making the browser race startup.
+    The probe stays on the server; it does not require internet access.
+    """
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.4)
+    try:
+        connection.request("GET", "/_dash-layout")
+        response = connection.getresponse()
+        # Checking the editor's graph ID prevents a different local service
+        # on the same port from being mistaken for a ready baseline editor.
+        return response.status == 200 and b'"spectrum-graph"' in response.read(500_000)
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
+def _wait_for_server(port: int, thread: threading.Thread, timeout_seconds: float = 10.0) -> None:
+    """Block until Dash accepts HTTP requests or report a startup failure."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not thread.is_alive():
+            raise RuntimeError(
+                f"Baseline Dash server stopped while starting on port {port}. "
+                "Check the terminal for a port conflict or Dash startup error."
+            )
+        if _dash_responding(port):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"Baseline Dash server did not become ready on port {port} within {timeout_seconds:g} seconds. "
+        "Check the terminal and ensure the port is available."
+    )
+
+
 def start_server(port: int | None = None) -> int:
-    """Start the singleton Dash server in a daemon thread and return its port."""
+    """Start Dash once and return only after the iframe endpoint is ready."""
     global _SERVER_PORT, _SERVER_THREAD
     requested_port = int(port or os.environ.get("DASH_BRIDGE_PORT", "8050"))
     with _SERVER_LOCK:
@@ -821,12 +868,17 @@ def start_server(port: int | None = None) -> int:
                 raise RuntimeError(
                     f"Baseline Dash server already running on port {_SERVER_PORT}, not {requested_port}."
                 )
-            return requested_port
+            thread = _SERVER_THREAD
+        else:
+            def _run() -> None:
+                _APP.run(host="0.0.0.0", port=requested_port, debug=False, use_reloader=False)
 
-        def _run() -> None:
-            _APP.run(host="0.0.0.0", port=requested_port, debug=False, use_reloader=False)
+            _SERVER_PORT = requested_port
+            thread = threading.Thread(target=_run, name="hartspec-baseline-dash", daemon=True)
+            _SERVER_THREAD = thread
+            thread.start()
 
-        _SERVER_PORT = requested_port
-        _SERVER_THREAD = threading.Thread(target=_run, name="hartspec-baseline-dash", daemon=True)
-        _SERVER_THREAD.start()
-        return requested_port
+    # The prior implementation returned immediately after thread.start(),
+    # intermittently mounting the Streamlit iframe before port 8050 existed.
+    _wait_for_server(requested_port, thread)
+    return requested_port

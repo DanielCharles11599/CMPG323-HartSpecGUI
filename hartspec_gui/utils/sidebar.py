@@ -13,6 +13,7 @@ import streamlit as st
 
 from utils import session_store, styles
 from utils.accessibility import FONT_SCALES, normalize_font_scale
+from utils.accessibility_help import help_link_html
 
 # (path relative to the app's root script, page label as shown in the nav)
 STAGES: list[tuple[str, str]] = [
@@ -97,16 +98,14 @@ def render_sidebar(current_stage: int) -> None:
         # selectbox cannot round-trip format_func labels like "200%" when the
         # stored widget value is the integer 200. Keep the unit in the label.
         st.selectbox("Font size (%)", FONT_SCALES, key="_a11y_font_scale", on_change=_set_font_scale)
-        with st.expander("Keyboard and accessibility help"):
-            st.markdown(
-                "Use **Tab / Shift+Tab** to move, **Enter / Space** to activate controls, "
-                "and **arrow keys** in lists and number inputs. **Escape** closes an open list. "
-                "Use the browser's zoom controls for additional enlargement. "
-                "Each chart has keyboard view controls and a value inspector; tables have an "
-                "accessible read-only view. In the baseline editor, select a region with "
-                "**Region to edit**, enter its limits, then use Add, Update or Delete. "
-                "Tab past the final editor control to return to this page."
-            )
+        # TODO: confirm against design — see build spec §3. Keep long instructions
+        # on a separate manual page; never forward this tab's private recovery token.
+        get_option = getattr(st, "get_option", None)
+        base_path = get_option("server.baseUrlPath") if callable(get_option) else ""
+        st.markdown(
+            help_link_html(styles.get_theme_name(), styles.get_font_scale(), base_path=base_path),
+            unsafe_allow_html=True,
+        )
 
         st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
         st.caption("SESSION")
@@ -155,15 +154,47 @@ def render_sidebar(current_stage: int) -> None:
                 checkpoints = []
                 st.error(f"Cannot list checkpoints: {exc}")
             if checkpoints:
-                # The latest revision path changes after every commit; a stable
-                # stream key prevents an already-selected widget value becoming invalid.
+                # Preserve the stable recovery stream ID separately from the
+                # user-facing labels. Streamlit 1.32's AppTest checks displayed
+                # options against the widget state, not format_func's raw value.
                 options = {item.path.parent.name: item for item in checkpoints}
-                if st.session_state.get("session_checkpoint_choice") not in options:
-                    st.session_state["session_checkpoint_choice"] = next(iter(options))
-                chosen_checkpoint = st.selectbox(
-                    "Checkpoint", list(options), key="session_checkpoint_choice",
-                    format_func=lambda path: _checkpoint_label(options[path].payload),
+                current_stream = st.session_state.get("session_checkpoint_choice")
+                if current_stream not in options:
+                    current_stream = next(iter(options))
+
+                labels_to_streams = {}
+                for stream_id, item in options.items():
+                    label = _checkpoint_label(item.payload)
+                    if label in labels_to_streams:
+                        # Different streams can have identical source/stage/time labels.
+                        suffix = 2
+                        while f"{label} ({suffix})" in labels_to_streams:
+                            suffix += 1
+                        label = f"{label} ({suffix})"
+                    labels_to_streams[label] = stream_id
+
+                display_key = "session_checkpoint_display_choice"
+
+                def _select_checkpoint() -> None:
+                    """Keep the stable stream ID when a user picks a display label."""
+                    selected = st.session_state.get(display_key)
+                    if selected in labels_to_streams:
+                        st.session_state["session_checkpoint_choice"] = labels_to_streams[selected]
+
+                # A revision can change a label or make it collide with another
+                # stream's label. On non-selection reruns, the stored ID wins.
+                current_label = next(
+                    label for label, stream_id in labels_to_streams.items()
+                    if stream_id == current_stream
                 )
+                if st.session_state.get(display_key) != current_label:
+                    st.session_state[display_key] = current_label
+                chosen_label = st.selectbox(
+                    "Checkpoint", list(labels_to_streams), key=display_key,
+                    on_change=_select_checkpoint,
+                )
+                chosen_checkpoint = labels_to_streams[chosen_label]
+                st.session_state["session_checkpoint_choice"] = chosen_checkpoint
                 if st.button("Recover selected", key="session_checkpoint_recover", use_container_width=True):
                     try:
                         selected = options[chosen_checkpoint]

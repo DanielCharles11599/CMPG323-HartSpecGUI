@@ -1,0 +1,95 @@
+/* export_page.css — FR-18/19/20/22: Page 08 review surfaces, matching the existing blue-header table.
+   TODO: confirm against design — user requested stronger section colour based on the pointing table.
+   Scope every rule to Page 08 components; never recolour global controls or spectrum traces. */
+.stApp [data-testid="stVerticalBlockBorderWrapper"]:has(.hs-export-section-title):not(
+  :has([data-testid="stVerticalBlockBorderWrapper"] .hs-export-section-title)) {
+  background: var(--hs-export-bg-panel);
+  border: 1px solid var(--hs-export-border-default) !important;
+  border-radius: 8px !important;
+  padding: 1rem !important;
+  margin-bottom: .75rem;
+}
+.stApp [data-testid="stMarkdownContainer"] h2.hs-export-section-title {
+  margin: -1rem -1rem 0 !important;
+  padding: .75rem 1rem !important;
+  border-radius: 7px 7px 0 0;
+  background: var(--hs-export-table-header-bg) !important;
+  color: var(--hs-export-table-header-text) !important;
+  font-size: .875rem !important;
+  font-weight: 600 !important;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.stApp [data-testid="stVerticalBlock"]:has(> .element-container .hs-export-history-marker) {
+  padding: .625rem .75rem;
+  border: 1px solid var(--hs-export-border-default);
+  border-radius: 6px;
+}
+.stApp [data-testid="stVerticalBlock"]:has(> .element-container .hs-export-history-even) {
+  background: var(--hs-export-bg-panel-alt);
+}
+.stApp [data-testid="stVerticalBlock"]:has(> .element-container .hs-export-history-odd) {
+  background: var(--hs-export-bg-panel);
+}
+.stApp .element-container:has(.hs-export-history-marker) { display: none; }
+.stApp .hs-export-history-text {
+  color: var(--hs-export-text-body);
+  font-size: .8125rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.stApp .hs-export-review-table {
+  position: relative;
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--hs-export-border-default);
+  border-radius: 8px;
+  background: var(--hs-export-bg-panel);
+  color: var(--hs-export-text-body);
+}
+.stApp .hs-export-review-table table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: .8125rem;
+  line-height: 1.6;
+  margin: 0;
+}
+.stApp .hs-export-review-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--hs-export-table-header-bg);
+  color: var(--hs-export-table-header-text);
+  font-weight: 600;
+  text-align: left;
+}
+.stApp .hs-export-review-table :is(th, td) {
+  padding: .65rem .75rem;
+  border: 0;
+  border-right: 1px solid var(--hs-export-border-default);
+  border-bottom: 1px solid var(--hs-export-border-default);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+  min-width: 5rem;
+  max-width: 48rem;
+}
+.stApp .hs-export-review-table td {
+  color: var(--hs-export-text-body) !important;
+  background: var(--hs-export-bg-panel);
+}
+.stApp .hs-export-review-table :is(th, td):last-child { border-right: 0; }
+.stApp .hs-export-review-table tbody tr:last-child td { border-bottom: 0; }
+.stApp .hs-export-review-table tbody tr:nth-child(even) td { background: var(--hs-export-bg-panel-alt); }
+.stApp .hs-export-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

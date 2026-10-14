@@ -78,7 +78,7 @@ CURRENT_STAGE = 1  # 1-indexed — matches sidebar.STAGES order and styles.rende
 # with the stage number dropped, since the progress bar already shows
 # "Stage 1 of 8".
 PAGE_TITLE = "Source Browser"
-PAGE_SUBTITLE = "FR-01 — source & frequency browser"
+PAGE_SUBTITLE = "Source & frequency browser"
 
 # Scrollable panel heights (px). TODO: confirm against design — build spec §7 gives the whole Sources & Frequencies
 # panel as 380px tall (title + list); 320 leaves room for the panel title inside that.
@@ -393,7 +393,7 @@ def _file_rows_html(group_files) -> str:
 
 
 with st.container(border=True):
-    st.markdown('<div class="hs-panel-title">Source Browser — FR-01</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hs-panel-title">Source Browser</div>', unsafe_allow_html=True)
 
     # Fixed height + internal scrolling (UAT feedback): the page itself no longer grows with the archive, so the
     # selection summary and "Load into Pipeline" below stay in reach.

@@ -136,7 +136,8 @@ THEMES: dict[ThemeName, dict[str, str]] = {
         "sidebar-text-inactive": "#7F92B5",
         "sidebar-btn-bg": "#233450",
         "sidebar-btn-border": "#3A4C6E",
-        "table-header-bg": "#395790",
+        # User-approved header-only override: retain the original panel and row fills.
+        "table-header-bg": "#111827",
         "table-header-text": "#F1F5F9",
     },
 }
@@ -249,6 +250,17 @@ def get_font_scale() -> int:
     return normalize_font_scale(st.session_state.get("font_scale", 100))
 
 
+def surface_border_colour(theme: dict[str, str], fallback: str = "border-default") -> str:
+    """Match dark decorative outlines to the header, preserving each light fallback.
+
+    Does not change the palette's shared border tokens: chart axes, table cell
+    separators, input borders and keyboard-focus rings still use those tokens.
+    """
+    if theme["bg-primary"] == THEMES["dark"]["bg-primary"]:
+        return theme["table-header-bg"]
+    return theme[fallback]
+
+
 def inject_base_css() -> None:
     """Inject global CSS for the active theme.
 
@@ -309,7 +321,9 @@ def inject_base_css() -> None:
             min-width: {SIDEBAR_WIDTH}px !important;
         }}
 
-        [data-testid="stSidebar"] * {{
+        /* Set the default on the sidebar, not every descendant: select values,
+           SVG icons and emphasized help text must inherit their own control colour. */
+        [data-testid="stSidebar"] {{
             color: {theme['sidebar-text-inactive']};
         }}
 
@@ -412,11 +426,6 @@ def inject_base_css() -> None:
             border-radius: {PANEL_RADIUS}px !important;
         }}
 
-        [data-testid="stSelectbox"] > div > div {{
-            border-radius: {BUTTON_RADIUS}px !important;
-            border-color: {theme['border-default']} !important;
-        }}
-
         /* Native st.radio option text (Page 02's Auto/Manual toggle,
            Page 03's Bandpass mode, Page 07's Fit type, and any future
            st.radio) falls back to Streamlit's own base theme text color
@@ -454,9 +463,19 @@ def inject_base_css() -> None:
         "bg-panel": theme["bg-panel"], "bg-panel-alt": theme["bg-panel-alt"],
         "control-border": theme["control-border"], "text-on-accent": theme["text-on-accent"],
         "sidebar-text": theme["sidebar-text-inactive"],
+        "focus-ring": theme["focus-ring"], "panel-focus-ring": theme["focus-ring"],
+        "text-heading": theme["text-heading"], "bg-primary": theme["bg-primary"],
+        "accent": theme["accent"],
+        "table-header-bg": theme["table-header-bg"], "table-header-text": theme["table-header-text"],
+        "section-header-bg": theme["table-header-bg"] if get_theme_name() == "dark" else "transparent",
+        "section-header-text": theme["table-header-text"] if get_theme_name() == "dark" else theme["text-body"],
+        "section-header-padding": ".5rem .75rem" if get_theme_name() == "dark" else "0",
     }
     custom = ";".join(f"--hs-{key}:{value}" for key, value in variables.items())
     css = Path(__file__).with_name("accessibility.css").read_text(encoding="utf-8")
+    # User-approved decorative outline colour only; light-mode CSS stays unchanged.
+    if get_theme_name() == "dark":
+        css += "\n" + Path(__file__).with_name("dark_surface_borders.css").read_text(encoding="utf-8")
     st.markdown(f"<style>:root{{{custom}}}\n{css}</style>", unsafe_allow_html=True)
 
 
