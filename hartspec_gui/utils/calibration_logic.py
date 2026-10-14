@@ -1,5 +1,7 @@
 """Calibration helpers for the Page 05 dashboard."""
 
+import csv
+from io import StringIO
 import os
 from pathlib import Path
 
@@ -153,6 +155,46 @@ def get_pss_window_averages(pss_history, pss_window):
     }
 
 
+def get_pss_calendar_month_averages(pss_history, observation_date):
+    """Calculate calendar-month LCP/RCP means without changing calibration."""
+    if pss_history is None:
+        raise ValueError("PSS history is required.")
+
+    mjd = get_observation_mjd(observation_date)
+    observed = Time(mjd, format="mjd").datetime
+    year, month = observed.year, observed.month
+
+    next_year, next_month = (
+        (year + 1, 1) if month == 12 else (year, month + 1)
+    )
+
+    start = float(
+        Time(f"{year:04d}-{month:02d}-01T00:00:00", format="isot").mjd
+    )
+    end = float(
+        Time(
+            f"{next_year:04d}-{next_month:02d}-01T00:00:00",
+            format="isot",
+        ).mjd
+    )
+
+    def calculate(series):
+        values = [
+            float(pss)
+            for date, pss in zip(series["mjd"], series["pss"])
+            if start <= float(date) < end
+        ]
+        return float(np.mean(values)) if values else None
+
+    return {
+        "month_label": observed.strftime("%B %Y"),
+        "start_mjd": start,
+        "end_mjd_exclusive": end,
+        "lcp": calculate(pss_history["lcp"]),
+        "rcp": calculate(pss_history["rcp"]),
+    }
+
+
 def get_pss_trailing_statistics(pss_history, observation_mjd, days=30):
     """Return trailing-window PSS mean, sample standard deviation and count."""
     if pss_history is None:
@@ -194,6 +236,80 @@ def get_pss_trailing_statistics(pss_history, observation_mjd, days=30):
     }
 
 
+
+def metadata_for_selected_pair(state):
+    """Use the applied Page 03 pair, not the first loaded FITS file."""
+    from collections.abc import Mapping
+
+    pipeline = state.get("pipeline_data", {})
+    stage3 = (
+        pipeline.get("03_bandpass_correction")
+        if isinstance(pipeline, Mapping) else None
+    )
+    spectra = state.get("loaded_spectra")
+
+    if not isinstance(stage3, Mapping):
+        if isinstance(spectra, (list, tuple)) and len(spectra) > 1:
+            raise ValueError(
+                "Select and apply a Page 03 pair before Page 05 calibration."
+            )
+        return state.get("loaded_spectrum")
+
+    first_name = stage3.get("filename1")
+    second_name = stage3.get("filename2")
+
+    if not all(
+        isinstance(name, str) and bool(name)
+        for name in (first_name, second_name)
+    ):
+        if isinstance(spectra, (list, tuple)) and len(spectra) > 1:
+            raise ValueError("Page 03 did not record the selected pair.")
+        return state.get("loaded_spectrum")
+
+    if first_name == second_name:
+        raise ValueError("The selected pair contains the same file twice.")
+
+    loader = pipeline.get("file_loader", {})
+    filenames = (
+        loader.get("eligible_files")
+        if isinstance(loader, Mapping) else None
+    )
+
+    if (
+        not isinstance(filenames, (list, tuple))
+        or not isinstance(spectra, (list, tuple))
+        or len(filenames) != len(spectra)
+        or not all(isinstance(name, str) for name in filenames)
+        or len(set(filenames)) != len(filenames)
+    ):
+        raise ValueError(
+            "Page 02 files cannot be matched safely to the Page 03 pair."
+        )
+
+    try:
+        first = spectra[filenames.index(first_name)]
+        second = spectra[filenames.index(second_name)]
+    except ValueError as exc:
+        raise ValueError(
+            "The selected Page 03 pair is missing from Page 02 loaded files."
+        ) from exc
+
+    if not isinstance(first, Mapping) or not isinstance(second, Mapping):
+        raise ValueError("Selected pair spectra have invalid metadata.")
+
+    if any(first.get(key) is None for key in REQUIRED_METADATA):
+        raise ValueError(
+            "The selected pair lacks required atmospheric/PSS metadata."
+        )
+
+    if str(first["restfreq"])[:5] != str(second.get("restfreq"))[:5]:
+        raise ValueError(
+            "The selected pair has mismatched rest frequencies."
+        )
+
+    return first
+
+
 def get_atmospheric_calibration(spectrum):
     """Run the existing HartSpec atmospheric calibration for one spectrum."""
     if not spectrum:
@@ -230,15 +346,30 @@ def get_atmospheric_calibration(spectrum):
     }
 
 
-def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
-    """Convert baseline-corrected K spectra to Jy without mutating inputs.
+def apply_calibration_to_spectrum(
+    spectrum, atcor, lcp_pss_jy_per_k, rcp_pss_jy_per_k, nd_lcp, nd_rcp
+):
+    """Convert K spectra to Jy using separate polarization calibration factors.
 
-    Uses the mean LCP/RCP PSS, matching Page 07's existing
-    system-owner Graph 3 convention.
+    The original CLC applies noise-diode and atmospheric factors before the
+    respective LCP/RCP PSS factors. Pointing belongs to the next stage.
+    Input arrays are not mutated. The PSS values are the specified +/-15-day
+    means, not the legacy Best_PSS implementation's differing window result.
     """
-    scale = float(atcor) * float(pss_jy_per_k)
-    if not np.isfinite(scale) or scale <= 0:
-        raise ValueError("ATcor and PSS must give a positive finite scale.")
+    try:
+        atcor, lcp_pss, rcp_pss, nd_lcp, nd_rcp = (
+            float(value) for value in (
+                atcor, lcp_pss_jy_per_k, rcp_pss_jy_per_k, nd_lcp, nd_rcp
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Calibration factors must be numeric.") from exc
+    if any(not np.isfinite(value) or value <= 0 for value in (
+        atcor, lcp_pss, rcp_pss, nd_lcp, nd_rcp
+    )):
+        raise ValueError("All calibration factors must be positive and finite.")
+    lcp_scale = nd_lcp * atcor * lcp_pss
+    rcp_scale = nd_rcp * atcor * rcp_pss
 
     arrays = {}
     for key in ("Vlsr", "LCP", "RCP"):
@@ -258,6 +389,26 @@ def apply_calibration_to_spectrum(spectrum, atcor, pss_jy_per_k):
 
     return {
         "Vlsr": arrays["Vlsr"].copy(),
-        "LCP": arrays["LCP"] * scale,
-        "RCP": arrays["RCP"] * scale,
+        "LCP": arrays["LCP"] * lcp_scale,
+        "RCP": arrays["RCP"] * rcp_scale,
     }
+
+
+def polarization_trace_csv(spectrum, polarization, intensity_unit):
+    """Export the actual unsmoothed LCP/RCP samples displayed on Page 05."""
+    if polarization not in ("LCP", "RCP"):
+        raise ValueError("Polarization must be LCP or RCP.")
+    if intensity_unit not in ("K", "Jy"):
+        raise ValueError("Intensity unit must be K or Jy.")
+
+    from utils.polarization_logic import validated_spectrum
+
+    arrays = validated_spectrum(spectrum)
+    output = StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(("Vlsr_km_s", f"{polarization}_{intensity_unit}"))
+    writer.writerows(
+        (format(float(velocity), ".17g"), format(float(intensity), ".17g"))
+        for velocity, intensity in zip(arrays["Vlsr"], arrays[polarization])
+    )
+    return output.getvalue().encode("utf-8")

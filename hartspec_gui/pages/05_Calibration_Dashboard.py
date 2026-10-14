@@ -62,7 +62,24 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-loaded_spectrum = st.session_state.get("loaded_spectrum")
+observation_pair_error = None
+try:
+    _pair_resolver = getattr(calibration_logic, "metadata_for_selected_pair", None)
+    if callable(_pair_resolver):
+        loaded_spectrum = _pair_resolver(st.session_state)
+    elif "loaded_spectra" not in st.session_state:
+        # Legacy single-spectrum sessions and minimal FR-09 test doubles.
+        loaded_spectrum = st.session_state.get("loaded_spectrum")
+    else:
+        raise ValueError("Selected-pair metadata resolver is unavailable.")
+except ValueError as exc:
+    loaded_spectrum = None
+    observation_pair_error = str(exc)
+
+if observation_pair_error:
+    st.error(
+        f"Selected observation metadata unavailable: {observation_pair_error}"
+    )
 atmospheric_result = None
 atmospheric_error = None
 
@@ -70,6 +87,8 @@ pss_history = None
 pss_window = None
 pss_averages = None
 pss_30day_stats = None
+pss_monthly_averages = None
+pss_monthly_error = None
 pss_error = None
 calibration_error = None
 
@@ -100,6 +119,18 @@ if loaded_spectrum is not None:
         )
     except Exception as exc:
         pss_error = str(exc)
+
+    # Independent display calculation; calibration remains unchanged.
+    monthly_resolver = getattr(
+        calibration_logic, "get_pss_calendar_month_averages", None
+    )
+    if pss_history is not None and callable(monthly_resolver):
+        try:
+            pss_monthly_averages = monthly_resolver(
+                pss_history, loaded_spectrum["date"]
+            )
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            pss_monthly_error = str(exc)
 
 was_page_complete = PAGE_STAGE_KEY in st.session_state["completed_stages"]
 # Page 05 rebuilds its calibration payload on reruns. Retain the nested FR-09
@@ -136,15 +167,14 @@ if loaded_spectrum is not None:
     calibrated_spectrum = None
     if page_complete:
         try:
-            mean_pss = (
-                float(pss_averages["lcp"]) +
-                float(pss_averages["rcp"])
-            ) / 2.0
             calibrated_spectrum = (
                 calibration_logic.apply_calibration_to_spectrum(
                     st.session_state["baseline_corrected_spectrum"],
                     atmospheric_result["atcor"],
-                    mean_pss,
+                    pss_averages["lcp"],
+                    pss_averages["rcp"],
+                    atmospheric_result["nd_lcp"],
+                    atmospheric_result["nd_rcp"],
                 )
             )
         except (ValueError, TypeError, KeyError) as exc:
@@ -193,6 +223,15 @@ if loaded_spectrum is not None:
                 else float(pss_averages["rcp"])
             ),
             "source_files": dict(pss_history["source_files"]),
+            "calendar_month": (
+                None if pss_monthly_averages is None else {
+                    "label": pss_monthly_averages["month_label"],
+                    "start_mjd": pss_monthly_averages["start_mjd"],
+                    "end_mjd_exclusive": pss_monthly_averages["end_mjd_exclusive"],
+                    "lcp_mean": pss_monthly_averages["lcp"],
+                    "rcp_mean": pss_monthly_averages["rcp"],
+                }
+            ),
             "trailing_30_day": (
                 None
                 if pss_30day_stats is None
@@ -374,6 +413,28 @@ with st.container(border=True):
     with pss_metric_cols[1]:
         st.metric("RCP ±15-day mean", rcp_mean_value)
 
+    if pss_monthly_averages is not None:
+        st.caption(
+            f"Calendar-month PSS means — "
+            f"{pss_monthly_averages['month_label']} (Jy/K)"
+        )
+        monthly_cols = st.columns(2)
+
+        for col, label, key in (
+            (monthly_cols[0], "LCP monthly mean", "lcp"),
+            (monthly_cols[1], "RCP monthly mean", "rcp"),
+        ):
+            value = pss_monthly_averages[key]
+            with col:
+                st.metric(
+                    label,
+                    "Not available" if value is None else f"{value:.4f}",
+                )
+    elif pss_monthly_error is not None:
+        st.warning(
+            f"Monthly PSS means unavailable: {pss_monthly_error}"
+        )
+
     if loaded_spectrum is None:
         st.markdown(
             f"""
@@ -473,7 +534,7 @@ with st.container(border=True):
                 zeroline=False,
             ),
             yaxis=dict(
-                title="PSS",
+                title="PSS (Jy/K)",
                 showgrid=True,
                 gridcolor=_theme["border-subtle"],
                 linecolor=_theme["border-subtle"],
@@ -603,7 +664,7 @@ with st.container(border=True):
                 zeroline=False,
             ),
             yaxis=dict(
-                title="PSS",
+                title="PSS (Jy/K)",
                 showgrid=True,
                 gridcolor=_theme["border-subtle"],
                 linecolor=_theme["border-subtle"],
@@ -679,7 +740,7 @@ if baseline_ready:
         _polarization_label = "Calibrated spectrum (Stage 05 output)"
         _polarization_unit = CALIBRATED_UNIT
 
-render_polarization_panel(
+_polarization_rendered = render_polarization_panel(
     _polarization_input,
     source_key=_polarization_source,
     source_label=_polarization_label,
@@ -687,6 +748,28 @@ render_polarization_panel(
     stage_key=PAGE_STAGE_KEY,
     on_change=_record_polarization_change,
 )
+
+# Headless FR-09 test doubles do not implement download widgets.
+# Real Streamlit renders these exports; visualization tests remain unchanged.
+if _polarization_rendered and callable(getattr(st, "download_button", None)):
+    st.caption(
+        "Export the unsmoothed LCP/RCP values shown in the graph above. "
+        f"Source: {_polarization_label}. Displayed units: {_polarization_unit}. "
+        "Export does not recalculate or change the spectrum."
+    )
+    _export_columns = st.columns(2)
+    for _column, _polarization in zip(_export_columns, ("LCP", "RCP")):
+        with _column:
+            st.download_button(
+                label=f"Export {_polarization} CSV",
+                data=calibration_logic.polarization_trace_csv(
+                    _polarization_input, _polarization, _polarization_unit,
+                ),
+                file_name=f"HartSpec_Page05_{_polarization}_display.csv",
+                mime="text/csv",
+                key=f"page05_export_{_polarization.lower()}",
+                use_container_width=True,
+            )
 
 st.markdown(
     f"<div style='height:{styles.SECTION_GAP}px'></div>",

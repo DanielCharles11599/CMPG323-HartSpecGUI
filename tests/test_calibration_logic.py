@@ -3,11 +3,40 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hartspec_gui"))
 
 import hartspec_gui.utils.calibration_logic as calibration_logic  # noqa: E402
+
+
+class TestPolarizationSpecificFluxCalibration:
+    def test_uses_separate_pss_and_noise_diode_factors(self):
+        spectrum = {
+            "Vlsr": np.array([0., 1., 2.]),
+            "LCP": np.array([1., 2., -3.]),
+            "RCP": np.array([4., -5., 6.]),
+        }
+        original = {key: value.copy() for key, value in spectrum.items()}
+        calibrated = calibration_logic.apply_calibration_to_spectrum(
+            spectrum, 1.1, 5.0, 3.0, 1.2, 0.8,
+        )
+        np.testing.assert_array_equal(calibrated["Vlsr"], original["Vlsr"])
+        np.testing.assert_allclose(calibrated["LCP"], original["LCP"] * (1.2 * 1.1 * 5.0))
+        np.testing.assert_allclose(calibrated["RCP"], original["RCP"] * (0.8 * 1.1 * 3.0))
+        for key in original:
+            np.testing.assert_array_equal(spectrum[key], original[key])
+            assert not np.shares_memory(calibrated[key], spectrum[key])
+
+    @pytest.mark.parametrize("index", range(5))
+    @pytest.mark.parametrize("bad_value", [0.0, -1.0, float("nan"), float("inf")])
+    def test_rejects_nonpositive_or_nonfinite_factor(self, index, bad_value):
+        spectrum = {"Vlsr": np.array([0.]), "LCP": np.array([1.]), "RCP": np.array([2.])}
+        factors = [1.1, 5.0, 3.0, 1.0, 1.0]
+        factors[index] = bad_value
+        with pytest.raises(ValueError, match="positive and finite"):
+            calibration_logic.apply_calibration_to_spectrum(spectrum, *factors)
 
 
 class TestObservationMjd:
@@ -337,3 +366,199 @@ def test_reference_fits_matches_direct_clc_calibration(fits_path):
             rel=1e-10,
             abs=1e-10,
         )
+
+
+class TestPage05PolarizationExport:
+    def test_exports_exact_lcp_and_rcp_samples_in_plot_order(self):
+        import csv
+        from io import StringIO
+
+        spectrum = {
+            "Vlsr": [-1.5, 0.0, 1.5],
+            "LCP": [2.0, 4.5, 6.0],
+            "RCP": [7.0, 8.5, 9.0],
+        }
+        original = {key: list(value) for key, value in spectrum.items()}
+
+        for polarization, expected in (
+            ("LCP", [2.0, 4.5, 6.0]),
+            ("RCP", [7.0, 8.5, 9.0]),
+        ):
+            csv_bytes = calibration_logic.polarization_trace_csv(
+                spectrum, polarization, "Jy"
+            )
+            rows = list(csv.reader(StringIO(csv_bytes.decode("utf-8"))))
+            assert rows[0] == ["Vlsr_km_s", f"{polarization}_Jy"]
+            assert [float(row[0]) for row in rows[1:]] == spectrum["Vlsr"]
+            assert [float(row[1]) for row in rows[1:]] == expected
+            assert len(rows) == len(spectrum["Vlsr"]) + 1
+
+        assert spectrum == original
+
+    def test_export_preserves_baseline_units(self):
+        spectrum = {"Vlsr": [0.0], "LCP": [1.25], "RCP": [2.25]}
+        result = calibration_logic.polarization_trace_csv(
+            spectrum, "LCP", "K"
+        )
+        assert result.decode("utf-8") == "Vlsr_km_s,LCP_K\n0,1.25\n"
+
+    def test_export_rejects_invalid_polarization_or_units(self):
+        spectrum = {"Vlsr": [0.0], "LCP": [1.0], "RCP": [2.0]}
+        with pytest.raises(ValueError, match="LCP or RCP"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "Mean", "Jy"
+            )
+        with pytest.raises(ValueError, match="K or Jy"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "LCP", "unknown"
+            )
+
+    def test_export_rejects_unaligned_arrays(self):
+        spectrum = {
+            "Vlsr": [0.0, 1.0],
+            "LCP": [1.0],
+            "RCP": [2.0, 3.0],
+        }
+        with pytest.raises(ValueError, match="same channel count"):
+            calibration_logic.polarization_trace_csv(
+                spectrum, "LCP", "Jy"
+            )
+
+
+class TestSelectedPairCalibrationMetadata:
+    @staticmethod
+    def _spectrum(date, frequency=6668518000.0):
+        return {
+            "date": date,
+            "longitude": 27.0,
+            "latitude": -25.0,
+            "Tamb": 20.0,
+            "Humid": 40.0,
+            "restfreq": frequency,
+        }
+
+    def test_uses_selected_pair_instead_of_first_loaded_file(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        selected = self._spectrum("2012-05-05T03:00:00")
+        partner = self._spectrum("2012-05-05T03:02:00")
+
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, selected, partner],
+            "pipeline_data": {
+                "file_loader": {
+                    "eligible_files": ["first.fits", "selected.fits", "partner.fits"],
+                },
+                "03_bandpass_correction": {
+                    "filename1": "selected.fits",
+                    "filename2": "partner.fits",
+                },
+            },
+        }
+
+        assert calibration_logic.metadata_for_selected_pair(state) is selected
+        assert state["loaded_spectrum"] is first
+
+    def test_rejects_missing_selected_file(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        second = self._spectrum("2011-01-01T00:02:00")
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, second],
+            "pipeline_data": {
+                "file_loader": {"eligible_files": ["a.fits", "b.fits"]},
+                "03_bandpass_correction": {
+                    "filename1": "missing.fits",
+                    "filename2": "b.fits",
+                },
+            },
+        }
+
+        with pytest.raises(ValueError, match="missing from Page 02"):
+            calibration_logic.metadata_for_selected_pair(state)
+
+    def test_rejects_mismatched_pair_frequency(self):
+        first = self._spectrum("2011-01-01T00:00:00")
+        second = self._spectrum(
+            "2011-01-01T00:02:00", frequency=22235000000.0
+        )
+        state = {
+            "loaded_spectrum": first,
+            "loaded_spectra": [first, second],
+            "pipeline_data": {
+                "file_loader": {"eligible_files": ["a.fits", "b.fits"]},
+                "03_bandpass_correction": {
+                    "filename1": "a.fits",
+                    "filename2": "b.fits",
+                },
+            },
+        }
+
+        with pytest.raises(ValueError, match="mismatched rest frequencies"):
+            calibration_logic.metadata_for_selected_pair(state)
+
+    def test_legacy_single_spectrum_remains_compatible(self):
+        spectrum = self._spectrum("2011-01-01T00:00:00")
+        state = {
+            "loaded_spectrum": spectrum,
+            "loaded_spectra": [spectrum],
+            "pipeline_data": {},
+        }
+        assert calibration_logic.metadata_for_selected_pair(state) is spectrum
+
+
+class TestPssCalendarMonthAverages:
+    def test_uses_calendar_month_not_adjacent_dates(self):
+        start = calibration_logic.get_observation_mjd(
+            "2024-02-01T00:00:00"
+        )
+        end = calibration_logic.get_observation_mjd(
+            "2024-03-01T00:00:00"
+        )
+        history = {
+            "lcp": {
+                "mjd": [start - 1, start, start + 10, end - 0.5, end],
+                "pss": [99, 2, 4, 6, 100],
+            },
+            "rcp": {
+                "mjd": [start, start + 10, end],
+                "pss": [3, 7, 77],
+            },
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2024-02-12T10:00:00"
+        )
+        assert result["month_label"] == "February 2024"
+        assert result["start_mjd"] == pytest.approx(start)
+        assert result["end_mjd_exclusive"] == pytest.approx(end)
+        assert result["lcp"] == pytest.approx(4.0)
+        assert result["rcp"] == pytest.approx(5.0)
+
+    def test_december_rolls_over_into_next_year(self):
+        start = calibration_logic.get_observation_mjd(
+            "2025-12-01T00:00:00"
+        )
+        end = calibration_logic.get_observation_mjd(
+            "2026-01-01T00:00:00"
+        )
+        history = {
+            "lcp": {"mjd": [start, end], "pss": [5, 70]},
+            "rcp": {"mjd": [start, end], "pss": [4, 90]},
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2025-12-31T23:59:00"
+        )
+        assert result["end_mjd_exclusive"] == pytest.approx(end)
+        assert result["lcp"] == pytest.approx(5.0)
+        assert result["rcp"] == pytest.approx(4.0)
+
+    def test_missing_monthly_samples_gives_none(self):
+        history = {
+            "lcp": {"mjd": [100.0], "pss": [1]},
+            "rcp": {"mjd": [100.0], "pss": [2]},
+        }
+        result = calibration_logic.get_pss_calendar_month_averages(
+            history, "2024-06-15T00:00:00"
+        )
+        assert result["lcp"] is None
+        assert result["rcp"] is None
