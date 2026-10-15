@@ -171,6 +171,9 @@ class PointingResult:
     uncertainties: Optional[PointingUncertainties] = None
     # axis name -> {"x", "y" (the fitted Gaussian from Point_cor.gaussf), "centre", "amplitude"}; display only
     fit_curves: Optional[Dict[str, Dict[str, Any]]] = None
+    # sqrt(mean((measured - fitted)^2)) over the six measured points, in power units; None if not computable.
+    # TODO: confirm against design -- computed here (pointcor() returns none); owners may instead drop the row.
+    rms_residual: Optional[float] = None
 
 
 class _PyplotProxy:
@@ -263,6 +266,25 @@ def _fit_curves(module: Any, fits: Sequence[Tuple[np.ndarray, np.ndarray]], hpbw
     return curves
 
 
+def _rms_residual(module: Any, fits: Sequence[Tuple[np.ndarray, np.ndarray]], powers: Mapping[str, float],
+                  hpbw_deg: float) -> Optional[float]:
+    """Pooled RMS of (measured - fitted) at the NS and EW measured points. Call inside _POINTCOR_LOCK (gaussf uses
+    the module-level ``hp``). Display only: never feeds pointcor() or the verdict."""
+    if len(fits) != len(FIT_PANELS):
+        return None
+    measured = measured_points(powers, hpbw_deg)
+    residuals: List[float] = []
+    try:
+        for (axis, _panels), (popt, _pcov) in zip(FIT_PANELS, fits):
+            x = np.asarray(measured[axis]["x"], dtype=float)
+            y = np.asarray(measured[axis]["y"], dtype=float)
+            residuals.extend(y - np.asarray(module.gaussf(x, *popt), dtype=float))
+        value = float(np.sqrt(np.mean(np.square(residuals))))
+    except Exception:  # noqa: BLE001 -- display only
+        return None
+    return value if math.isfinite(value) else None
+
+
 def _recording_curve_fit(real: Callable[..., Any], fits: List[Tuple[np.ndarray, np.ndarray]],
                          failure: Dict[str, Optional[int]]) -> Callable[..., Any]:
     """curve_fit stand-in used inside Point_cor only: records (popt, pcov) per call and which call failed."""
@@ -346,6 +368,7 @@ def compute_pointing(
                 hpbw=float(hpbw_deg), dirname=dirname, **arguments
             )
             curves = _fit_curves(pointcor_module, fits, hpbw_deg)
+            rms_residual = _rms_residual(pointcor_module, fits, powers, hpbw_deg)
         except Exception as exc:
             if failure["index"] is not None and failure["index"] < len(FIT_PANELS):
                 axis, panels = FIT_PANELS[failure["index"]]
@@ -364,6 +387,7 @@ def compute_pointing(
         powers={role: float(powers[role]) for role in ROLES},
         uncertainties=_uncertainties_from_fits(fits, float(factor), float(hpbw_deg)),
         fit_curves=curves,
+        rms_residual=rms_residual,
     )
 
 

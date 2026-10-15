@@ -420,3 +420,15 @@ def test_condition_b_is_required_by_default_and_recorded_as_such():
 def test_manual_entry_without_a_ns_uncertainty_is_still_no_go():
     check = pl.evaluate_pointing_check(_result(sigmas=None), None, snr_required=False)
     assert check.verdict == "No-Go" and not check.evaluated
+
+
+def test_rms_residual_matches_direct_gaussf_evaluation(real_pointcor):
+    result = pl.compute_pointing(POWERS, 0.23, "20260812_0")
+    m = pl.measured_points(POWERS, 0.23)
+    residuals = []
+    for (axis, _), curve in zip(pl.FIT_PANELS, ("North-South", "East-West")):
+        centre, amp = result.fit_curves[axis]["centre"], result.fit_curves[axis]["amplitude"]
+        real_pointcor.hp = 0.23
+        fitted = real_pointcor.gaussf(np.array(m[axis]["x"]), amp, centre)
+        residuals.extend(np.array(m[axis]["y"]) - fitted)
+    assert result.rms_residual == pytest.approx(float(np.sqrt(np.mean(np.square(residuals)))), rel=1e-9)

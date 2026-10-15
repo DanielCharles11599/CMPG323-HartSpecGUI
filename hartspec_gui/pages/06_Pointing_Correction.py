@@ -181,6 +181,9 @@ def render_offset_table(offsets: dict[str, str], theme: dict[str, str], result: 
                                    ("East-West offset uncertainty (1σ)", unc.ew_sigma_deg, "°"),
                                    ("Pointing correction uncertainty (1σ)", unc.pc_sigma, "")):
             rows[label] = "not available" if sigma is None else f"{sigma:.4f}{unit}"
+    rms = getattr(result, "rms_residual", None)
+    if rms is not None:
+        rows["RMS residual of fit (power units)"] = f"{rms:.4g}"
     rows_html = ""
     for index, (metric, value) in enumerate(rows.items()):
         stripe = theme["bg-panel"] if index % 2 == 0 else theme["bg-panel-alt"]
@@ -374,6 +377,8 @@ def _stage_record(
             override_justification=str(previous.get("override_justification", "")),
         ),
     }
+    rms_residual = getattr(result, "rms_residual", None)
+    stage["rms_residual"] = None if rms_residual is None else float(rms_residual)
     decided_at = previous.get("decided_at")
     if accepted and decided_at:
         stage["pointing_check"]["decided_at"] = decided_at
