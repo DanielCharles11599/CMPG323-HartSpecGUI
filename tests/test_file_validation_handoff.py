@@ -566,6 +566,26 @@ def test_successful_quarantine_immediately_removes_used_input_and_derived_result
     assert any("quarantined" in event["message"] for event in app.state["audit_log"])
 
 
+def test_quarantine_uses_the_browsed_directory_from_page_01(app, monkeypatch):
+    """Flagged/ must be created in the directory committed on Page 01, never in FITS_ARCHIVE_PATH."""
+    seed_files(app)
+    publish(app)
+    browsed = app.archive / "browsed"
+    browsed.mkdir()
+    app.state["pipeline_data"]["01_source_browser"]["browser_directory"] = str(browsed)
+    original_move = app.ingest.move_to_quarantine
+    seen = []
+
+    def move(name, base_dir=None):
+        seen.append(base_dir)
+        return original_move(name, base_dir=base_dir)
+    monkeypatch.setattr(app.ingest, "move_to_quarantine", move)
+    app.page._quarantine_file("a.fits")
+    assert seen == [browsed.resolve()]
+    assert (browsed / "Flagged" / "a.fits").is_file()
+    assert not (app.archive / "Flagged").exists()
+
+
 def test_quarantining_an_already_excluded_file_keeps_usable_results(app):
     seed_files(app)
     app.state["file_loader_verify_result::a.fits"].ok = False
@@ -584,7 +604,7 @@ def test_failed_quarantine_does_not_claim_move_or_invalidate(app, monkeypatch):
     seed_derived(app)
     old_id = app.state["session_id"]
 
-    def fail(name):
+    def fail(name, base_dir=None):
         raise app.ingest.QuarantineError("Permission denied (fixture)")
     monkeypatch.setattr(app.ingest, "move_to_quarantine", fail)
     app.page._quarantine_file("a.fits")
@@ -813,10 +833,10 @@ def test_bulk_quarantine_partial_failure_retains_failed_file_and_reports_failure
     publish(app)
     original_move = app.ingest.move_to_quarantine
 
-    def move(name):
+    def move(name, base_dir=None):
         if name == "bad2.fits":
             raise app.ingest.QuarantineError("Fixture permission failure")
-        return original_move(name)
+        return original_move(name, base_dir=base_dir)
     monkeypatch.setattr(app.ingest, "move_to_quarantine", move)
     app.state["file_loader_pending_quarantine_all"] = True
     app.ui.begin({"confirm_quarantine_all"})

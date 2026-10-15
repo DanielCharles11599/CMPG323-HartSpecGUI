@@ -378,7 +378,9 @@ def test_quarantine_button_stages_pending_confirmation_not_immediate(fits_archiv
         quarantined_now = set()
     assert "unrecognized.fits" not in quarantined_now
     caption_text = "\n".join(c.value for c in at.caption if c.value)
-    assert "moves the file out of the active archive" in caption_text
+    # The confirm text names the exact destination folder (no browsed directory here, so the archive root).
+    assert "moves the file out of its current folder into" in caption_text
+    assert "Flagged" in caption_text  # the destination folder path is shown, not a bare "Flagged/"
     assert at.button(key="confirm_quarantine_unrecognized.fits").label == "Continue"
     assert at.button(key="cancel_quarantine_unrecognized.fits").label == "Cancel"
 
