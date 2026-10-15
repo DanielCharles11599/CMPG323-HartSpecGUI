@@ -432,10 +432,40 @@ def _move_with_retry(source_path: Path, dest_path: Path) -> None:
     raise last_error
 
 
-def move_to_quarantine(filename: str) -> Path:
-    """Move one file from the archive root into `<archive_root>/Flagged/`,
-    per the project's mandated folder structure (`/data/fits/Flagged/`,
-    not a relative path like the original CLI scripts used).
+def quarantine_dir(base_dir: str | Path | None = None) -> Path:
+    """Return the folder `move_to_quarantine()` will move files into, without touching the disk.
+
+    Used by both the move itself and the Page 02 confirm text, so the folder shown to the researcher is always
+    the folder actually used. `base_dir=None` means the archive root; a `base_dir` already named `Flagged` is
+    used as-is rather than nested.
+    """
+    root = get_archive_root() if base_dir is None else Path(base_dir).expanduser()
+    if base_dir is not None and root.name.lower() == QUARANTINE_DIRNAME.lower():
+        return root
+    return root / QUARANTINE_DIRNAME
+
+
+def move_to_quarantine(filename: str, base_dir: str | Path | None = None) -> Path:
+    """Move one file into a `Flagged/` folder inside `base_dir` (the directory
+    the user browsed to on Page 01), or inside the archive root when
+    `base_dir` is None (the original behaviour, kept for callers that have
+    no browsed directory, e.g. the Page 02 developer-default file).
+
+    Why `base_dir` exists: `Flagged/` used to ALWAYS be created under
+    `FITS_ARCHIVE_PATH`, even when the user had browsed to a different
+    directory. Researchers never edit `.env`, so they would not know where
+    the quarantined files went. `Flagged/` now sits in the directory the
+    user entered, so the files are always where they expect them.
+
+    `base_dir` only decides where `Flagged/` is created. The SOURCE file is
+    still resolved as `get_archive_root() / filename` (absolute filenames
+    pass through unchanged), exactly as ingestion resolves it, so the file
+    that was validated is the file that gets moved.
+
+    If `base_dir` is itself named `Flagged` (the user browsed straight into a
+    quarantine folder), that folder is used as the destination rather than
+    creating `Flagged/Flagged/`; a file already directly inside it is
+    reported as already quarantined and is not moved.
 
     `filename` may include a subdirectory prefix (e.g.
     "2026-08/spectrum_002.fits", per Page 01's directory-tree scan) -- the
@@ -466,7 +496,16 @@ def move_to_quarantine(filename: str) -> Path:
     if not source_path.is_file():
         raise QuarantineError(f"{filename} was not found under the archive root ({source_path}).")
 
-    flagged_dir = archive_root / QUARANTINE_DIRNAME
+    if base_dir is not None and not Path(base_dir).expanduser().is_dir():
+        # Never fall back to FITS_ARCHIVE_PATH here -- that would silently recreate the original bug.
+        raise QuarantineError(
+            f"the browsed directory {Path(base_dir).expanduser()} does not exist, so Flagged/ cannot be created."
+        )
+    flagged_dir = quarantine_dir(base_dir)
+
+    if source_path.resolve().parent == flagged_dir.resolve():
+        return source_path  # already in the quarantine folder; moving it onto itself would only create a __2 duplicate
+
     try:
         flagged_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

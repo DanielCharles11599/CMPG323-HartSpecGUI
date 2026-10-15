@@ -550,6 +550,23 @@ def _request_quarantine(filename: str) -> None:
     st.session_state["file_loader_pending_quarantine"] = filename
 
 
+def _quarantine_base_dir() -> Path | None:
+    """Directory the user committed on Page 01, where `Flagged/` must be created.
+
+    Reads the committed `browser_directory` from the Page 01 handoff (not the live text box), so a quarantine
+    always lands next to the files the user actually browsed, never in FITS_ARCHIVE_PATH by accident. Returns None
+    when there is no Page 01 handoff (developer-default file), which keeps the archive-root behaviour.
+    """
+    selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    browsed = str(selection.get("browser_directory") or "").strip() if isinstance(selection, Mapping) else ""
+    return Path(browsed).expanduser().resolve() if browsed else None
+
+
+def _quarantine_destination_text() -> str:
+    """Markdown naming the exact folder a quarantine will move files into (same rule as the move itself)."""
+    return f"`{fits_ingest.quarantine_dir(_quarantine_base_dir())}`"
+
+
 def _quarantine_file(filename: str) -> None:
     """Move the file to Flagged/ for real (FR-03 handoff step 5), via
     `fits_ingest.move_to_quarantine()`, then record it in session state
@@ -564,7 +581,7 @@ def _quarantine_file(filename: str) -> None:
     moved) rather than crashing the page.
     """
     try:
-        dest_path = fits_ingest.move_to_quarantine(filename)
+        dest_path = fits_ingest.move_to_quarantine(filename, base_dir=_quarantine_base_dir())
     except fits_ingest.QuarantineError as exc:
         st.session_state["file_loader_quarantine_error"] = str(exc)
         session_store.log_event(f"{filename} quarantine FAILED -- {exc}")
@@ -712,8 +729,9 @@ def _render_validation_table() -> None:
         # browser-native dialog) -- this is a bulk, irreversible-from-the-UI
         # move of every flagged file.
         st.caption(
-            f"Quarantine all {len(flagged_pending_files)} flagged file(s)? This moves them out of the active "
-            "archive into Flagged/ immediately — undoing it means manually moving the files back on disk."
+            f"Quarantine all {len(flagged_pending_files)} flagged file(s)? This moves them out of their current "
+            f"folder into {_quarantine_destination_text()} immediately — undoing it means manually moving the "
+            "files back on disk."
         )
         confirm_col, cancel_col, _confirm_spacer = st.columns([1, 1, 6])
         with confirm_col:
@@ -815,8 +833,9 @@ def _render_validation_table() -> None:
                         # the Issue column so it stays within this row's
                         # striped background.
                         st.caption(
-                            f"Quarantine {row['file']}? This moves the file out of the active archive into "
-                            "Flagged/ immediately — undoing it means manually moving the file back on disk."
+                            f"Quarantine {row['file']}? This moves the file out of its current folder into "
+                            f"{_quarantine_destination_text()} immediately — undoing it means manually moving "
+                            "the file back on disk."
                         )
                 with col_status:
                     # The row marker rides in the same markdown call as the

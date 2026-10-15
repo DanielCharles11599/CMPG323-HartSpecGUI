@@ -1,8 +1,11 @@
-# 08_Export_and_Session.py — FR-18/19/20: spectrum export (CSV + graphs PDF), session history navigator, and the
+# 08_Export_and_Session.py — FR-18/19/20: spectrum export (CSV + FITS + graphs PDF), session history navigator, and the
 # running observation log.
 #
 # System-owner changes in this revision:
-#   * CSV is the only data export (FITS and TXT removed). It carries BOTH polarisations (LCP and RCP), the pair
+#   * FITS export restored (FR-18): the same numbers as the CSV -- both polarisations, the pair average, Graph 3, the
+#     fit and the metadata -- as a binary table, built in memory and offered through st.download_button (never written
+#     to /data/fits/). Headers also carry the session id and all stage parameters (BR-R05). TXT stays removed.
+#   * CSV carries BOTH polarisations (LCP and RCP), the pair
 #     average, Graph 3, the fit and the metadata as constant columns -- everything readable back from the one file.
 #   * The PDF is graphs only (no tables, parameter values or log text).
 #   * The observation log panel has a fixed height and scrolls, so the end of the page stays reachable.
@@ -18,7 +21,7 @@
 #   utils/sidebar.py              -- render_sidebar (1-indexed current_stage)
 #   utils/spectrum_resolution.py  -- the shared "which spectrum is current?" chain, also used by Pages 06 and 07
 #   utils/fitting_inputs.py       -- PSS / pointing correction / Graph 3 arithmetic, shared with Page 07
-#   utils/export_logic.py         -- CSV and PDF builders (pure, unit-tested)
+#   utils/export_logic.py         -- CSV, FITS and PDF builders (pure, unit-tested)
 from __future__ import annotations
 
 import hashlib
@@ -170,7 +173,7 @@ if graph3 is not None:
 
 
 # ---------------------------------------------------------------------
-# Export buttons — CSV (all numbers) and PDF (graphs only) (FR-18)
+# Export buttons — CSV and FITS (all numbers) and PDF (graphs only) (FR-18)
 # ---------------------------------------------------------------------
 def _cached_bytes(kind: str, signature_parts: list[Any], build: Callable[[], bytes]) -> bytes:
     """Build once per distinct input and keep the bytes in session_state.
@@ -268,22 +271,55 @@ if not export_blocked:
     except Exception as exc:  # noqa: BLE001 -- shown to the user instead of crashing the page
         pdf_error = f"The PDF could not be built: {exc}"
 
+# BR-R05: the FITS headers also carry the session id and every committed stage parameter (bandpass mode, baseline
+# blocks, polynomial orders, ATcor/PWV/PSS, pointing, fit), so the file traces back to the exact session that made it.
+trace_values, trace_notes = export_logic.build_fits_traceability(
+    st.session_state.get("session_id"),
+    {key: stage for key, stage in pipeline_data.items() if key != THIS_STAGE_KEY},
+)
+fits_bytes: Optional[bytes] = None
+fits_error: Optional[str] = None
+if not export_blocked:
+    try:
+        # Cached like the PDF: the signature hashes the real numbers + metadata, so any change rebuilds the file.
+        fits_bytes = _cached_bytes(
+            "fits", [vlsr, lcp, rcp, average, graph3 if graph3 is not None else "",
+                     fit_curve if fit_curve is not None else "", unit, sorted(metadata.items()),
+                     sorted(trace_values.items()), trace_notes],
+            lambda: export_logic.build_export_fits(
+                vlsr=vlsr, lcp=lcp, rcp=rcp, average=average, unit=unit, calibrated=graph3, fit_curve=fit_curve,
+                metadata=metadata, calibrated_unit=fitting_inputs.GRAPH3_UNIT,
+                traceability=trace_values, trace_notes=trace_notes,
+            ),
+        )
+    except ImportError:
+        fits_error = "FITS export needs the `astropy` package, which is not installed in this environment."
+    except Exception as exc:  # noqa: BLE001 -- shown to the user instead of crashing the page
+        fits_error = f"The FITS file could not be built: {exc}"
+
 with export_page_ui.section("Download results"):
-    col_csv, col_pdf = st.columns(2)
+    col_csv, col_fits, col_pdf = st.columns(3)
     with col_csv:
         if st.download_button(
             "Export CSV", csv_bytes, file_name="hartspec_spectrum.csv", mime="text/csv", type="secondary",
             use_container_width=True, disabled=export_blocked,
         ):
             session_store.log_event(f"Spectrum exported — CSV ({resolved.source_key}, LCP + RCP, {unit})")
+    with col_fits:
+        if st.download_button(
+            "Export FITS", fits_bytes or b"", file_name="hartspec_spectrum.fits", mime="application/fits",
+            type="secondary", use_container_width=True, disabled=export_blocked or fits_bytes is None,
+        ):
+            session_store.log_event(f"Spectrum exported — FITS ({resolved.source_key}, LCP + RCP, {unit})")
     with col_pdf:
         if st.download_button(
             "Export graphs (PDF)", pdf_bytes or b"", file_name="hartspec_graphs.pdf", mime="application/pdf",
             type="secondary", use_container_width=True, disabled=export_blocked or pdf_bytes is None,
         ):
             session_store.log_event(f"Graphs exported — PDF ({resolved.source_key})")
-    if pdf_error:
-        st.caption(pdf_error)
+    for message in (fits_error, pdf_error):
+        if message:
+            st.caption(message)
 
 
 # ---------------------------------------------------------------------
