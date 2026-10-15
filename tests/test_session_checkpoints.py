@@ -675,8 +675,23 @@ def _extract_function(path, name, namespace):
 
 
 PAGE06 = APP_ROOT / "pages/06_Pointing_Correction.py"
-PAGE06_FUNCTIONS = ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main")
+PAGE06_FUNCTIONS = ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main", "_commit_stop")
 
+def test_pointing_stop_is_recorded_survives_rerun_and_publishes_no_factor(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result(ns_offset=0.5)  # No-Go
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    namespace["_commit_stop"]()
+    browser.ui.begin()
+    namespace["main"]()  # same inputs: stop must carry over
+    data, saved = _saved_page06(browser)
+    check = saved["pointing_check"]
+    assert check["stopped"] is True and check["decided_at"]
+    assert "correction_factor" not in saved and check["accepted"] is False
+    assert "06_pointing_correction" not in data["completed_stages"]
+    assert any("reduction stopped" in e["message"] for e in data["audit_log"])
 
 def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
     """Page 06's real FR-13 helpers + main(); only the Streamlit-heavy renderers and the clc calls are stubbed.
