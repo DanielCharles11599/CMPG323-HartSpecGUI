@@ -59,6 +59,7 @@ OVERRIDE_OPEN_KEY = "pointing_override_open"
 OVERRIDE_NOTE_KEY = "pointing_override_note"
 OVERRIDE_JUSTIFICATION_KEY = "pointing_override_justification"
 OVERRIDE_SIGNATURE_KEY = "pointing_override_signature"
+STOP_PENDING_KEY = "pointing_stop_pending"
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +172,17 @@ def _render_manual_entry() -> tuple[dict[str, float], float]:
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
-def render_offset_table(offsets: dict[str, str], theme: dict[str, str]) -> None:
+def render_offset_table(offsets: dict[str, str], theme: dict[str, str], result: Any = None) -> None:
     """Render the pointing-correction results table using the shared table tokens."""
+    rows = dict(offsets)
+    unc = getattr(result, "uncertainties", None)
+    if unc is not None:  # FR-12: the fit uncertainties belong in the results table too, not only on the cards
+        for label, sigma, unit in (("North-South offset uncertainty (1σ)", unc.ns_sigma_deg, "°"),
+                                   ("East-West offset uncertainty (1σ)", unc.ew_sigma_deg, "°"),
+                                   ("Pointing correction uncertainty (1σ)", unc.pc_sigma, "")):
+            rows[label] = "not available" if sigma is None else f"{sigma:.4f}{unit}"
     rows_html = ""
-    for index, (metric, value) in enumerate(offsets.items()):
+    for index, (metric, value) in enumerate(rows.items()):
         stripe = theme["bg-panel"] if index % 2 == 0 else theme["bg-panel-alt"]
         rows_html += (
             f'<tr style="height:{styles.TABLE_ROW_HEIGHT}px; background-color:{stripe};">'
@@ -290,10 +298,15 @@ def _render_pointing_fit(entry: dict[str, Any], powers: dict[str, float], hpbw: 
                 fig.add_scatter(x=data["x"], y=data["y"], mode="markers+text", name="Measured",
                                 text=list(data["panels"]), textposition="top center",
                                 marker=dict(color=styles.LCP_COLOR, size=9))
+                if curve is not None:  # fitted offset, as in Point_cor.py's own figure
+                    fig.add_vline(x=curve["centre"], line=dict(color=theme["text-muted"], width=1, dash="dot"))
                 fig.update_layout(**styles.plotly_layout_theme(theme))
                 fig.update_layout(height=240, margin=dict(l=40, r=20, t=10, b=40), showlegend=False,
                                   xaxis=dict(title=f"{axis} offset (deg)"), yaxis=dict(title="Power"))
-                st.caption(axis)
+                if curve is None:
+                    st.caption(axis)
+                else:
+                    st.caption(f"{axis} — fitted centre {curve['centre']:+.4f}° · amplitude {curve['amplitude']:.4g}")
                 styles.render_plotly_chart(fig, use_container_width=True, theme=None,
                                            config={"displayModeBar": False})
                 if axis == failed_axis:
@@ -318,13 +331,22 @@ def _saved_check(signature_id: str) -> Optional[dict[str, Any]]:
 def _reset_override_widgets(signature_id: str) -> None:
     """Drop override text/state when the inputs changed: a sign-off never carries over to a different result."""
     if st.session_state.get(OVERRIDE_SIGNATURE_KEY) != signature_id:
-        for key in (OVERRIDE_NOTE_KEY, OVERRIDE_JUSTIFICATION_KEY, OVERRIDE_OPEN_KEY):
+        for key in (OVERRIDE_NOTE_KEY, OVERRIDE_JUSTIFICATION_KEY, OVERRIDE_OPEN_KEY, "pointing_stop_pending"):
             st.session_state.pop(key, None)
         st.session_state[OVERRIDE_SIGNATURE_KEY] = signature_id
 
 
 def _toggle_override() -> None:
     st.session_state[OVERRIDE_OPEN_KEY] = not st.session_state.get(OVERRIDE_OPEN_KEY, False)
+
+
+def _request_stop() -> None:
+    """Open the inline "Stop reduction?" confirmation (no browser-native dialog)."""
+    st.session_state[STOP_PENDING_KEY] = True
+
+
+def _cancel_stop() -> None:
+    st.session_state.pop(STOP_PENDING_KEY, None)
 
 
 def _stage_record(
@@ -352,6 +374,11 @@ def _stage_record(
             override_justification=str(previous.get("override_justification", "")),
         ),
     }
+    decided_at = previous.get("decided_at")
+    if accepted and decided_at:
+        stage["pointing_check"]["decided_at"] = decided_at
+    elif not accepted and previous.get("stopped"):
+        stage["pointing_check"].update(stopped=True, decided_at=decided_at or "")
     if result is not None:
         stage.update(ns_offset_deg=result.ns_offset_deg, ew_offset_deg=result.ew_offset_deg,
                      hpbw_deg=result.hpbw_deg, **offsets)
@@ -368,12 +395,24 @@ def _commit_acceptance(result: Any, check: Any, signature_id: str, note: str = "
         check, result, signature=signature_id, accepted=True,
         override_note=note, override_justification=justification,
     )
+    stage["pointing_check"]["decided_at"] = session_store.checkpoint_store.utc_now()  # full UTC stamp for audit
     session_store.mark_stage_complete(PAGE_STAGE_KEY)
     if check.verdict == pointing_logic.VERDICT_NO_GO:
         session_store.log_event("Pointing No-Go overridden (RULE-05) — override note and justification recorded")
     else:
         session_store.log_event("Pointing check Go — correction accepted")
     session_store.checkpoint_session("Pointing correction accepted")
+
+
+def _commit_stop() -> None:
+    """RULE-05 "stop the reduction" branch: record the No-Go as stopped (no override), publish no factor."""
+    stage = st.session_state["pipeline_data"][PAGE_STAGE_KEY]
+    stage["pointing_check"]["stopped"] = True
+    stage["pointing_check"]["decided_at"] = session_store.checkpoint_store.utc_now()
+    stage.pop("correction_factor", None)
+    st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
+    session_store.log_event("Pointing No-Go — reduction stopped by user (no override recorded)")
+    session_store.checkpoint_session("Pointing reduction stopped at No-Go")
 
 
 # ---------------------------------------------------------------------------
@@ -456,10 +495,27 @@ def _render_actions(result: Any, check: Any, signature_id: str, accepted: bool) 
             st.switch_page(NEXT_PAGE)
         return
 
+    saved = _saved_check(signature_id)
+    stopped = bool(saved and saved.get("stopped"))
+    if stopped:
+        st.warning("Reduction stopped at the pointing check. No correction factor is passed to Spectral Fitting or "
+                   "Export. You can still record an override below to continue.")
     st.button("Hide override form" if st.session_state.get(OVERRIDE_OPEN_KEY) else "Override No-Go…",
               key="pointing_override_toggle", on_click=_toggle_override)
-    st.caption("To stop the reduction here, simply do not proceed: without an accepted result no correction "
-               "factor is passed to Spectral Fitting or Export.")
+    if st.session_state.get(STOP_PENDING_KEY):
+        st.caption("Stop the reduction here? The No-Go verdict is recorded without an override and no correction "
+                   "factor is passed to Spectral Fitting or Export. An override can still be recorded afterwards.")
+        confirm_col, cancel_col, _spacer = st.columns([1, 1, 6])
+        with confirm_col:
+            if st.button("Stop reduction", type="primary", key="pointing_stop_confirm_btn",
+                         use_container_width=True):
+                _commit_stop()
+                st.session_state.pop(STOP_PENDING_KEY, None)
+                st.rerun()
+        with cancel_col:
+            st.button("Cancel", key="pointing_stop_cancel_btn", on_click=_cancel_stop, use_container_width=True)
+    elif not stopped:
+        st.button("Stop reduction here…", key="pointing_stop_btn", on_click=_request_stop)
     if not st.session_state.get(OVERRIDE_OPEN_KEY):
         return
     st.markdown('<div class="hs-eyebrow">Override (RULE-05)</div>', unsafe_allow_html=True)
@@ -600,7 +656,7 @@ def main() -> None:
     # Results table stays hidden while the override form is open (keeps the form uncluttered; cards show the values).
     if result is not None and not st.session_state.get(OVERRIDE_OPEN_KEY):
         st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
-        render_offset_table(offsets, theme)
+        render_offset_table(offsets, theme, result)
     if result is not None:
         st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
         _render_pointing_product_graph(result.correction_factor, theme)
@@ -611,3 +667,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
