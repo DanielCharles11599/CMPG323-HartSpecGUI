@@ -675,28 +675,15 @@ def _extract_function(path, name, namespace):
 
 
 PAGE06 = APP_ROOT / "pages/06_Pointing_Correction.py"
-PAGE06_FUNCTIONS = ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "main", "_commit_stop")
+PAGE06_FUNCTIONS = ("_saved_check", "_reset_override_widgets", "_stage_record", "_commit_acceptance", "_commit_stop",
+                    "main")
 
-def test_pointing_stop_is_recorded_survives_rerun_and_publishes_no_factor(browser):
-    ready(browser)
-    browser.ui.begin()
-    powers, result = _fixture_result(ns_offset=0.5)  # No-Go
-    namespace = _page06(browser, result, powers)
-    namespace["main"]()
-    namespace["_commit_stop"]()
-    browser.ui.begin()
-    namespace["main"]()  # same inputs: stop must carry over
-    data, saved = _saved_page06(browser)
-    check = saved["pointing_check"]
-    assert check["stopped"] is True and check["decided_at"]
-    assert "correction_factor" not in saved and check["accepted"] is False
-    assert "06_pointing_correction" not in data["completed_stages"]
-    assert any("reduction stopped" in e["message"] for e in data["audit_log"])
 
 def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
     """Page 06's real FR-13 helpers + main(); only the Streamlit-heavy renderers and the clc calls are stubbed.
 
-    ``scan_mode`` simulates a complete pointing scan (condition B applies); the default is manual entry (B skipped).
+    ``scan_mode`` simulates a complete pointing scan processed by Cal_point_check (condition B applies); the default
+    is manual entry (B skipped), reached because Page 03/04 inputs are "missing".
     """
     from typing import Any, Optional
     import utils.styles as styles
@@ -706,6 +693,16 @@ def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
         "" if snr_passes else "Sig_point: not all pointings reach 2.5σ.", peak_velocity_kms=-4.0,
     )
     scans, loaded = [], {}
+    clc_inputs = (None, [], None, ["the bandpass mode from Page 03"])
+    if scan_mode:
+        scans = [SimpleNamespace(key="blk#1", label="blk · scan 1", block="blk", reference="ref.fits",
+                                 reference_position="ON", files={role: f"{role}.fits" for role in powers})]
+        loaded = {f"{role}.fits": {"HPBW": 0.1} for role in powers}
+        clc_inputs = ("Frequency Switch", [{"start": 0.0, "end": 1.0}], {"Vlsr": [0.0, 1.0]}, [])
+    entry = {
+        "result": result, "signature": "fixture-signature", "error": None, "failed_panels": (),
+        "failed_axis": None, "partial_curves": {}, "spectra": {}, "powers": dict(powers), "snr": snr,
+    }
     namespace = {
         "st": browser.ui, "session_store": browser.store, "styles": styles, "pointing_logic": pointing_logic,
         "sidebar": SimpleNamespace(render_sidebar=lambda **kwargs: None), "Any": Any, "Optional": Optional,
@@ -714,28 +711,19 @@ def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
         "OVERRIDE_OPEN_KEY": "pointing_override_open", "OVERRIDE_NOTE_KEY": "pointing_override_note",
         "OVERRIDE_JUSTIFICATION_KEY": "pointing_override_justification",
         "OVERRIDE_SIGNATURE_KEY": "pointing_override_signature", "DIRECTIONS": list(powers),
-        "_loaded_spectra_by_basename": lambda: loaded, "_find_scans": lambda spectra: scans,
-        "_render_direction_panel": lambda role, spectrum, scan_key, theme: powers[role], "np": np,
+        "_loaded_spectra_by_basename": lambda: loaded, "_find_scans": lambda spectra: scans, "np": np,
+        "_clc_inputs": lambda: clc_inputs, "_render_peak_controls": lambda *args: (-4.0, 5),
+        "_loaded_paths_by_basename": lambda: {}, "_compute_scan": lambda *args: entry,
+        "_render_processed_panels": lambda *args: {},
         "_render_manual_entry": lambda: (powers, 0.1), "render_offset_table": lambda *args: None,
         "_render_pointing_product_graph": lambda *args: None, "_render_metric_cards": lambda *args: None,
         "_render_verdict_panel": lambda *args: None, "_render_actions": lambda *args: None,
-        "_render_pointing_fit": lambda *args: None, "_signal_to_noise": lambda *args: snr,
+        "_render_pointing_fit": lambda *args: None,
         "_compute": lambda *args: {
             "result": result, "signature": "fixture-signature", "error": None, "failed_panels": (),
             "failed_axis": None, "partial_curves": {},
         },
     }
-    scans = [SimpleNamespace(key="blk#1", label="blk · scan 1", block="blk", reference="ref.fits",
-                         reference_position="ON", files={role: f"{role}.fits" for role in powers})]
-    loaded = {f"{role}.fits": {"HPBW": 0.1} for role in powers}
-    entry = {"result": result, "signature": "fixture-signature", "error": None, "failed_panels": (),
-            "failed_axis": None, "partial_curves": {}, "spectra": {}, "powers": powers, "snr": snr}
-    namespace.update(
-        _clc_inputs=lambda: ("Frequency Switch", [{"start": 0.0, "end": 1.0}], {"Vlsr": [0.0, 1.0]}, []),
-        _render_peak_controls=lambda *a: (-4.0, 5), _loaded_paths_by_basename=lambda: {},
-        _compute_scan=lambda *a: entry, _render_processed_panels=lambda *a: {},
-    )
-
     for name in PAGE06_FUNCTIONS + ("_as_positive_float",):
         _extract_function(PAGE06, name, namespace)
     namespace["_snr"] = snr
@@ -1002,3 +990,21 @@ def test_unicode_audit_text_survives_checkpoint_and_manual_save_recovery(browser
     browser.store.load_session(manual_save, navigate=False)
     assert any(entry["message"] == message for entry in browser.state["audit_log"])
     assert all(path.read_bytes() == raw for path, raw in original_bytes.items())
+
+
+def test_pointing_stop_is_recorded_survives_rerun_and_publishes_no_factor(browser):
+    ready(browser)
+    browser.ui.begin()
+    powers, result = _fixture_result(ns_offset=0.5)  # No-Go
+    namespace = _page06(browser, result, powers)
+    namespace["main"]()
+    namespace["_commit_stop"]()
+    browser.ui.begin()
+    namespace["main"]()  # same inputs: the stop must carry over
+    data, saved = _saved_page06(browser)
+    check = saved["pointing_check"]
+    assert check["stopped"] is True and check["decided_at"]
+    assert "correction_factor" not in saved and check["accepted"] is False
+    assert "06_pointing_correction" not in data["completed_stages"]
+    assert any("reduction stopped" in e["message"] for e in data["audit_log"])
+    
