@@ -1,34 +1,29 @@
-# 06_Pointing_Correction.py — FR-12/13: compass-grid pointing scans (user-picked peaks), offset calculation and the
-# 2.5-sigma Go / No-Go quality check with the RULE-05 override workflow.
+# 06_Pointing_Correction.py — FR-12/13: compass-grid pointing scans on PROCESSED spectra, offset calculation and the
+# 2.5-sigma Go / No-Go quality check with the RULE-05 override / stop workflow.
 #
-# How it works (UAT feedback: "black points that you click / enter values"):
+# How it works:
 #   1. clc/File_check.py (run from Page 01) sorted the selected files into observation blocks. A pointing scan is the
-#      HPN / HPS / HPE / HPW files plus the on-source ON file (SPPOINT = 1) of a block -- utils/pointing_logic finds
-#      them, using the spectra Page 02 already loaded (no FITS file is re-read here).
-#   2. Each of the five compass panels shows that file's LCP and RCP spectra with a BLACK POINT on the peak. The point
-#      starts on the strongest channel; the user moves it by clicking the spectrum (only if the optional
-#      `streamlit-plotly-events` package is installed -- Streamlit 1.32 has no native Plotly click events) or by
-#      typing a velocity. Either way it snaps to a real channel.
-#   3. The five picked powers (mean of LCP and RCP at the channel) and the beam width from the FITS header go to the
-#      REAL clc.Point_cor.pointcor() -- via utils/pointing_logic.compute_pointing(), which leaves Point_cor.py
-#      untouched (see that module's header for the `global hp` / "../plots/" mitigation).
-#   4. Below the results, the (LCP + RCP) * Pointing Correction graph shows the correction applied to the spectrum.
-#   5. FR-13: utils/pointing_logic.evaluate_pointing_check() gives a Go / No-Go verdict: A) |NS offset| < 2.5 sigma_NS
-#      AND B) the unmodified clc Stats_manager.Sig_point says every pointing peaks >= 2.5 sigma above the baseline
-#      noise. A non-converging fit is a hard, non-overridable exception (UC-08): the failing panels are flagged and
-#      the fits that did converge are still drawn. The
-#      stage only completes -- and the correction factor is only published to Pages 07/08 -- after the user accepts a
-#      Go, or signs off a No-Go with an override note + scientific justification (RULE-05). Verdict, override text
-#      and all pointing values are stored in pipeline_data[...]["pointing_check"] (session JSON / checkpoints).
+#      HPN / HPS / HPE / HPW files plus the on-source ON file (SPPOINT = 1) of a block, and its reference file: the
+#      second ON file (frequency switch) or the pointing OFF file (position switch) -- utils/pointing_logic finds them.
+#   2. The unmodified clc Cal_point_check.py (calculate_pointing_corr_freq / _pos, chosen by Page 03's bandpass mode)
+#      bandpass-corrects the six files, flattens the baseline with Page 04's regions, averages LCP/RCP, runs
+#      Stats_manager.Sig_point, fits each peak (fit_max) and calls Point_cor.pointcor() -- via
+#      utils/pointing_logic.compute_pointing_from_scan(), which records what the module computes internally.
+#      The user supplies only the line's peak velocity and the peak-fit half-width; the five powers come from clc.
+#   3. Each compass panel shows that direction's corrected spectrum with a black point at the peak velocity.
+#   4. FR-13: Go / No-Go from A) |NS offset| < 2.5 sigma_NS AND B) Sig_point (every pointing peaks >= 2.5 sigma above
+#      the baseline noise). A non-converging fit is a hard, non-overridable exception (UC-08). A No-Go can be overridden
+#      (RULE-05: note + scientific justification) or the reduction stopped; either way the decision, with a UTC stamp,
+#      is stored in pipeline_data[...]["pointing_check"]. The correction factor is only published to Pages 07/08 after
+#      a Go is accepted or a No-Go is signed off.
 #
-# If the session has no complete pointing scan (File_check was skipped/failed, or the selection had none), the page
-# falls back to typing the five powers and the beam width by hand -- real inputs only, never mock values.
+# If the scan, Page 03's mode or Page 04's regions are unavailable, the page says what is missing and falls back to
+# typing the five powers and the beam width by hand -- real inputs only, never mock values.
 #
-# Science notes (unchanged from the earlier revision; still need owner confirmation):
+# Science notes (still need owner confirmation):
 #   # TODO: confirm against design -- NS/EW offsets are reported as returned by pointcor(); mapping them to
-#   # Azimuth/Elevation (the build spec's sample table) is not confirmed, and pointcor() computes no RMS residual.
-#   # TODO: confirm against design -- using the LCP/RCP mean as "the" peak power is our reading; pointcor() takes one
-#   # value per direction.
+#   # Azimuth/Elevation is not confirmed. The RMS residual is computed in pointing_logic (pointcor() returns none).
+#   # TODO: confirm against design -- the peak-fit half-width default (DEFAULT_HALF_WIDTH) is a placeholder.
 from __future__ import annotations
 
 import html
@@ -42,11 +37,6 @@ import streamlit as st
 from utils import baseline_editor_bridge, fitting_inputs, pointing_logic, session_store, sidebar, spectrum_resolution
 from utils import styles
 
-try:  # optional: click-to-pick support; typed entry always works without it
-    from streamlit_plotly_events import plotly_events
-except ImportError:  # pragma: no cover -- depends on the deployment
-    plotly_events = None
-
 CURRENT_STAGE = 6
 PAGE_STAGE_KEY = "06_pointing_correction"
 SOURCE_BROWSER_STAGE_KEY = "01_source_browser"
@@ -55,6 +45,8 @@ DIRECTIONS = list(pointing_logic.ROLES)  # N, S, E, W, Centre -- left-to-right p
 RESULT_CACHE_KEY = "pointing_result_cache"
 LOGGED_SIGNATURE_KEY = "pointing_logged_signature"
 BASELINE_STAGE_KEY = "04_baseline_editor"
+BANDPASS_STAGE_KEY = "03_bandpass_correction"
+DEFAULT_HALF_WIDTH = 5  # TODO: confirm against design
 OVERRIDE_OPEN_KEY = "pointing_override_open"
 OVERRIDE_NOTE_KEY = "pointing_override_note"
 OVERRIDE_JUSTIFICATION_KEY = "pointing_override_justification"
@@ -76,6 +68,17 @@ def _loaded_spectra_by_basename() -> dict[str, dict[str, Any]]:
     return spectra
 
 
+def _loaded_paths_by_basename() -> dict[str, str]:
+    """FITS paths Page 02 loaded, keyed by basename (Cal_point_check.py re-loads the files itself, by path)."""
+    selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    paths: dict[str, str] = {}
+    for relative_name in selection.get("selected_files", []) or []:
+        result = st.session_state.get(f"file_loader_ingest_result::{relative_name}")
+        if result is not None and getattr(result, "ok", False) and getattr(result, "path", None):
+            paths[Path(relative_name).name] = str(result.path)
+    return paths
+
+
 def _find_scans(spectra: dict[str, dict[str, Any]]) -> list[pointing_logic.PointingScan]:
     blocks = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {}).get("observation_blocks") or {}
     return pointing_logic.find_pointing_scans(blocks, spectra.get)
@@ -92,63 +95,102 @@ def _as_positive_float(value: Any) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # Compass panels
 # ---------------------------------------------------------------------------
-def _panel_figure(spectrum: dict[str, Any], pick_index: int, theme: dict[str, str]) -> go.Figure:
-    """LCP/RCP (fixed polarisation colours) with the black pick point on the LCP/RCP mean at the picked channel."""
-    vlsr = np.asarray(spectrum["Vlsr"], dtype=float)
-    lcp = np.asarray(spectrum["LCP"], dtype=float)
-    rcp = np.asarray(spectrum["RCP"], dtype=float)
-    fig = go.Figure()
-    fig.add_scatter(x=vlsr, y=lcp, mode="lines", line=dict(color=styles.LCP_COLOR, width=1.0), showlegend=False,
-                    hoverinfo="x+y")
-    fig.add_scatter(x=vlsr, y=rcp, mode="lines", line=dict(color=styles.RCP_COLOR, width=1.0), showlegend=False,
-                    hoverinfo="x+y")
-    # Black with a white rim so it stays visible on the dark theme's dark panel too.
-    fig.add_scatter(x=[vlsr[pick_index]], y=[pointing_logic.power_at_channel(lcp, rcp, pick_index)], mode="markers",
-                    marker=dict(color="#000000", size=10, line=dict(color="#FFFFFF", width=1.5)), showlegend=False,
-                    hoverinfo="skip")
-    # Shared theming first, panel-specific sizing on top (see plotly_layout_theme()'s docstring for why).
-    fig.update_layout(**styles.plotly_layout_theme(theme))
-    fig.update_layout(height=160, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
-    return fig
+def _clc_inputs() -> tuple[Optional[str], list[dict[str, Any]], Optional[dict[str, Any]], list[str]]:
+    """Page 03's mode, Page 04's baseline regions and the corrected spectrum they refer to (+ what's missing)."""
+    pipeline = st.session_state.get("pipeline_data", {})
+    bandpass = pipeline.get(BANDPASS_STAGE_KEY)
+    mode = bandpass.get("mode") if isinstance(bandpass, dict) else None
+    baseline = pipeline.get(BASELINE_STAGE_KEY)
+    blocks = baseline.get("blocks") if isinstance(baseline, dict) else None
+    reference = st.session_state.get("bandpass_corrected_spectrum")
+    missing: list[str] = []
+    if mode not in pointing_logic.MODE_FUNCTIONS:
+        missing.append("the bandpass mode from Page 03")
+    if not blocks:
+        missing.append("the baseline regions from Page 04")
+    if not isinstance(reference, dict) or "Vlsr" not in reference:
+        missing.append("the corrected spectrum from Page 03 (run Page 03 again)")
+    return mode, list(blocks or []), reference if isinstance(reference, dict) else None, missing
 
 
-def _render_direction_panel(role: str, spectrum: dict[str, Any], scan_key: str, theme: dict[str, str]) -> float:
-    """One compass panel; returns the power picked on it (mean of LCP and RCP at the chosen channel)."""
-    vlsr = np.asarray(spectrum["Vlsr"], dtype=float)
-    lcp, rcp = spectrum["LCP"], spectrum["RCP"]
-    pick_key = f"pointing_pick::{scan_key}::{role}"
-    if pick_key not in st.session_state:
-        st.session_state[pick_key] = float(vlsr[pointing_logic.default_peak_index(vlsr, lcp, rcp)])
+def _render_peak_controls(spectra: dict[str, dict[str, Any]], scan: Any, scan_key: str) -> tuple[float, int]:
+    """Peak velocity and fit half-width: the only inputs clc does not take from the data."""
+    centre = spectra[scan.files["Centre"]]
+    vlsr = np.asarray(centre["Vlsr"], dtype=float)
+    pick_key = f"pointing_pick::{scan_key}::Centre"  # same key session_store already restores
+    width_key = f"pointing_half_width::{scan_key}"
+    if pick_key not in st.session_state:  # the raw spectrum only seeds the default; the powers come from clc
+        st.session_state[pick_key] = float(vlsr[pointing_logic.default_peak_index(vlsr, centre["LCP"], centre["RCP"])])
+    if width_key not in st.session_state:
+        st.session_state[width_key] = DEFAULT_HALF_WIDTH
+    left, right, _spacer = st.columns([2, 2, 6])
+    with left:
+        st.number_input("Peak velocity (km/s)", min_value=float(np.nanmin(vlsr)), max_value=float(np.nanmax(vlsr)),
+                        step=0.1, format="%.2f", key=pick_key)
+    with right:
+        st.number_input("Peak fit half-width (channels)", min_value=pointing_logic.HALF_WIDTH_MIN, max_value=100,
+                        step=1, key=width_key)
+    snapped = float(vlsr[pointing_logic.nearest_channel(vlsr, st.session_state[pick_key])])
+    st.caption(f"The peak velocity snaps to the channel at {snapped:.2f} km/s. The five peak powers are fitted by "
+               f"{pointing_logic.CAL_POINT_MODULE}.py on the bandpass-corrected, baseline-flattened spectra.")
+    return snapped, int(st.session_state[width_key])
 
-    st.markdown(f'<div class="hs-panel-title">{role}</div>', unsafe_allow_html=True)
-    # The figure must be drawn from the CURRENT pick, but a click is only known after the chart renders -- so apply a
-    # new click to session_state first (before the number_input below is created, which is the only legal moment).
-    figure = _panel_figure(spectrum, pointing_logic.nearest_channel(vlsr, st.session_state[pick_key]), theme)
-    keyboard_chart = styles.get_font_scale() > 100
-    if plotly_events is not None:
-        keyboard_chart = st.checkbox("Keyboard-accessible chart controls", value=keyboard_chart,
-                                     key=f"pointing_keyboard::{scan_key}::{role}")
-    if plotly_events is not None and not keyboard_chart:
-        clicks = plotly_events(figure, click_event=True, override_height=170, key=f"pointing_click::{scan_key}::{role}")
-        seen_key = f"pointing_click_seen::{scan_key}::{role}"
-        if clicks and st.session_state.get(seen_key) != clicks[0]["x"]:
-            st.session_state[seen_key] = clicks[0]["x"]  # remember it so a later typed value isn't overridden
-            st.session_state[pick_key] = float(clicks[0]["x"])
-            st.rerun()
-    else:
-        styles.render_plotly_chart(figure, use_container_width=True, theme=None, config={"displayModeBar": False})
 
-    st.number_input(
-        f"{role} peak velocity (km/s)", min_value=float(np.nanmin(vlsr)), max_value=float(np.nanmax(vlsr)),
-        step=0.1, format="%.2f", key=pick_key, label_visibility="visible",
-    )
-    channel = pointing_logic.nearest_channel(vlsr, st.session_state[pick_key])
-    power = pointing_logic.power_at_channel(lcp, rcp, channel)
-    st.markdown(
-        f'<div class="hs-file-caption">{vlsr[channel]:.2f} km/s · power {power:.4g} {spectrum.get("units", "")}</div>',
-        unsafe_allow_html=True,
-    )
-    return power
+def _compute_scan(scan: Any, paths: dict[str, str], scan_key: str, mode: str, blocks: list[dict[str, Any]],
+                  baseline_spectrum: dict[str, Any], peak_vel: float, half_width: int) -> dict[str, Any]:
+    """Cal_point_check.py on the scan, cached per input signature (it re-loads six FITS files)."""
+    signature = ("clc", scan_key, mode, round(peak_vel, 9), int(half_width),
+                 tuple((float(b["start"]), float(b["end"])) for b in blocks), len(baseline_spectrum["Vlsr"]))
+    cache = st.session_state.get(RESULT_CACHE_KEY)
+    if cache and cache["signature"] == signature:
+        return cache
+    entry: dict[str, Any] = {"signature": signature, "result": None, "error": None, "failed_panels": (),
+                             "failed_axis": None, "partial_curves": {}, "spectra": {}, "powers": {}, "snr": None}
+    try:
+        plot_dir = session_store.SESSIONS_DIR / st.session_state["session_id"] / "plots"
+        processed = pointing_logic.compute_pointing_from_scan(
+            {role: paths[scan.files[role]] for role in DIRECTIONS}, paths[scan.reference], mode, blocks,
+            baseline_spectrum["Vlsr"], peak_vel, half_width, scan.block, plot_dir=plot_dir,
+        )
+        entry.update(result=processed.result, spectra=processed.spectra, powers=dict(processed.result.powers),
+                     snr=processed.snr)
+    except Exception as exc:  # noqa: BLE001 -- legacy code can fail in several ways; shown to the user
+        entry.update(error=f"{type(exc).__name__}: {exc}", failed_panels=tuple(getattr(exc, "panels", ())),
+                     failed_axis=getattr(exc, "axis", None), partial_curves=getattr(exc, "partial_curves", {}),
+                     spectra=getattr(exc, "spectra", {}) or {}, powers=dict(getattr(exc, "powers", {}) or {}))
+    st.session_state[RESULT_CACHE_KEY] = entry
+    return entry
+
+
+def _render_processed_panels(entry: dict[str, Any], peak_vel: float, theme: dict[str, str]) -> dict[str, Any]:
+    """Five compass panels of the corrected, LCP/RCP-averaged spectra with a black point at the peak velocity."""
+    slots: dict[str, Any] = {}
+    spectra, powers = entry.get("spectra") or {}, entry.get("powers") or {}
+    for column, role in zip(st.columns(5), DIRECTIONS):
+        with column, st.container(border=True):
+            st.markdown(f'<div class="hs-panel-title">{role}</div>', unsafe_allow_html=True)
+            data = spectra.get(role)
+            if data is None:
+                st.caption("Corrected spectrum not available.")
+            else:
+                vlsr, amplitude = np.asarray(data["Vlsr"]), np.asarray(data["ave_pol"])
+                index = pointing_logic.nearest_channel(vlsr, peak_vel)
+                fig = go.Figure()
+                fig.add_scatter(x=vlsr, y=amplitude, mode="lines", line=dict(color=styles.MEAN_COLOR, width=1.0),
+                                showlegend=False, hoverinfo="x+y")
+                # Black with a white rim so it stays visible on the dark theme's dark panel too.
+                fig.add_scatter(x=[vlsr[index]], y=[amplitude[index]], mode="markers", showlegend=False,
+                                marker=dict(color="#000000", size=10, line=dict(color="#FFFFFF", width=1.5)),
+                                hoverinfo="skip")
+                fig.update_layout(**styles.plotly_layout_theme(theme))
+                fig.update_layout(height=160, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
+                styles.render_plotly_chart(fig, use_container_width=True, theme=None,
+                                           config={"displayModeBar": False})
+            if role in powers:
+                st.markdown(f'<div class="hs-file-caption">fitted peak power {powers[role]:.4g}</div>',
+                            unsafe_allow_html=True)
+            slots[role] = st.empty()  # filled by main() if this panel's fit failed
+    return slots
 
 
 def _render_manual_entry() -> tuple[dict[str, float], float]:
@@ -262,21 +304,6 @@ def _render_pointing_product_graph(pointing_factor: float, theme: dict[str, str]
         st.caption(f"Spectrum source: {resolved.source_label}")
 
 
-def _signal_to_noise(scan: Any, spectra: dict[str, dict[str, Any]], scan_key: str) -> Optional[Any]:
-    """Condition B inputs: the five scan spectra, the Page 04 baseline regions, the Centre panel's picked velocity.
-
-    None for manual entry: there are no spectra, so condition B is skipped (not failed) -- see main().
-    """
-    if scan is None:
-        return None
-    stage = st.session_state.get("pipeline_data", {}).get(BASELINE_STAGE_KEY, {})
-    blocks = stage.get("blocks") if isinstance(stage, dict) else None
-    return pointing_logic.evaluate_signal_to_noise(
-        {role: spectra[scan.files[role]] for role in DIRECTIONS}, blocks or [],
-        float(st.session_state[f"pointing_pick::{scan_key}::Centre"]),
-    )
-
-
 def _render_pointing_fit(entry: dict[str, Any], powers: dict[str, float], hpbw: Optional[float],
                          theme: dict[str, str]) -> None:
     """FR-12: the Gaussian fitted by Point_cor.py (dashed) over the measured half-power points, NS and EW.
@@ -287,7 +314,8 @@ def _render_pointing_fit(entry: dict[str, Any], powers: dict[str, float], hpbw: 
     result = entry["result"]
     curves = (result.fit_curves if result is not None else entry.get("partial_curves")) or {}
     failed_axis = entry.get("failed_axis")
-    measured = pointing_logic.measured_points(powers, hpbw)
+    complete = hpbw is not None and all(role in powers for role in DIRECTIONS)
+    measured = pointing_logic.measured_points(powers, hpbw) if complete else {}
     with st.container(border=True):
         st.markdown('<div class="hs-panel-title">Pointing fit — measured half-power points and fitted Gaussian</div>',
                     unsafe_allow_html=True)
@@ -356,6 +384,7 @@ def _stage_record(
     *, result: Any, check: Any, signature_id: str, accepted: bool, saved: Optional[dict[str, Any]],
     input_source: str, scan_key: str, scan_files: dict[str, str], picked: dict[str, float],
     powers: dict[str, float], hpbw: Optional[float], offsets: dict[str, str],
+    processing: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """pipeline_data entry for this page.
 
@@ -369,7 +398,7 @@ def _stage_record(
         "scan_key": scan_key,
         "scan_files": dict(scan_files),
         "picked_velocities": picked,
-        "peak_powers": {role: float(powers[role]) for role in DIRECTIONS},
+        "peak_powers": {role: float(powers[role]) for role in DIRECTIONS if role in powers},
         "hpbw_deg": None if hpbw is None else float(hpbw),
         "pointing_check": pointing_logic.check_record(
             check, result, signature=signature_id, accepted=accepted,
@@ -379,6 +408,7 @@ def _stage_record(
     }
     rms_residual = getattr(result, "rms_residual", None)
     stage["rms_residual"] = None if rms_residual is None else float(rms_residual)
+    stage.update(processing or {})
     decided_at = previous.get("decided_at")
     if accepted and decided_at:
         stage["pointing_check"]["decided_at"] = decided_at
@@ -552,11 +582,16 @@ def main() -> None:
 
     spectra = _loaded_spectra_by_basename()
     scans = _find_scans(spectra)
+    mode, blocks, baseline_spectrum, missing = _clc_inputs()
 
     powers: dict[str, float] = {}
     slots: dict[str, Any] = {}
     hpbw: Optional[float] = None
     scan_key, dirname, input_source = "manual", "manual", "manual entry"
+    scan: Any = None
+    peak_vel: Optional[float] = None
+    half_width: Optional[int] = None
+    entry: Optional[dict[str, Any]] = None
 
     if scans:
         scan_options = {scan.key: scan for scan in scans}
@@ -568,32 +603,41 @@ def main() -> None:
         else:
             selected_scan = scans[0].key
         scan = scan_options[selected_scan]
-        scan_key, dirname, input_source = scan.key, scan.block, f"pointing scan: {scan.label}"
-        st.caption(
-            "Click a spectrum (if click-to-pick is installed) or type a velocity to move the black point onto the "
-            "peak. Each panel's value is the mean of LCP and RCP at that channel. The panels stay on screen for the "
-            "whole session so the fit can be re-examined."
-        )
-        for column, role in zip(st.columns(5), DIRECTIONS):
-            with column, st.container(border=True):
-                powers[role] = _render_direction_panel(role, spectra[scan.files[role]], scan_key, theme)
-                slots[role] = st.empty()  # filled below if this panel's fit failed
-        hpbw = _as_positive_float(spectra[scan.files["Centre"]].get("HPBW"))
-        if hpbw is None:
-            st.warning("The beam width (HPBW) could not be read from the on-source file's header. Enter it below.")
-            hpbw = _as_positive_float(st.number_input("Half-power beam width (deg)", min_value=0.0, value=0.0,
-                                                      step=0.01, format="%.4f", key=f"pointing_hpbw::{scan_key}"))
-    else:
+        hpbw_header = _as_positive_float(spectra[scan.files["Centre"]].get("HPBW"))
+        problems = list(missing)
+        if hpbw_header is None:
+            problems.append("a readable beam width (HPBW) in the on-source file's header")
+        needed = pointing_logic.REFERENCE_POSITION.get(mode)
+        if needed and getattr(scan, "reference_position", "") != needed:
+            problems.append(f"the {needed} reference file of this scan (needed for {mode})")
+        if problems:
+            st.warning("Pointing from the corrected spectra needs " + "; ".join(problems) + ". Complete the earlier "
+                       "pages, or enter the five powers and the beam width by hand below.")
+            scan = None
+        else:
+            scan_key = scan.key
+            dirname = scan.block
+            input_source = f"pointing scan ({pointing_logic.CAL_POINT_MODULE}, {mode}): {scan.label}"
+            st.caption("The five panels show each direction's bandpass-corrected, baseline-flattened spectrum "
+                       "(LCP/RCP average). The black point marks the peak velocity; the panels stay on screen for "
+                       "the whole session so the fit can be re-examined.")
+            peak_vel, half_width = _render_peak_controls(spectra, scan, scan_key)
+            entry = _compute_scan(scan, _loaded_paths_by_basename(), scan_key, mode, blocks, baseline_spectrum,
+                                  peak_vel, half_width)
+            slots = _render_processed_panels(entry, peak_vel, theme)
+            powers = dict(entry["powers"])
+            hpbw = hpbw_header
+    if scan is None:
         powers, hpbw_entered = _render_manual_entry()
         hpbw = hpbw_entered if hpbw_entered > 0 else None
 
     st.markdown(f"<div style='height:{styles.SECTION_GAP}px;'></div>", unsafe_allow_html=True)
 
-    entry: Optional[dict[str, Any]] = None
-    if hpbw is not None and all(powers.get(role, 0) > 0 for role in DIRECTIONS):
-        entry = _compute(powers, hpbw, scan_key, dirname)
-    else:
-        st.caption("Enter a positive power for all five directions and a beam width to calculate the correction.")
+    if scan is None:
+        if hpbw is not None and all(powers.get(role, 0) > 0 for role in DIRECTIONS):
+            entry = _compute(powers, hpbw, scan_key, dirname)
+        else:
+            st.caption("Enter a positive power for all five directions and a beam width to calculate the correction.")
 
     if entry is None:
         st.session_state["completed_stages"].discard(PAGE_STAGE_KEY)
@@ -604,12 +648,12 @@ def main() -> None:
 
     result = entry["result"]
     if entry["error"]:
-        st.warning(f"clc.Point_cor.pointcor() could not compute the correction: {entry['error']}")
+        st.warning(f"The pointing calculation could not be completed: {entry['error']}")
 
     # FR-13: verdict for exactly these inputs; an earlier sign-off only counts if the inputs are unchanged.
     signature_id = pointing_logic.signature_id(entry["signature"])
-    snr = _signal_to_noise(scan if scans else None, spectra, scan_key) if result is not None else None
-    check = (pointing_logic.evaluate_pointing_check(result, snr, snr_required=bool(scans))
+    snr = entry.get("snr") if scan is not None else None
+    check = (pointing_logic.evaluate_pointing_check(result, snr, snr_required=scan is not None)
              if result is not None
              else pointing_logic.failed_fit_check(entry["error"] or "no result", entry.get("failed_panels", ())))
     if result is None:  # UC-08 exception flow: flag the affected panels (Centre is shared, so it is not flagged)
@@ -630,13 +674,14 @@ def main() -> None:
             "Pointing correction factor": f"{result.correction_factor:.4f}",
             "Half-power beam width used": f"{result.hpbw_deg:g}°",
         }
-    picked = {
-        role: float(st.session_state[f"pointing_pick::{scan_key}::{role}"]) for role in DIRECTIONS
-    } if scans else {}
+    picked = {"Centre": float(peak_vel)} if scan is not None and peak_vel is not None else {}
+    processing = ({"processing_module": pointing_logic.CAL_POINT_MODULE, "bandpass_mode": mode,
+                   "peak_velocity_kms": float(peak_vel), "half_width_channels": int(half_width)}
+                  if scan is not None else None)
     st.session_state["pipeline_data"][PAGE_STAGE_KEY] = _stage_record(
         result=result, check=check, signature_id=signature_id, accepted=accepted, saved=saved,
-        input_source=input_source, scan_key=scan_key, scan_files=dict(scan.files) if scans else {},
-        picked=picked, powers=powers, hpbw=hpbw, offsets=offsets,
+        input_source=input_source, scan_key=scan_key, scan_files=dict(scan.files) if scan is not None else {},
+        picked=picked, powers=powers, hpbw=hpbw, offsets=offsets, processing=processing,
     )
     if accepted:
         session_store.mark_stage_complete(PAGE_STAGE_KEY)

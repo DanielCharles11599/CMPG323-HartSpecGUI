@@ -157,6 +157,14 @@ def app(monkeypatch, tmp_path):
     utils.__path__ = [str(APP_ROOT / "utils")]
     monkeypatch.setitem(sys.modules, "streamlit", ui)
     monkeypatch.setitem(sys.modules, "utils", utils)
+    components = types.ModuleType("streamlit.components")
+    components.__path__ = []
+    components_v1 = types.ModuleType("streamlit.components.v1")
+    components_v1.html = lambda *args, **kwargs: None
+    components_v1.iframe = lambda *args, **kwargs: None
+    components.v1, ui.components = components_v1, components
+    monkeypatch.setitem(sys.modules, "streamlit.components", components)
+    monkeypatch.setitem(sys.modules, "streamlit.components.v1", components_v1)
     env = types.ModuleType("utils.env")
     env.load_dotenv_if_present = lambda: None
     monkeypatch.setitem(sys.modules, "utils.env", env)

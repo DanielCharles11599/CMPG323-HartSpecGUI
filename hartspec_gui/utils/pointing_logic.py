@@ -18,10 +18,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 import sys
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -45,6 +48,10 @@ class PointingScan:
     block: str
     number: int
     files: Dict[str, str]
+    # Second file Cal_point_check.py needs: the scan's second on-source file (frequency switch, position "ON") or its
+    # pointing OFF file (position switch, position "OFF"). Kept apart from ``files`` so ``files`` stays the five roles.
+    reference: Optional[str] = None
+    reference_position: str = ""
 
     @property
     def key(self) -> str:
@@ -64,6 +71,11 @@ def _is_pointing_on(spectrum: Mapping[str, Any]) -> bool:
         return int(float(spectrum.get("pointing"))) == 1
     except (TypeError, ValueError):
         return False
+
+
+def _is_pointing_off(spectrum: Mapping[str, Any]) -> bool:
+    """True for an OFF file taken during a pointing scan (SPPOINT == 1)."""
+    return str(spectrum.get("position", "")).strip().upper() == "OFF" and _is_pointing_on(spectrum)
 
 
 def _role_of(spectrum: Optional[Mapping[str, Any]]) -> Optional[str]:
@@ -96,21 +108,30 @@ def find_pointing_scans(
     """
     scans: List[PointingScan] = []
     for block_name in sorted(blocks):
-        pending: List[Dict[str, str]] = []
+        pending: List[Tuple[Dict[str, str], Optional[Tuple[str, str]]]] = []
         current: Dict[str, str] = {}
+        reference: Optional[Tuple[str, str]] = None
         for filename in blocks[block_name]:
-            role = _role_of(lookup(filename))
+            spectrum = lookup(filename)
+            role = _role_of(spectrum)
             if role is None:
+                if reference is None and spectrum and _is_pointing_off(spectrum):
+                    reference = (filename, "OFF")  # position switch: the pointing OFF file
+                continue
+            if role == "Centre" and "Centre" in current and len(current) == len(ROLES) and reference is None:
+                reference = (filename, "ON")  # frequency switch: the scan's second on-source file
                 continue
             if role in current:  # same direction again => the previous scan is finished
-                pending.append(current)
-                current = {}
+                pending.append((current, reference))
+                current, reference = {}, None
             current[role] = filename
         if current:
-            pending.append(current)
-        for number, files in enumerate(pending, start=1):
+            pending.append((current, reference))
+        for number, (files, ref) in enumerate(pending, start=1):
             if len(files) == len(ROLES):
-                scans.append(PointingScan(block=block_name, number=number, files=files))
+                scans.append(PointingScan(block=block_name, number=number, files=files,
+                                          reference=ref[0] if ref else None,
+                                          reference_position=ref[1] if ref else ""))
     return scans
 
 
@@ -499,6 +520,30 @@ def _align_amplitude(role: str, grid: np.ndarray, amplitude: np.ndarray, referen
     return aligned, f"{role} ({detail})"
 
 
+def _snr_from_answer(answer: str, amplitudes: Sequence[np.ndarray], reference: np.ndarray, mask: np.ndarray,
+                     peak_vel: float, resampled: Sequence[str]) -> SignalToNoiseCheck:
+    """Condition B result from Sig_point's raw answer; per-panel peak / baseline-rms is informational."""
+    panel_snr = []
+    try:
+        for role, amplitude in zip(ROLES, amplitudes):
+            rms = float(np.sqrt(np.ma.mean(np.ma.array(amplitude, mask=mask) ** 2)))
+            peak = float(np.max(amplitude[reference == peak_vel]))
+            if math.isfinite(rms) and rms > 0 and math.isfinite(peak):
+                panel_snr.append((role, peak / rms))
+    except Exception:  # noqa: BLE001 -- informational only
+        panel_snr = []
+    if answer == "Yes":
+        reason = ""
+    elif answer == "No":
+        reason = (f"Sig_point: none of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the baseline noise "
+                  f"at {peak_vel:.2f} km/s.")
+    else:
+        reason = (f"Sig_point: not every one of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the "
+                  f"baseline noise at {peak_vel:.2f} km/s.")
+    return SignalToNoiseCheck(True, answer == "Yes", answer, reason, peak_vel, tuple(panel_snr),
+                              tuple(resampled))
+
+
 def evaluate_signal_to_noise(
     spectra: Mapping[str, Mapping[str, Any]], blocks: Sequence[Mapping[str, Any]], peak_velocity: float,
     sig_point: Optional[Callable[..., Any]] = None,
@@ -556,25 +601,7 @@ def evaluate_signal_to_noise(
     except Exception as exc:  # noqa: BLE001 -- legacy code / malformed input: report, never crash the page
         return unavailable(f"Sig_point could not be run: {exc}")
 
-    panel_snr = []
-    try:
-        for role, amplitude in zip(ROLES, amplitudes):
-            rms = float(np.sqrt(np.ma.mean(np.ma.array(amplitude, mask=mask) ** 2)))
-            peak = float(np.max(amplitude[reference == peak_vel]))
-            if math.isfinite(rms) and rms > 0 and math.isfinite(peak):
-                panel_snr.append((role, peak / rms))
-    except Exception:  # noqa: BLE001 -- informational only
-        panel_snr = []
-    if answer == "Yes":
-        reason = ""
-    elif answer == "No":
-        reason = (f"Sig_point: none of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the baseline noise "
-                  f"at {peak_vel:.2f} km/s.")
-    else:
-        reason = (f"Sig_point: not every one of the five pointings reaches {SIG_POINT_THRESHOLD:g}σ above the "
-                  f"baseline noise at {peak_vel:.2f} km/s.")
-    return SignalToNoiseCheck(True, answer == "Yes", answer, reason, peak_vel, tuple(panel_snr),
-                              tuple(resampled))
+    return _snr_from_answer(answer, amplitudes, reference, mask, peak_vel, resampled)
 
 
 def evaluate_pointing_check(
@@ -622,6 +649,198 @@ def failed_fit_check(
         VERDICT_NO_GO, threshold_sigma, (f"The pointing fit did not converge: {message}",),
         evaluated=False, overridable=False, failed_panels=tuple(panels),
     )
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# FR-12 on PROCESSED spectra: the unmodified clc Cal_point_check.py
+#   Cal_point_check.calculate_pointing_corr_freq / _pos load the six pointing files, bandpass-correct them
+#   (freq_switch / pos_switch), flatten the baseline with the Page 04 masks (Flat_base), average LCP/RCP, run
+#   Sig_point, fit the peaks (fit_max) and call pointcor(). This wrapper changes none of that; it only
+#     * redirects the plots the module saves to "../plots/" and keeps pyplot headless / non-blocking (Full_YN="Yes"),
+#     * records what the module computes internally but does not return (processed spectra, fit_max peak powers, the
+#       curve_fit covariances, Sig_point's raw answer), and
+#     * lets the module go on to compute pc / offsets when Sig_point says "" (mixed) -- as it already does for "No" --
+#       so the GUI can show the numbers and make the Go / No-Go decision itself (FR-13).
+#   Cal_point_cor.py differs only in returning pc = 1.0 for a "No"; use it by changing CAL_POINT_MODULE.
+#   # TODO: confirm against design -- Cal_point_check.py's pyplot/time usage and ../plots/ path are mitigated here, not
+#   # fixed in clc/.
+# ---------------------------------------------------------------------------------------------------------------
+CAL_POINT_MODULE = "Cal_point_check"
+MODE_FUNCTIONS = {"Frequency Switch": "calculate_pointing_corr_freq", "Position Switch": "calculate_pointing_corr_pos"}
+REFERENCE_POSITION = {"Frequency Switch": "ON", "Position Switch": "OFF"}
+HALF_WIDTH_MIN = 2  # fit_max() fits an order-3 polynomial over 2 * half_width channels
+_SCAN_FILE_ORDER = (("N", "HPN"), ("S", "HPS"), ("E", "HPE"), ("W", "HPW"), ("Centre", "ON"))
+_POINTCOR_NAMES = ("north", "south", "east", "west", "cen", "hpbw", "dirname")
+
+
+class PointingProcessingError(RuntimeError):
+    """Cal_point_check.py could not process the scan (not a Gaussian non-convergence). Carries what was computed."""
+
+    def __init__(self, message: str, spectra: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
+                 powers: Optional[Dict[str, float]] = None) -> None:
+        super().__init__(message)
+        self.spectra = spectra or {}
+        self.powers = powers or {}
+
+
+@dataclass(frozen=True)
+class ProcessedPointing:
+    """pointcor() result plus the corrected spectra it was derived from and the real Sig_point check (condition B)."""
+
+    result: PointingResult
+    spectra: Dict[str, Dict[str, np.ndarray]]  # role -> {"Vlsr", "ave_pol"}: bandpass-corrected, flattened, averaged
+    snr: SignalToNoiseCheck
+    mode: str
+    peak_velocity_kms: float
+    half_width_channels: int
+
+
+def _import_cal_point_check() -> Any:
+    """Import clc's Cal_point_check lazily, as a flat module (it does ``import Point_cor as Pc`` etc.)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    clc_dir = Path(__file__).resolve().parent.parent / "clc"
+    if str(clc_dir) not in sys.path:
+        sys.path.append(str(clc_dir))
+    return importlib.import_module(CAL_POINT_MODULE)
+
+
+@contextmanager
+def _swapped(module: Any, **replacements: Any) -> Any:
+    """Temporarily replace module attributes (only the module object named is affected), always restoring them."""
+    originals = {name: getattr(module, name) for name in replacements}
+    for name, value in replacements.items():
+        setattr(module, name, value)
+    try:
+        yield
+    finally:
+        for name, value in originals.items():
+            setattr(module, name, value)
+
+
+def _processed_spectra(record: Mapping[str, Any]) -> Dict[str, Dict[str, np.ndarray]]:
+    sig = record.get("sig")
+    if not sig:
+        return {}
+    return {role: {"Vlsr": sig["vlsr"], "ave_pol": amplitude} for role, amplitude in zip(ROLES, sig["amps"])}
+
+
+def compute_pointing_from_scan(
+    scan_paths: Mapping[str, str], reference_path: str, mode: str, blocks: Sequence[Mapping[str, Any]],
+    baseline_vlsr: Any, peak_vel: float, half_width: int, dirname: str, plot_dir: Optional[Path] = None,
+) -> ProcessedPointing:
+    """Run Cal_point_check.py on one pointing scan using the bandpass mode and baseline regions of Pages 03/04.
+
+    Args:
+        scan_paths: ROLES (N, S, E, W, Centre) -> FITS path of the scan's HPN / HPS / HPE / HPW / on-source file.
+        reference_path: the scan's second on-source file (Frequency Switch) or pointing OFF file (Position Switch).
+        mode: Page 03's mode, "Frequency Switch" or "Position Switch" -- selects calculate_pointing_corr_freq / _pos.
+        blocks: committed Page 04 flat baseline regions (their masks are what Flat_base flattens with).
+        baseline_vlsr: the Page 03 corrected velocity axis those regions were selected on.
+        peak_vel: line velocity (km/s) -- must be a channel of the corrected axis (Sig_point compares Vlsr == peak_vel).
+        half_width: channels either side of the peak that fit_max() fits.
+        dirname: names the PDFs the module saves (first 8 characters = the observation date).
+        plot_dir: folder for those PDFs; None skips saving them.
+
+    Raises:
+        ValueError: missing inputs. PointingFitError: a Gaussian fit did not converge (carries partial curves).
+        PointingProcessingError: anything else going wrong inside the clc module (carries the spectra computed so far).
+    """
+    if mode not in MODE_FUNCTIONS:
+        raise ValueError(f"Unknown bandpass mode {mode!r}; expected one of {list(MODE_FUNCTIONS)}.")
+    for role in ROLES:
+        if not scan_paths.get(role):
+            raise ValueError(f"The {role} file of the pointing scan is missing.")
+    if not reference_path:
+        raise ValueError(f"The {REFERENCE_POSITION[mode]} reference file of the pointing scan is missing.")
+    if peak_vel is None or not math.isfinite(float(peak_vel)):
+        raise ValueError("The peak velocity must be a finite number (km/s).")
+    if isinstance(half_width, bool) or int(half_width) != half_width or int(half_width) < HALF_WIDTH_MIN:
+        raise ValueError(f"The peak-fit half-width must be a whole number of channels, at least {HALF_WIDTH_MIN}.")
+    from utils.baseline_polynomial_adapter import build_clc_masks
+
+    mask, mask2, vll, vrl = build_clc_masks(baseline_vlsr, [{"start": b["start"], "end": b["end"]} for b in blocks])
+    ordered = [str(scan_paths[role]) for role, _position in _SCAN_FILE_ORDER] + [str(reference_path)]
+    positions = [position for _role, position in _SCAN_FILE_ORDER] + [REFERENCE_POSITION[mode]]
+    # The three arrays Cal_point_check indexes: pointing flags, POSITION tags and file paths (ON first, then the
+    # reference -- position-switch code reads file_list3[4], [5]; frequency-switch code selects ON with pointing == 1).
+    file_list = {"pointing": np.ones(len(ordered), dtype=int)}
+    file_list2, file_list3 = np.array(positions), np.array(ordered)
+
+    cpc = _import_cal_point_check()
+    function = getattr(cpc, MODE_FUNCTIONS[mode])
+    stats, point = cpc.St, cpc.Pc
+    sig_record: Dict[str, Any] = {}
+    call_record: Dict[str, Any] = {}
+    fits: List[Tuple[np.ndarray, np.ndarray]] = []
+    failure: Dict[str, Optional[int]] = {"index": None}
+
+    with _POINTCOR_LOCK:
+        real_sig, real_pointcor = stats.Sig_point, point.pointcor
+
+        def sig_spy(*args: Any) -> Any:
+            answer = str(real_sig(*args))
+            sig_record["sig"] = {
+                "answer": answer, "amps": [np.array(a, dtype=float) for a in args[:5]],
+                "vlsr": np.array(args[5], dtype=float), "mask": np.array(args[6]).copy(), "peak": float(args[7]),
+            }
+            return "Yes" if answer == "" else answer  # let the module compute the numbers; the GUI decides Go / No-Go
+
+        def pointcor_spy(*args: Any, **kwargs: Any) -> Any:
+            call_record["pointcor"] = {**dict(zip(_POINTCOR_NAMES, args)), **kwargs}
+            return real_pointcor(*args, **kwargs)
+
+        import matplotlib.pyplot as pyplot
+
+        # Any clc module (Baseline.py, Flat_base.py, ...) may save its own PDF to the hard-coded "../plots/": redirect
+        # pyplot.savefig itself for the duration of the call, whichever name a module imported pyplot under.
+        swaps = (
+            _swapped(stats, Sig_point=sig_spy),
+            _swapped(point, pointcor=pointcor_spy,
+                     plt=_PyplotProxy(point.plt, _redirected_savefig(point.plt, plot_dir)),
+                     curve_fit=_recording_curve_fit(point.curve_fit, fits, failure)),
+            _swapped(cpc, plt=_PyplotProxy(cpc.plt, _redirected_savefig(cpc.plt, plot_dir))),
+            _swapped(pyplot, savefig=_redirected_savefig(SimpleNamespace(savefig=pyplot.savefig), plot_dir)),
+        )
+        with swaps[0], swaps[1], swaps[2], swaps[3]:
+            try:
+                factor, ns_offset, ew_offset = function(
+                    file_list, file_list2, file_list3, mask, mask2, float(peak_vel), int(half_width),
+                    vll, vrl, dirname, "Yes",  # Full_YN="Yes": close figures, no pause / sleep
+                )
+                if "sig" not in sig_record or "pointcor" not in call_record:
+                    raise PointingProcessingError(
+                        f"{CAL_POINT_MODULE}.py finished without reaching Sig_point / pointcor().",
+                        _processed_spectra(sig_record),
+                    )
+                bound = call_record["pointcor"]
+                powers = {role: float(bound[name]) for role, name in
+                          zip(ROLES, ("north", "south", "east", "west", "cen"))}
+                hpbw = float(bound["hpbw"])
+                curves = _fit_curves(point, fits, hpbw)
+                result = PointingResult(
+                    correction_factor=float(factor), ns_offset_deg=float(ns_offset), ew_offset_deg=float(ew_offset),
+                    hpbw_deg=hpbw, powers=powers, uncertainties=_uncertainties_from_fits(fits, float(factor), hpbw),
+                    fit_curves=curves, rms_residual=_rms_residual(point, fits, powers, hpbw),
+                )
+            except PointingProcessingError:
+                raise
+            except Exception as exc:
+                spectra = _processed_spectra(sig_record)
+                bound = call_record.get("pointcor") or {}
+                powers = {role: float(bound[name]) for role, name in
+                          zip(ROLES, ("north", "south", "east", "west", "cen")) if name in bound}
+                if failure["index"] is not None and failure["index"] < len(FIT_PANELS) and "hpbw" in bound:
+                    axis, panels = FIT_PANELS[failure["index"]]
+                    error = PointingFitError(axis, panels, exc, _fit_curves(point, fits, float(bound["hpbw"])))
+                    error.spectra, error.powers = spectra, powers
+                    raise error from exc
+                raise PointingProcessingError(f"{type(exc).__name__}: {exc}", spectra, powers) from exc
+
+    sig = sig_record["sig"]
+    snr = _snr_from_answer(sig["answer"], sig["amps"], sig["vlsr"], sig["mask"], sig["peak"], ())
+    return ProcessedPointing(result, _processed_spectra(sig_record), snr, mode, sig["peak"], int(half_width))
 
 
 def signature_id(signature: Any) -> str:

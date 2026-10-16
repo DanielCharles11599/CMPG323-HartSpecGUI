@@ -706,12 +706,6 @@ def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
         "" if snr_passes else "Sig_point: not all pointings reach 2.5σ.", peak_velocity_kms=-4.0,
     )
     scans, loaded = [], {}
-    if scan_mode:
-        scans = [SimpleNamespace(key="blk#1", label="blk · scan 1", block="blk",
-                                 files={role: f"{role}.fits" for role in powers})]
-        loaded = {f"{role}.fits": {"HPBW": 0.1} for role in powers}
-        for role in powers:
-            browser.state[f"pointing_pick::blk#1::{role}"] = -4.0
     namespace = {
         "st": browser.ui, "session_store": browser.store, "styles": styles, "pointing_logic": pointing_logic,
         "sidebar": SimpleNamespace(render_sidebar=lambda **kwargs: None), "Any": Any, "Optional": Optional,
@@ -731,6 +725,17 @@ def _page06(browser, result, powers, *, snr_passes=True, scan_mode=False):
             "failed_axis": None, "partial_curves": {},
         },
     }
+    scans = [SimpleNamespace(key="blk#1", label="blk · scan 1", block="blk", reference="ref.fits",
+                         reference_position="ON", files={role: f"{role}.fits" for role in powers})]
+    loaded = {f"{role}.fits": {"HPBW": 0.1} for role in powers}
+    entry = {"result": result, "signature": "fixture-signature", "error": None, "failed_panels": (),
+            "failed_axis": None, "partial_curves": {}, "spectra": {}, "powers": powers, "snr": snr}
+    namespace.update(
+        _clc_inputs=lambda: ("Frequency Switch", [{"start": 0.0, "end": 1.0}], {"Vlsr": [0.0, 1.0]}, []),
+        _render_peak_controls=lambda *a: (-4.0, 5), _loaded_paths_by_basename=lambda: {},
+        _compute_scan=lambda *a: entry, _render_processed_panels=lambda *a: {},
+    )
+
     for name in PAGE06_FUNCTIONS + ("_as_positive_float",):
         _extract_function(PAGE06, name, namespace)
     namespace["_snr"] = snr
