@@ -20,6 +20,7 @@
 #   # pointcor() returns a multiplicative factor. See utils/fitting_inputs.py.
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
@@ -97,10 +98,11 @@ if fit_type == "2D Gaussian":
         "Current implementation: two Gaussian components on a 1D velocity spectrum, "
         "not a spatial 2D Gaussian fit. The full image/heatmap fit is not implemented here."
     )
-elif is_multi:
+elif fit_type == "Multi-component":
     st.info(
         "Add, edit, lock or delete Gaussian components in the table below; the composite model and residual update "
-        "immediately. 'Run Auto-Decomposition' uses clc/Spec_comp.py (up to three sequential Gaussians)."
+        "immediately. 'Run Auto-Decomposition' uses clc/Spec_comp.py, a fixed three-component Gaussian fit that the "
+        "termination criteria can stop early."
     )
 
 # ---------------------------------------------------------------------
@@ -211,7 +213,6 @@ if pss is not None and pointing_factor is not None:
         "specified)"
     )
 
-
 # ---------------------------------------------------------------------
 # Fit parameters table
 # ---------------------------------------------------------------------
@@ -251,27 +252,28 @@ def _set_multi_params(params: fitting_helpers.Params, uncertainties: Optional[li
                       covariance: Optional[list] = None) -> None:
     """Programmatically replace the component table (new editor key so st.data_editor drops its old edit state)."""
     ss = st.session_state
-    ss["multi_comp_params"] = params
-    ss["multi_comp_uncertainties"] = uncertainties
-    ss["multi_comp_covariance"] = covariance
-    ss["multi_comp_unc_for"] = [dict(p) for p in params]  # uncertainties are only valid for exactly these values
-    ss["multi_comp_base_df"] = fitting_helpers.df_from_params(params)
-    ss["multi_comp_version"] = ss.get("multi_comp_version", 0) + 1
+    ss["spectral_fitting_multi_comp_params"] = params
+    ss["spectral_fitting_multi_comp_uncertainties"] = uncertainties
+    ss["spectral_fitting_multi_comp_covariance"] = covariance
+    # uncertainties are only valid for exactly these values
+    ss["spectral_fitting_multi_comp_unc_for"] = [dict(p) for p in params]
+    ss["spectral_fitting_multi_comp_base_df"] = fitting_helpers.df_from_params(params)
+    ss["spectral_fitting_multi_comp_version"] = ss.get("spectral_fitting_multi_comp_version", 0) + 1
 
 
 def _restore_multi_from_session() -> None:
     """Rebuild the component table from the saved session block (Load Session / page revisit). Arrays are recomputed."""
     ss = st.session_state
     block = (st.session_state.get("pipeline_data", {}).get(THIS_STAGE_KEY) or {}).get("multi_component")
-    if "multi_comp_params" not in ss:
+    if "spectral_fitting_multi_comp_params" not in ss:
         _set_multi_params([])
-    if block != ss.get("multi_comp_saved_block"):  # session JSON changed underneath us (load / reset)
+    if block != ss.get("spectral_fitting_multi_comp_saved_block"):  # session JSON changed underneath us (load / reset)
         try:
             _set_multi_params(fitting_helpers.restore_from_block(block) if block else [])
         except ValueError as exc:
             st.warning(f"The saved multi-component fit could not be restored: {exc}")
             _set_multi_params([])
-        ss["multi_comp_saved_block"] = block
+        ss["spectral_fitting_multi_comp_saved_block"] = block
 
 
 def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> dict[str, Any]:
@@ -281,16 +283,19 @@ def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> di
     with st.expander("Termination criteria for auto-decomposition", expanded=False):
         c1, c2, c3 = st.columns(3)
         max_components = int(c1.number_input("max_components", min_value=1, max_value=20, value=10, step=1,
-                                             key="mc_max_components", help="Spec_comp.py itself stops at 3."))
+                                             key="spectral_fitting_mc_max_components",
+                                             help="Spec_comp.py itself stops at 3."))
         rms_cutoff = float(c2.number_input("rms_cutoff (× σ_RMS)", min_value=0.0, value=5.0, step=0.5,
-                                           key="mc_rms_cutoff",
+                                           key="spectral_fitting_mc_rms_cutoff",
                                            help="Default 5: pure noise over ~1000 channels peaks near 3.2 σ."))
         chi2_threshold = float(c3.number_input("chi2_threshold (Δ reduced χ²)", min_value=0.0, value=0.01, step=0.01,
-                                               format="%.4f", key="mc_chi2_threshold"))
+                                               format="%.4f", key="spectral_fitting_mc_chi2_threshold"))
     b1, b2, b3, _ = st.columns([1.6, 1.3, 1.1, 2])
-    run_clicked = b1.button("Run Auto-Decomposition / Fit", type="primary", use_container_width=True, key="mc_run")
-    refit_clicked = b2.button("Refit free parameters", type="secondary", use_container_width=True, key="mc_refit")
-    clear_clicked = b3.button("Clear all", type="secondary", use_container_width=True, key="mc_clear")
+    run_clicked = b1.button("Run Auto-Decomposition / Fit", type="primary", use_container_width=True,
+                            key="spectral_fitting_mc_run")
+    refit_clicked = b2.button("Refit free parameters", type="secondary", use_container_width=True,
+                              key="spectral_fitting_mc_refit")
+    clear_clicked = b3.button("Clear all", type="secondary", use_container_width=True, key="spectral_fitting_mc_clear")
 
     if clear_clicked:
         _set_multi_params([])
@@ -310,13 +315,14 @@ def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> di
     if refit_clicked:
         try:
             with st.spinner("Refitting unlocked components..."):
-                new_params, uncs, cov = fitting_helpers.refit_free(v, y, ss["multi_comp_params"])
+                new_params, uncs, cov = fitting_helpers.refit_free(v, y, ss["spectral_fitting_multi_comp_params"])
             _set_multi_params(new_params, uncs, cov)
         except fitting_helpers.FitError as exc:
             st.error(f"Refit failed: {exc} Your current components were kept.")
 
     edited = st.data_editor(
-        ss["multi_comp_base_df"], key=f"mc_editor_{ss['multi_comp_version']}", num_rows="dynamic",
+        ss["spectral_fitting_multi_comp_base_df"],
+        key=f"spectral_fitting_mc_editor_{ss['spectral_fitting_multi_comp_version']}", num_rows="dynamic",
         hide_index=True, use_container_width=True, disabled=[fitting_helpers.COL_ID],
         column_config={
             fitting_helpers.COL_ID: st.column_config.TextColumn("Component"),
@@ -330,13 +336,14 @@ def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> di
     params, problems = fitting_helpers.params_from_df(edited)
     for msg in problems:
         st.warning(msg)
-    ss["multi_comp_params"] = params
-    stale = ss.get("multi_comp_unc_for") != params  # hand-edited since the fit that produced the uncertainties
-    uncs = None if stale else ss.get("multi_comp_uncertainties")
-    cov = None if stale else ss.get("multi_comp_covariance")
-    ss["multi_comp_residual"] = y - fitting_helpers.composite(v, params)
-    ss["multi_comp_stats"] = fitting_helpers.compute_stats(v, y, params)
-    stats = ss["multi_comp_stats"]
+    ss["spectral_fitting_multi_comp_params"] = params
+    # hand-edited since the fit that produced the uncertainties?
+    stale = ss.get("spectral_fitting_multi_comp_unc_for") != params
+    uncs = None if stale else ss.get("spectral_fitting_multi_comp_uncertainties")
+    cov = None if stale else ss.get("spectral_fitting_multi_comp_covariance")
+    ss["spectral_fitting_multi_comp_residual"] = y - fitting_helpers.composite(v, params)
+    ss["spectral_fitting_multi_comp_stats"] = fitting_helpers.compute_stats(v, y, params)
+    stats = ss["spectral_fitting_multi_comp_stats"]
     if params:
         no_unc = "" if uncs else " · no uncertainties (run 'Refit free parameters')"
         st.caption(f"Reduced χ² = {stats['chi2']:.4g} · RMS residual = {stats['rms_residual']:.4g} {unit_label} · "
@@ -360,6 +367,15 @@ else:
 styles.render_panel_close()
 
 if multi is not None:
+    # Same shape as run_fit()'s FitResult for everything the commit code reads, plus the session-JSON block.
+    result = SimpleNamespace(
+        ok=bool(multi["params"]), fell_back=False, fit_type_used=MULTI_FIT_TYPE, fit_type_requested=MULTI_FIT_TYPE,
+        rows=[(r["parameter"], r["value"], r["error"])
+              for r in fitting_helpers.summary_rows(multi["params"], multi["uncertainties"])],
+        converged=True, notes=[], curve=multi["curve"],
+        multi_component=fitting_helpers.build_fitting_block(multi["params"], multi["uncertainties"],
+                                                            multi["covariance"], multi["stats"]),
+    )
     _panel("Multi-component decomposition — spectrum, components, composite and residual",
            _multi_figure(vlsr, graph3, multi["params"], g3_unit), "")
 
@@ -390,29 +406,7 @@ def _stage_summary() -> dict[str, Any]:
     ``fit_type`` is the model actually fitted (differs from ``fit_type_requested`` after a fallback); the formula,
     PSS and pointing factor are recorded so a saved session states exactly what was fitted.
     """
-    if multi is not None:
-        block = fitting_helpers.build_fitting_block(multi["params"], multi["uncertainties"], multi["covariance"],
-                                                    multi["stats"])
-        return {
-            "fit_type": MULTI_FIT_TYPE,
-            "fit_type_requested": MULTI_FIT_TYPE,
-            "fitted_quantity": (
-                "Calibrated LCP + calibrated RCP + Pointing Correction"
-                if getattr(resolved, "is_calibrated", False)
-                else f"Graph 3 = {fitting_inputs.GRAPH3_FORMULA}"
-            ),
-            "parameters": fitting_helpers.summary_rows(multi["params"], multi["uncertainties"]),
-            "multi_component": block,  # restored by _restore_multi_from_session on Load Session
-            "converged": True,
-            "notes": [],
-            "spectrum_source": source_key,
-            "intensity_unit": g3_unit,
-            "pss_jy_per_k": pss.value,
-            "pointing_correction_factor": pointing_factor,
-            "n_channels": int(vlsr.size),
-            "vlsr_range_kms": [float(vlsr.min()), float(vlsr.max())] if vlsr.size else [],
-        }
-    return {
+    summary = {
         "fit_type": result.fit_type_used,
         "fit_type_requested": result.fit_type_requested,
         "fitted_quantity": (
@@ -430,9 +424,13 @@ def _stage_summary() -> dict[str, Any]:
         "n_channels": int(vlsr.size),
         "vlsr_range_kms": [float(vlsr.min()), float(vlsr.max())] if vlsr.size else [],
     }
+    block = getattr(result, "multi_component", None)
+    if block:
+        summary["multi_component"] = block  # restored by _restore_multi_from_session on Load Session
+    return summary
 
 
-can_save = graph3_ready and (bool(multi and multi['params']) if is_multi else (result is not None and result.ok))
+can_save = result is not None and result.ok and graph3_ready
 save_col, next_col, _ = st.columns([1, 1.4, 3])
 with save_col:
     save_clicked = st.button("Save fit to session", type="secondary", disabled=not can_save, use_container_width=True)
@@ -442,25 +440,24 @@ with next_col:
                              key="fitting_next_btn")
 
 if save_clicked:
-    saved_type = MULTI_FIT_TYPE if is_multi else result.fit_type_used
-    saved_curve = multi["curve"] if is_multi else result.curve
     summary = _stage_summary()
     st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = summary
-    if is_multi:
-        st.session_state["multi_comp_saved_block"] = summary["multi_component"]  # so we don't "restore" our own save
+    if summary.get("multi_component"):
+        # remember it so the page doesn't "restore" its own save (key is under the existing spectral_fitting_ namespace)
+        st.session_state["spectral_fitting_multi_comp_saved_block"] = summary["multi_component"]
     # Full curves live in session_state directly (not pipeline_data) for Page 08's overlay/export -- the same
     # "summaries in pipeline_data, arrays in session_state" split as Pages 02/03/04. `spectrum_source` encodes
     # spectrum + PSS + pointing correction, so Page 08 refuses an overlay computed on different inputs.
     st.session_state["latest_fit"] = {
-        "fit_type": saved_type,
+        "fit_type": result.fit_type_used,
         "spectrum_source": source_key,
         "intensity_unit": g3_unit,
         "vlsr": vlsr.tolist(),
-        "fit_curve": saved_curve.tolist(),
+        "fit_curve": result.curve.tolist(),
     }
     session_store.mark_stage_complete(THIS_STAGE_KEY)
     session_store.log_event(
-        f"Spectral fit committed — {saved_type} fitted to Graph 3 "
+        f"Spectral fit committed — {result.fit_type_used} fitted to Graph 3 "
         f"(PSS {pss.value:.4f}, pointing correction {pointing_factor:.4f}, {resolved.source_key} spectrum)"
     )
     session_store.checkpoint_session("Spectral fit committed")
