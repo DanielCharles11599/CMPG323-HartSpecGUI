@@ -1,12 +1,13 @@
-# export_logic.py — FR-18: pure builders for the Page 08 exports (CSV + FITS of all the numbers, PDF of the graphs only).
+# export_logic.py — FR-18: pure builders for the Page 08 exports
+# (CSV + FITS of all the numbers, PDF of the graphs only).
 #
 # System-owner decisions implemented here:
 #   * CSV is the only data export, and it must carry everything: both polarisations, the pair average, Graph 3, the
 #     fit, and the metadata (source, date, PSS, pointing correction, fit parameters) as constant columns so the file
 #     reads back cleanly with pandas / Excel with no comment lines to strip.
 #   * FITS carries the same numbers as the CSV (same columns, same metadata) as a binary table, so it can be opened in
-#     astropy / DS9 / TOPCAT. It is a NEW file built from the session's arrays -- the raw archive in /data/fits/ is never
-#     touched (read-only except for the quarantine function).
+#     astropy / DS9 / TOPCAT. It is a NEW file built from the session's arrays --
+#     the raw archive in /data/fits/ is never touched (read-only except for the quarantine function).
 #   * The PDF contains graphs only -- no tables, parameter values, metadata or log text.
 #   # TODO: confirm against design -- the owners' list of extra export columns is still pending; the metadata
 #   # columns below (incl. MJD + decimal year, as in the example Spec_*.txt) are a proposal and are all in
@@ -177,7 +178,7 @@ def _stage_prefix(stage_key: Any) -> str:
     return f"S{match.group(1)}" if match else _column_safe(stage_key).upper()
 
 
-def _flatten_stage(prefix: str, mapping: Mapping[str, Any], values: Dict[str, Any], notes: List[str], depth: int) -> None:
+def _flatten_stage(prefix: str, mapping: Mapping[str, Any], values: Dict[str, Any], notes: List[str], depth: int):
     """Collect a stage's committed parameters without needing to know its schema.
 
     Scalars become header values, one nested level of dicts is flattened (e.g. the Page 05 PSS values), short lists of

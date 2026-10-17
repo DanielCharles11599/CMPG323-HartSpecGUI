@@ -23,7 +23,7 @@ from typing import Any, Mapping, MutableMapping
 
 import streamlit as st
 
-from utils import checkpoint_store
+from utils import checkpoint_store, fitting_helpers
 from utils.accessibility import preferences, restore_preferences
 from utils.env import load_dotenv_if_present
 
@@ -182,6 +182,8 @@ _REDUCTION_STATE_PREFIXES = (
     "fit_",
     "spectral_fitting_",
     "export_",
+    "multi_comp_",  # Page 07 multi-component table state (FR-17)
+    "mc_",  # its widget keys (data editor edit-state, termination inputs) -- stale edits must not outlive a Reset/Load
 )
 _REDUCTION_STATE_KEYS = frozenset({
     "loaded_spectrum",
@@ -258,6 +260,7 @@ def _validate_session_payload(data: Any) -> dict[str, Any]:
     completed = data["completed_stages"]
     if not isinstance(completed, list) or any(not isinstance(key, str) or not key for key in completed):
         raise ValueError("Invalid session JSON: completed_stages must be a list of stage names. Session unchanged.")
+    fitting_helpers.validate_stages(data.get("stages"))  # optional key; absent in older saves
     audit = data["audit_log"]
     if not isinstance(audit, list) or any(
         not isinstance(entry, dict)
@@ -331,7 +334,8 @@ def load_session(path: Path, *, navigate: bool = True) -> None:
     # A frozen baseline belongs to this save, not a mutable bridge shared with an old tab.
     isolate = record.bridge is not None or _query_params() is not None
     st.session_state["session_id"] = uuid.uuid4().hex if isolate else data["session_id"]
-    st.session_state["pipeline_data"] = data["pipeline_data"]
+    st.session_state["pipeline_data"] = fitting_helpers.merge_stages_into_pipeline(
+        data["pipeline_data"], data.get("stages"))
     st.session_state["completed_stages"] = completed
     st.session_state["audit_log"] = data["audit_log"]
     _seed_reduction_controls(st.session_state, data["pipeline_data"])
@@ -445,6 +449,8 @@ def _session_payload() -> dict[str, Any]:
     return checkpoint_store.json_safe({
         "session_id": state["session_id"],
         "pipeline_data": state["pipeline_data"],
+        # Spec 6.6: persistent key stages.fitting, derived from pipeline_data (which keeps its copy for the pages)
+        "stages": fitting_helpers.stages_from_pipeline(state["pipeline_data"]),
         "completed_stages": sorted(state["completed_stages"]),
         "audit_log": state["audit_log"],
         "ui_state": applied_ui,
@@ -508,8 +514,6 @@ def _restore_extra_controls(data: Mapping[str, Any]) -> None:
                     state[f"pointing_pick::{scan_key}::{role}"] = float(velocity)
             if _finite_number(pointing.get("hpbw_deg")):
                 state[f"pointing_hpbw::{scan_key}"] = float(pointing["hpbw_deg"])
-            if _finite_number(pointing.get("half_width_channels")):
-                state[f"pointing_half_width::{scan_key}"] = int(pointing["half_width_channels"])
         if pointing.get("input_source") == "manual entry":
             powers = pointing.get("peak_powers")
             powers = powers if isinstance(powers, Mapping) else {}
@@ -709,7 +713,7 @@ def recover_checkpoint(path: Path, *, navigate: bool = True, warning: str = "") 
     _clear_reduction_runtime_state(st.session_state)
     state = st.session_state
     state["session_id"] = uuid.uuid4().hex
-    state["pipeline_data"] = data["pipeline_data"]
+    state["pipeline_data"] = fitting_helpers.merge_stages_into_pipeline(data["pipeline_data"], data.get("stages"))
     state["completed_stages"] = set(data["completed_stages"])
     state["audit_log"] = data["audit_log"]
     restore_preferences(state, data.get("preferences"))
@@ -765,4 +769,3 @@ def render_checkpoint_status() -> None:
     count = len(state.get("loaded_spectra") or [])
     stage = state.get("checkpoint_current_stage", 1)
     placeholder.caption(f"Stage {stage} of 8 · {count} files loaded\n\nLast checkpoint: {label}")
-    
