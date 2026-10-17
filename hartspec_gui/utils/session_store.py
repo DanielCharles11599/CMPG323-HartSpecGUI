@@ -517,6 +517,10 @@ def _restore_extra_controls(data: Mapping[str, Any]) -> None:
                     state[f"pointing_pick::{scan_key}::{role}"] = float(velocity)
             if _finite_number(pointing.get("hpbw_deg")):
                 state[f"pointing_hpbw::{scan_key}"] = float(pointing["hpbw_deg"])
+            if _finite_number(pointing.get("half_width_channels")):
+                state[f"pointing_half_width::{scan_key}"] = int(
+                    pointing["half_width_channels"]
+                )
         if pointing.get("input_source") == "manual entry":
             powers = pointing.get("peak_powers")
             powers = powers if isinstance(powers, Mapping) else {}
