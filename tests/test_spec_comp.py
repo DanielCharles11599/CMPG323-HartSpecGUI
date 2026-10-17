@@ -271,6 +271,28 @@ def test_validate_stages_rejects_malformed(bad):
         fh.validate_stages(bad)
 
 
+def test_session_payload_writes_stages_fitting_when_run_in_isolation():
+    """Other suites exec session_store._session_payload ALONE (Any, preferences, st, checkpoint_store only).
+
+    It must therefore use no module-level helper, and must agree with fitting_helpers.stages_from_pipeline.
+    """
+    import ast
+    import copy
+
+    path = Path(__file__).resolve().parents[1] / "hartspec_gui" / "utils" / "session_store.py"
+    func = next(n for n in ast.parse(path.read_text(encoding="utf-8")).body
+                if isinstance(n, ast.FunctionDef) and n.name == "_session_payload")
+    block = _saved_block()
+    for pipeline in ({fh.FITTING_STAGE_KEY: {"fit_type": "Multi-component", "multi_component": block}},
+                     {fh.FITTING_STAGE_KEY: {"fit_type": "1D Gaussian"}}, {}):
+        state = {"session_id": "s1", "pipeline_data": pipeline, "completed_stages": set(), "audit_log": []}
+        namespace = {"Any": object, "preferences": lambda s: {},
+                     "st": SimpleNamespace(session_state=state),
+                     "checkpoint_store": SimpleNamespace(json_safe=copy.deepcopy)}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[func], type_ignores=[])), str(path), "exec"), namespace)
+        assert namespace["_session_payload"]()["stages"] == fh.stages_from_pipeline(pipeline)
+
+
 # ---------------------------------------------------------------------
 # Wrapper mechanics, against a stand-in for clc/Spec_comp.py (no astropy / specutils required)
 # ---------------------------------------------------------------------

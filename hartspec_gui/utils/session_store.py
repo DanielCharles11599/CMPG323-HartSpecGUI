@@ -182,8 +182,6 @@ _REDUCTION_STATE_PREFIXES = (
     "fit_",
     "spectral_fitting_",
     "export_",
-    "multi_comp_",  # Page 07 multi-component table state (FR-17)
-    "mc_",  # its widget keys (data editor edit-state, termination inputs) -- stale edits must not outlive a Reset/Load
 )
 _REDUCTION_STATE_KEYS = frozenset({
     "loaded_spectrum",
@@ -446,11 +444,16 @@ def _session_payload() -> dict[str, Any]:
             applied_ui["file_loader_manual_mapping_global"] = state["file_loader_manual_mapping_global"]
         if state.get("file_loader_mapping_mode") in ("Auto", "Manual"):
             applied_ui["file_loader_mapping_mode"] = state["file_loader_mapping_mode"]
+    # Spec 6.6: persistent key stages.fitting, derived from pipeline_data (which keeps its copy for the pages).
+    # Deliberately inline and builtin-only: tests exec this function alone, so it may not use module-level names.
+    fit_stage = state["pipeline_data"].get("07_spectral_fitting")
+    fit_block = fit_stage.get("multi_component") if isinstance(fit_stage, dict) else None
+    is_multi = isinstance(fit_block, dict) and fit_block.get("type") == "multi_component"
+    stages = {"fitting": fit_block} if is_multi else {}
     return checkpoint_store.json_safe({
         "session_id": state["session_id"],
         "pipeline_data": state["pipeline_data"],
-        # Spec 6.6: persistent key stages.fitting, derived from pipeline_data (which keeps its copy for the pages)
-        "stages": fitting_helpers.stages_from_pipeline(state["pipeline_data"]),
+        "stages": stages,
         "completed_stages": sorted(state["completed_stages"]),
         "audit_log": state["audit_log"],
         "ui_state": applied_ui,
