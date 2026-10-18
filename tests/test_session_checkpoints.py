@@ -1007,4 +1007,3 @@ def test_pointing_stop_is_recorded_survives_rerun_and_publishes_no_factor(browse
     assert "correction_factor" not in saved and check["accepted"] is False
     assert "06_pointing_correction" not in data["completed_stages"]
     assert any("reduction stopped" in e["message"] for e in data["audit_log"])
-    

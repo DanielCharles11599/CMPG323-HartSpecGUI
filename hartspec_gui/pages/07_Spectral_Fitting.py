@@ -216,6 +216,8 @@ if pss is not None and pointing_factor is not None:
 # ---------------------------------------------------------------------
 # Fit parameters table
 # ---------------------------------------------------------------------
+
+
 def _multi_figure(v: np.ndarray, y: np.ndarray, params: fitting_helpers.Params, unit_label: str) -> go.Figure:
     """Main plot (data, components, composite) over a residual subplot; backgrounds follow bg-panel."""
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.06)

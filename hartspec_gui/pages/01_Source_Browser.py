@@ -450,6 +450,14 @@ with st.container(border=True):
         key="load_into_pipeline_btn",
     )
 
+    # FR-21 is an optional action on Page 01, not a ninth navigation stage.
+    # The existing single-observation handoff above is deliberately unchanged.
+    prepare_batch_clicked = st.button(
+        "Prepare Batch Queue",
+        disabled=not filtered_files,
+        key="fr21_prepare_batch_btn",
+    )
+
 
 def _selection_payload(outcome=None, error_message=None) -> dict:
     """Build the same handoff for comparison, sorting success and explicit bypass.
@@ -509,8 +517,8 @@ def _continue_unchanged() -> None:
     st.switch_page("pages/02_File_Loader.py")
 
 
-def _commit_and_continue(outcome, error_message, new_session_id: str) -> None:
-    """Commit confirmed inputs, isolate their results, log once, then open Page 2.
+def _commit_and_continue(outcome, error_message, new_session_id: str, *, navigate: bool = True) -> None:
+    """Commit confirmed inputs and either open Page 2 or expose the FR-21 queue editor.
 
     A fresh ID prevents even delayed writes by the previous Dash iframe from
     reintroducing that observation's baseline. Saved JSON/bridge files are not
@@ -527,7 +535,10 @@ def _commit_and_continue(outcome, error_message, new_session_id: str) -> None:
         st.error(f"Could not commit the new selection: {exc}. The active reduction was not changed.")
         return
     if not changed:
-        _continue_unchanged()
+        if navigate:
+            _continue_unchanged()
+        else:
+            st.session_state["fr21_batch_editor_open"] = True
         return
     session_store.log_event(
         f"Source selection committed — reduction {previous_id} → {new_session_id}; "
@@ -544,8 +555,14 @@ def _commit_and_continue(outcome, error_message, new_session_id: str) -> None:
     else:
         session_store.log_event(f"File_check did not complete ({error_message}); continuing without block sorting")
     st.session_state.pop(KEY_SORT_ERROR, None)
+    # A new source selection must never automatically activate the prior reduction's batch.
+    st.session_state.pop("fr21_current_batch_id", None)
     session_store.checkpoint_session("Source selection committed")
-    st.switch_page("pages/02_File_Loader.py")
+    if navigate:
+        st.session_state.pop("fr21_batch_editor_open", None)
+        st.switch_page("pages/02_File_Loader.py")
+    else:
+        st.session_state["fr21_batch_editor_open"] = True
 
 
 selection_signature = stage_invalidation.source_selection_signature(
@@ -578,6 +595,31 @@ if load_clicked:
             else:
                 _commit_and_continue(sort_outcome, None, candidate_session_id)
 
+# FR-21: keep a batch's File_check sort separate from ordinary single-file navigation.
+# A sort failure does NOT permit "Continue without sorting" for a batch: blocks
+# are the queue's atomic work items. No active pipeline state is mutated on error.
+if prepare_batch_clicked:
+    st.session_state.pop(KEY_SORT_ERROR, None)
+    existing = st.session_state.get("pipeline_data", {}).get(PAGE_STAGE_KEY, {})
+    if not stage_invalidation.source_selection_changed(
+        st.session_state, _selection_payload(), fits_ingest.get_archive_root(),
+    ) and existing.get("observation_blocks") and not existing.get("file_check_error"):
+        st.session_state["fr21_batch_editor_open"] = True
+    else:
+        try:
+            candidate_session_id = _reserve_selection_session_id()
+            workspace_dir = session_store.SESSIONS_DIR / candidate_session_id / "workspace"
+            with st.spinner("Sorting observation blocks for the batch (File_check)…"):
+                sort_outcome = run_observation_block_sort(
+                    filtered_files, workspace_dir, selected_source, selected_frequency
+                )
+            if not sort_outcome.blocks:
+                st.error("File_check returned no observation blocks; the existing reduction was retained.")
+            else:
+                _commit_and_continue(sort_outcome, None, candidate_session_id, navigate=False)
+        except Exception as exc:  # noqa: BLE001 — leave previously committed reduction untouched on sort failure
+            st.error(f"Cannot prepare the batch: {type(exc).__name__}: {exc}")
+
 pending_error = st.session_state.get(KEY_SORT_ERROR)
 if (
     pending_error and selection_signature is not None
@@ -595,3 +637,23 @@ if (
         )
         if st.button("Continue without block sorting →", key="continue_without_sort_btn"):
             _commit_and_continue(None, pending_error["message"], pending_error["candidate_session_id"])
+
+
+# FR-21 queue UI is imported only for an explicitly prepared/saved batch, so
+# regular FR-01 page loads and existing headless test facades are unaffected.
+_committed_selection = st.session_state.get("pipeline_data", {}).get(PAGE_STAGE_KEY, {})
+if st.session_state.get("fr21_batch_editor_open") or _committed_selection.get("batch_queue_id"):
+    if not filtered_files or stage_invalidation.source_selection_changed(
+        st.session_state, _selection_payload(), fits_ingest.get_archive_root(),
+    ):
+        st.warning(
+            "Current browser filters differ from the committed source. "
+            "Prepare that source before editing a batch."
+        )
+    else:
+        from utils import batch_ui  # noqa: E402 — optional FR-21 panel
+
+        batch_ui.render_batch_panel(
+            _committed_selection, source_session_id=st.session_state["session_id"],
+            sessions_root=session_store.SESSIONS_DIR, verify_file=fits_ingest.verify_fits_file,
+        )
