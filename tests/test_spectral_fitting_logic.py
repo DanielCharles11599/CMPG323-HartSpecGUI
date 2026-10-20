@@ -170,3 +170,13 @@ def test_every_fit_type_meets_the_two_second_budget_including_hard_inputs():
             start = time.perf_counter()
             run_fit(fit_type, V, y)
             assert time.perf_counter() - start < 2.0, fit_type
+
+
+# ---- FR mapping and aligned-curve contract ------------------------------------------------------------------------
+def test_fit_types_follow_the_confirmed_fr_order():
+    assert FIT_TYPES == ["1D Gaussian", "Polynomial Peak", "2D Gaussian", "Multi-component"]
+
+
+def test_scipy_fits_return_curves_aligned_with_the_velocity_axis():
+    result = run_fit("1D Gaussian", V, _single_line())
+    assert result.curve_x is None and result.curve.shape == V.shape
