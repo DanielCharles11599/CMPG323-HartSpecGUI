@@ -75,7 +75,7 @@ def test_multi_figure_top_panel_has_observed_components_and_dashed_red_composite
     fig = _multi()
     top = [t for t in fig.data if t.yaxis in (None, "y")]
     assert top[0].name.startswith("Observed") and top[0].line.dash in (None, "solid")
-    comps = _by_name(fig, "Comp")
+    comps = _by_name(fig, "Comp ")  # Do not also match "Composite fit".
     assert len(comps) == 2 and all(c.line.dash == "dot" and c.line.width <= 1 for c in comps)
     assert len({c.line.color for c in comps}) == 2  # visually distinct
     composite = _by_name(fig, "Composite")[0]

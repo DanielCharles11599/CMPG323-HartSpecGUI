@@ -696,4 +696,3 @@ if stored_result and stored_result.get("mode") == st.session_state["bandpass_mod
     _render_before_after(stored_result)
     if st.button("Continue to Baseline Block Editor →", type="primary", key="continue_to_baseline"):
         st.switch_page("pages/04_Baseline_Editor.py")
-        

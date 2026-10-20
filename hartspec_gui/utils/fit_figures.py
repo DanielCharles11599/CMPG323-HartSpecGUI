@@ -109,7 +109,7 @@ def multi_figure(v: np.ndarray, y: np.ndarray, params: fitting_helpers.Params, u
 
 def map_figure(z: np.ndarray, x: np.ndarray, y: np.ndarray, model: Optional[np.ndarray], z_title: str,
                axis_unit: str, theme: Mapping[str, str], layout_theme: Mapping[str, Any], *,
-               fit_color: str) -> go.Figure:
+               fit_color: str, dashed_contours: bool = False) -> go.Figure:
     """FR-16: heatmap of the observed 2D map with the fitted 2D Gaussian drawn as contour lines on top.
 
     ``z`` and ``model`` have shape (Ny, Nx). The contour lines use ``coloring="none"`` because Plotly ignores
@@ -123,6 +123,29 @@ def map_figure(z: np.ndarray, x: np.ndarray, y: np.ndarray, model: Optional[np.n
         fig.add_trace(go.Contour(z=model, x=x, y=y, showscale=False, contours=dict(coloring="none"),
                                  line=dict(color=fit_color, width=2), name="2D Gaussian fit", showlegend=True,
                                  hovertemplate="Fit: %{z:.4g}<extra></extra>"))
+    if model is not None and dashed_contours:
+        # Plotly 5.20 Contour.line has no dash property. Keep its z/hover trace,
+        # and draw the same level sets as dashed Scatter paths (no science refit).
+        from matplotlib.figure import Figure
+        surface = np.asarray(model, dtype=float)
+        low, high = float(surface.min()), float(surface.max())
+        if high > low:
+            levels = np.linspace(low, high, 9)[1:-1]
+            contour = fig.data[1]
+            contour.update(line_width=0, showlegend=False,
+                           contours=dict(start=float(levels[0]), end=float(levels[-1]),
+                                         size=float(levels[1] - levels[0]), coloring="none"))
+            scratch = Figure()
+            axes = scratch.subplots()
+            paths = axes.contour(x, y, surface, levels=levels)
+            xs, ys = [], []
+            for segments in paths.allsegs:
+                for segment in segments:
+                    xs.extend(segment[:, 0].tolist() + [None])
+                    ys.extend(segment[:, 1].tolist() + [None])
+            scratch.clear()
+            fig.add_scatter(x=xs, y=ys, mode="lines", name="2D Gaussian fit (dashed)",
+                            line=dict(color=fit_color, dash="dash", width=1.6), hoverinfo="skip")
     _apply_theme(fig, theme, layout_theme, height=420, legend_y=-0.2)
     fig.update_layout(hovermode="closest")
     fig.update_xaxes(title_text=f"X offset ({axis_unit})")

@@ -1,635 +1,454 @@
-# 07_Spectral_Fitting.py — FR-14/15/16/17: Gaussian / polynomial / multi-component fitting of the calibrated spectrum.
-# FR-17 (Multi-component mode): editable component table, live composite + residual, auto-decomposition via
-# clc/Spec_comp.py (unmodified, through utils/fitting_helpers.py), termination criteria, lock + refit, session restore.
-#
-# UAT / system-owner layout:
-#   Graph 1  LCP
-#   Graph 2  RCP
-#   (extra)  pair average -- for every LCP/RCP pair of points (LCP + RCP) / 2, plus the overall mean of those averages
-#   Graph 3  [(LCP + RCP) * PSS] + Pointing Correction     (formula exactly as specified by the system owner)
-#   Graph 4  the fit of Graph 3 (the Fit Type selector below applies to Graph 3)
-#
-# Inputs: LCP/RCP from the shared spectrum chain (utils/spectrum_resolution.py, the same one Page 08 uses); PSS from
-# Page 05 and the Pointing Correction from Page 06 (both via utils/fitting_inputs.py, which also holds the arithmetic).
-# Graph 3 is only drawn from the PRE-calibration (K) spectrum: a spectrum already scaled by Page 05 would have PSS
-# applied twice.
-#
-# The Plotly
-# figures are built by utils/fit_figures.py (pure, unit-tested). FR mapping: FR-14 1D Gaussian (clc/Gaussf.py), FR-15
-# Polynomial Peak (clc/fit_max.py), FR-16 2D Gaussian (clc/2D_Gauss_fit.py, on st.session_state.map_2d_data), FR-17
-# Multi-component (clc/Spec_comp.py). The clc/ calls go through the adapters in utils/fitting_helpers.py.
-#   # TODO: confirm against design -- Graph 3 ADDS the pointing correction factor as written in the owner's formula;
-#   # pointcor() returns a multiplicative factor. See utils/fitting_inputs.py.
+# 07_Spectral_Fitting.py — FR-14/15/16/17/19: CLC-backed fitting, Plotly results and replayable state.
+"""Stage 7 on Streamlit 1.32.0. Heavy fits run only on the explicit Run Fit buttons.
+
+Scientific adapters live in utils/fitting_helpers.py; JSON-safe active state and
+cached results live in pipeline_data['07_spectral_fitting']. The existing Graph 3
+calibration arithmetic is preserved, including the owner's additive pointing term.
+"""
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, Optional
+import copy
+import json
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-
-from utils import (baseline_editor_bridge, fit_figures, fitting_helpers, fitting_inputs, session_store,
-                   spectrum_resolution, styles)
+from utils import baseline_editor_bridge, fit_figures, fitting_helpers as fh, fitting_inputs
+from utils import fitting_state as fs, session_store, spectrum_resolution, styles
 from utils.sidebar import render_sidebar
-from utils.spectral_fitting_logic import FIT_TYPES, FitResult
 
-THIS_STAGE_KEY = "07_spectral_fitting"
-CURRENT_STAGE = 7  # 1-indexed, per utils/sidebar.py + utils/styles.py convention
+THIS_STAGE_KEY = fs.STAGE_KEY
+CURRENT_STAGE = 7
 NEXT_PAGE = "pages/08_Export_and_Session.py"
-MULTI_FIT_TYPE = "Multi-component"  # must match the label in utils.spectral_fitting_logic.FIT_TYPES
-GAUSSIAN_FIT_TYPE = "1D Gaussian"
-POLYNOMIAL_FIT_TYPE = "Polynomial Peak"
-FIT_2D_TYPE = "2D Gaussian"
-MAP_STATE_KEY = "map_2d_data"  # {"data": (Ny, Nx), "x": (Nx,), "y": (Ny,)} written by Stage 2 / Stage 6
-# Graph 3 is a combined trace, so it must not look like pure LCP (blue) or RCP (orange): neutral slate / cyan by theme.
-GRAPH3_COLORS = {"light": "#4B5563", "dark": "#22D3EE"}
-
-st.set_page_config(page_title="HARTSPEC — Spectral Fitting", layout="wide")
-session_store.init_session_state()
-render_sidebar(CURRENT_STAGE)
-styles.inject_base_css()
-styles.render_page_header(
-    "Spectral Fitting",
-    "Gaussian / polynomial / multi-component fits",
-    CURRENT_STAGE,
-    # strictly-before-this-page count, per Build Spec section 6 (completed_count() also counted this page)
-    session_store.completed_before(CURRENT_STAGE),
-)
-theme = styles.get_theme()
-graph3_color = GRAPH3_COLORS[styles.get_theme_name()]
+FIT_TYPES = fh.FIT_TYPES
+CHART_KEYS = dict(zip(FIT_TYPES, ("chart_fit_1d", "chart_fit_poly", "chart_fit_2d", "chart_fit_multicomp")))
+GRAPH3_COLORS = {"light": "#4B5563", "dark": "#CBD5E1"}
 
 
-def _figure(traces: list[tuple[str, Any, Any, str, str]], y_title: str, height: int = 280,
-            hline: Optional[float] = None, window: Optional[tuple[float, float]] = None) -> go.Figure:
-    """Themed line chart (see utils/fit_figures.py). traces = (name, x, y, colour, dash); window = highlighted km/s."""
-    return fit_figures.spectrum_figure(traces, y_title, theme, styles.plotly_layout_theme(theme), height=height,
-                                       hline=hline, window=window)
-
-
-def _run_clc_fit(fit_type_name: str, v: np.ndarray, y: np.ndarray, scope: str, unit_label: str
-                 ) -> tuple[Optional[FitResult], Optional[tuple[float, float]], Optional[dict[str, Any]]]:
-    """FR-14 / FR-15: render the controls, run the clc adapter, return (result, window to highlight, saved options).
-
-    1D Gaussian (clc/Gaussf.py): amplitude and centre sliders and an HPBW spin box. Amplitude and centre are the
-    curve_fit starting point; the HPBW is held fixed (Gaussf.py takes it as a constant).
-    Polynomial Peak (clc/fit_max.py): peak velocity and half-width (in CHANNELS, as fit_max takes it) inputs --
-    Streamlit 1.32 has no Plotly click events (CON-06) -- plus a 2nd-4th order selector.
-    Widget keys include ``scope`` so they reset when the underlying data changes.
-    """
-    if fit_type_name == GAUSSIAN_FIT_TYPE:
-        amp0, center0, hpbw0 = fitting_helpers.default_gaussian_guess(v, y)
-        amp_max = amp0 * 2.0 if amp0 > 0 else 1.0
-        c1, c2, c3 = st.columns(3)
-        amp = c1.slider("Amplitude (initial guess)", 0.0, amp_max, float(min(max(amp0, 0.0), amp_max)),
-                        step=amp_max / 200.0, key=f"fit_1d_amp_{scope}")
-        center = c2.slider("Center velocity (km/s, initial guess)", float(v.min()), float(v.max()), center0,
-                           step=float(np.mean(np.abs(np.diff(v)))), key=f"fit_1d_center_{scope}")
-        hpbw = c3.number_input("HPBW (km/s, held fixed)", min_value=0.01, value=float(max(hpbw0, 0.01)), step=0.1,
-                               format="%.2f", key=f"fit_1d_hpbw_{scope}")
-        with st.spinner("Fitting spectrum..."):  # always shown; usually well inside the 2 s budget (NFR-01)
-            result = fitting_helpers.run_gaussf(v, y, hpbw, amp, center, unit_label)
-        return result, None, {"amplitude_initial_guess": float(amp), "center_initial_guess_kms": float(center),
-                              "hpbw_kms_fixed": float(hpbw)}
-    if fit_type_name == POLYNOMIAL_FIT_TYPE:
-        step = float(np.mean(np.abs(np.diff(v))))
-        c1, c2, c3 = st.columns(3)
-        peak = c1.number_input("Peak velocity (km/s)", min_value=float(v.min()), max_value=float(v.max()),
-                               value=float(v[np.argmax(y)]), step=0.1, format="%.2f", key=f"fit_poly_peak_{scope}")
-        # TODO: confirm against design -- the default half-width is a placeholder; the spec gives none.
-        half = c2.number_input("Half-width window (channels)", min_value=1, step=1,
-                               value=fitting_helpers.DEFAULT_HALF_WIDTH_CHANNELS, key=f"fit_poly_half_{scope}",
-                               help="Channels on either side of the peak velocity, as clc/fit_max.py takes it.")
-        order = c3.selectbox("Polynomial order", fitting_helpers.POLYNOMIAL_ORDERS,
-                             index=len(fitting_helpers.POLYNOMIAL_ORDERS) - 1,
-                             format_func=lambda o: {2: "2nd order", 3: "3rd order", 4: "4th order"}[o],
-                             key=f"fit_poly_order_{scope}")
-        st.caption(f"Window ≈ ±{int(half) * step:.2f} km/s around the channel nearest the peak velocity.")
-        with st.spinner("Fitting spectrum..."):
-            result = fitting_helpers.run_fit_max(v, y, float(peak), int(half), int(order), unit_label)
-        window = fitting_helpers.fit_max_window(v, float(peak), int(half))
-        return result, window, {"peak_velocity_kms": float(peak), "half_width_channels": int(half),
-                                "polynomial_order": int(order),
-                                "window_kms": list(window) if window is not None else None}
-    return None, None, None
-
-
-def _json_curve(curve: np.ndarray) -> list[Optional[float]]:
-    """Curve -> JSON-safe list (NaN outside a polynomial window becomes null; JSON has no NaN)."""
-    return [float(x) if np.isfinite(x) else None for x in np.asarray(curve, dtype=float)]
-
-
-def _panel(title: str, fig: Optional[go.Figure], placeholder: str = "") -> None:
-    """Bordered panel with title; a short message instead of the chart when the graph can't be drawn yet."""
+def _chart(title: str, fig: go.Figure, key: str, source: str = "") -> None:
+    """Render one accessible, independently keyed Plotly panel without selection callbacks."""
     with st.container(border=True):
-        st.markdown(f'<div class="hs-panel-title">{title}</div>', unsafe_allow_html=True)
-        if fig is None:
-            st.info(placeholder)
-        else:
-            styles.render_plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, theme=None)
+        st.markdown(f"**{title}**")
+        fig.update_layout(uirevision=f"{key}:{source}")
+        styles.render_plotly_chart(fig, key=key, use_container_width=True, theme=None,
+                                   config={"displaylogo": False, "responsive": True})
 
 
-# ---------------------------------------------------------------------
-# FIT TYPE selector (applies to Graph 3)
-# ---------------------------------------------------------------------
-st.markdown('<div class="hs-eyebrow">Fit Type</div>', unsafe_allow_html=True)
-# st.radio, not custom pill buttons -- utils/styles.py's inject_base_css() already carries a specific fix for
-# "Page 07's Fit type" radio label contrast, confirming this is the established widget choice for this control.
-fit_type = st.radio("Fit type", FIT_TYPES, horizontal=True, label_visibility="collapsed", key="fit_type")
-is_multi = fit_type == MULTI_FIT_TYPE
-is_2d = fit_type == FIT_2D_TYPE
-st.caption("The fit is applied to Graph 3 and shown in Graph 4. Graphs 1 and 2 show the input channels.")
-# Describe the existing implementation honestly; do not change fitting algorithms here.
-if fit_type == FIT_2D_TYPE:
-    st.info(
-        "The 2D Gaussian fit works on the spatial map, not on Graph 3: set the seven starting values below and press "
-        "'Fit 2D Gaussian'. Graph 4 is not used in this mode."
-    )
-elif fit_type == "Multi-component":
-    st.info(
-        "Add, edit, lock or delete Gaussian components in the table below; the composite model and residual update "
-        "immediately. 'Run Auto-Decomposition' uses clc/Spec_comp.py, a fixed three-component Gaussian fit that the "
-        "termination criteria can stop early."
-    )
-
-# ---------------------------------------------------------------------
-# Resolve inputs
-# ---------------------------------------------------------------------
-resolved = spectrum_resolution.resolve_spectrum(
-    st.session_state,
-    read_bridge=baseline_editor_bridge.read_bridge,
-    fingerprint=baseline_editor_bridge.spectrum_fingerprint,
-)
-unit = resolved.intensity_unit
-vlsr = resolved.vlsr
-lcp, rcp = resolved.channels["LCP"], resolved.channels["RCP"]
-pipeline_data = st.session_state.get("pipeline_data", {})
-pss = fitting_inputs.pss_from_pipeline(pipeline_data)
-pointing_factor = fitting_inputs.pointing_factor_from_pipeline(pipeline_data)
-
-st.caption(f"Spectrum source: {resolved.source_label}")
-for note in resolved.notes:
-    st.warning(note)
-if resolved.is_placeholder:
-    st.error(
-        "No real spectrum is available in this session, so the graphs below are of synthetic placeholder data. "
-        "Saving is disabled -- complete the earlier pipeline stages first."
-    )
-
-# Graph 3 needs a real, not-yet-PSS-scaled spectrum plus PSS (Page 05) and the pointing correction (Page 06).
-blockers: list[str] = []
-if resolved.is_placeholder:
-    blockers.append("a real spectrum")
-if (
-    not resolved.is_placeholder
-    and not resolved.is_calibrated
-    and resolved.source_key != spectrum_resolution.SOURCE_BASELINE
-):
-    blockers.append("a valid baseline-flattened spectrum -- complete Page 04 (Baseline Editor)")
-if pss is None:
-    blockers.append("a PSS value -- complete Page 05 (Calibration Dashboard)")
-if pointing_factor is None:
-    blockers.append("a pointing correction -- complete Page 06 (Pointing Correction)")
-graph3_ready = not blockers
-if blockers:
-    st.warning("Graph 3 and its fit need " + "; ".join(blockers) + ".")
-
-graph3: Optional[np.ndarray] = None
-result: Optional[FitResult] = None
-source_key = ""
-fit_options_summary: Optional[dict[str, Any]] = None  # controls used, saved with the fit
-window: Optional[tuple[float, float]] = None  # polynomial window highlighted on Graphs 3 and 4
-preserved: Optional[dict[str, Any]] = None  # last valid fit of this type, shown when the new fit fails
-if graph3_ready:
-    if resolved.is_calibrated:
-        # Page 05 already applied ATcor and PSS.
-        graph3 = lcp + rcp + pointing_factor
-    else:
-        graph3 = fitting_inputs.graph3(
-            lcp, rcp, pss.value, pointing_factor
-        )
-    source_key = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing_factor)
-    if fit_type in (GAUSSIAN_FIT_TYPE, POLYNOMIAL_FIT_TYPE):
-        result, window, fit_options_summary = _run_clc_fit(fit_type, vlsr, graph3, source_key,
-                                                           fitting_inputs.GRAPH3_UNIT)
-        # last valid fit per fit type, kept in session_state so a failed refit does not blank the plot
-        last_key = f"spectral_fitting_last_good_{fit_type}"
-        if result.ok:
-            st.session_state[last_key] = {"source": source_key, "fit_type_used": result.fit_type_used,
-                                          "curve": result.curve, "curve_x": result.curve_x, "rows": result.rows}
-        else:
-            previous = st.session_state.get(last_key)
-            if previous and previous["source"] == source_key:
-                preserved = previous
-
-saved_fit = st.session_state.get("latest_fit")
-if saved_fit and graph3_ready and saved_fit.get("spectrum_source") != source_key:
-    st.warning("The fit saved earlier was computed on different data (another spectrum, PSS or pointing correction). "
-               "Save again to update it.")
-if result is not None:
-    for note in result.notes:
-        (st.warning if result.ok else st.error)(note)
-if preserved is not None:
-    st.caption("Showing the previous valid fit of this type (not the failed one above); it cannot be saved.")
-
-# ---------------------------------------------------------------------
-# Graphs 1 & 2 — LCP, RCP
-# ---------------------------------------------------------------------
-left, right = st.columns(2)
-with left:
-    _panel("Graph 1 — LCP", _figure([("LCP", vlsr, lcp, styles.LCP_COLOR, "solid")], f"Intensity ({unit})"))
-with right:
-    _panel("Graph 2 — RCP", _figure([("RCP", vlsr, rcp, styles.RCP_COLOR, "solid")], f"Intensity ({unit})"))
-
-# ---------------------------------------------------------------------
-# Pair average — (LCP + RCP) / 2 per pair of points, then the overall mean
-# ---------------------------------------------------------------------
-average, overall_mean = fitting_inputs.pair_average(lcp, rcp)
-_panel(
-    "Average of each LCP/RCP pair — (LCP + RCP) / 2",
-    _figure([("(LCP + RCP) / 2", vlsr, average, theme["accent"], "solid")], f"Intensity ({unit})", 260,
-            hline=overall_mean),
-)
-st.caption(f"Overall average of the pair averages (dotted line): {overall_mean:.4f} {unit}")
-
-# ---------------------------------------------------------------------
-# Graphs 3 & 4 — [(LCP + RCP) * PSS] + Pointing Correction, and its fit
-# ---------------------------------------------------------------------
-g3_unit = fitting_inputs.GRAPH3_UNIT
-left, right = st.columns(2)
-with left:
-    _panel(
-        ("Graph 3 — Calibrated (LCP + RCP) + Pointing Correction"
-         if resolved.is_calibrated
-         else "Graph 3 — [(LCP + RCP) × PSS] + Pointing Correction"),
-        None if graph3 is None else _figure([("Graph 3", vlsr, graph3, graph3_color, "solid")],
-                                            f"Intensity ({g3_unit})", window=window),
-        "Waiting for the inputs listed above.",
-    )
-with right:
-    g4_slot = st.container()  # filled after the fit-parameters section so it sees this run's edits
-if pss is not None and pointing_factor is not None:
-    st.caption(
-        f"PSS = {pss.value:.4f} Jy/K (mean of the LCP {pss.lcp_mean:.4f} and RCP {pss.rcp_mean:.4f} "
-        f"±{pss.window_days}-day means, Page 05) · Pointing Correction = {pointing_factor:.4f} (Page 06, added as "
-        "specified)"
-    )
-
-# ---------------------------------------------------------------------
-# Fit parameters table
-# ---------------------------------------------------------------------
+def _lines(traces: list, unit: str, window: Any = None, **kwargs: Any) -> go.Figure:
+    """Build a themed spectral chart; all supplied x/y arrays remain full resolution."""
+    theme = styles.get_theme()
+    return fit_figures.spectrum_figure(traces, f"Intensity ({unit})", theme,
+                                      styles.plotly_layout_theme(theme), window=window, **kwargs)
 
 
-def _multi_figure(v: np.ndarray, y: np.ndarray, params: fitting_helpers.Params, unit_label: str) -> go.Figure:
-    """Dual-panel decomposition plot (see utils/fit_figures.py): data + components + composite over the residual."""
-    return fit_figures.multi_figure(v, y, params, unit_label, theme, styles.plotly_layout_theme(theme),
-                                    data_color=graph3_color, fit_color=styles.get_fit_line_color())
+def _widget_scope(mode: str, source: str) -> str:
+    """Keep widget state separate between modes, observations and loaded sessions."""
+    return f"fit_{fs.MODE_IDS[mode]}_{st.session_state['session_id']}_{source[:16]}"
 
 
-@st.cache_data(show_spinner=False)
-def _cached_spec_comp(v: np.ndarray, y: np.ndarray) -> fitting_helpers.Params:
-    """Spec_comp.py result for one spectrum, cached so repeat clicks / reruns stay inside the 2 s budget (NFR-01)."""
-    return fitting_helpers.run_spec_comp(v, y)
+def _options(entry: dict, options: dict, mode: str) -> None:
+    """Persist every control change and append a small parameter audit record, not spectral arrays."""
+    options = fs.json_safe(options)
+    previous = entry.get("options", {})
+    if previous and previous != options:
+        session_store.log_event(f"{mode} parameters changed — {json.dumps(options, ensure_ascii=False)}")
+    entry["options"] = options
 
 
-def _set_multi_params(params: fitting_helpers.Params, uncertainties: Optional[list] = None,
-                      covariance: Optional[list] = None) -> None:
-    """Programmatically replace the component table (new editor key so st.data_editor drops its old edit state)."""
-    ss = st.session_state
-    ss["spectral_fitting_multi_comp_params"] = params
-    ss["spectral_fitting_multi_comp_uncertainties"] = uncertainties
-    ss["spectral_fitting_multi_comp_covariance"] = covariance
-    # uncertainties are only valid for exactly these values
-    ss["spectral_fitting_multi_comp_unc_for"] = [dict(p) for p in params]
-    ss["spectral_fitting_multi_comp_base_df"] = fitting_helpers.df_from_params(params)
-    ss["spectral_fitting_multi_comp_version"] = ss.get("spectral_fitting_multi_comp_version", 0) + 1
-
-
-def _restore_multi_from_session() -> None:
-    """Rebuild the component table from the saved session block (Load Session / page revisit). Arrays are recomputed."""
-    ss = st.session_state
-    block = (st.session_state.get("pipeline_data", {}).get(THIS_STAGE_KEY) or {}).get("multi_component")
-    if "spectral_fitting_multi_comp_params" not in ss:
-        _set_multi_params([])
-    if block != ss.get("spectral_fitting_multi_comp_saved_block"):  # session JSON changed underneath us (load / reset)
-        try:
-            _set_multi_params(fitting_helpers.restore_from_block(block) if block else [])
-        except ValueError as exc:
-            st.warning(f"The saved multi-component fit could not be restored: {exc}")
-            _set_multi_params([])
-        ss["spectral_fitting_multi_comp_saved_block"] = block
-
-
-def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> dict[str, Any]:
-    """Controls + editable table inside the open 'Fit parameters' panel. Returns the state needed to plot and save."""
-    ss = st.session_state
-    _restore_multi_from_session()
-    with st.expander("Termination criteria for auto-decomposition", expanded=False):
-        c1, c2, c3 = st.columns(3)
-        max_components = int(c1.number_input("max_components", min_value=1, max_value=20, value=10, step=1,
-                                             key="spectral_fitting_mc_max_components",
-                                             help="Spec_comp.py itself stops at 3."))
-        rms_cutoff = float(c2.number_input("rms_cutoff (× σ_RMS)", min_value=0.0, value=5.0, step=0.5,
-                                           key="spectral_fitting_mc_rms_cutoff",
-                                           help="Default 5: pure noise over ~1000 channels peaks near 3.2 σ."))
-        chi2_threshold = float(c3.number_input("chi2_threshold (Δ reduced χ²)", min_value=0.0, value=0.01, step=0.01,
-                                               format="%.4f", key="spectral_fitting_mc_chi2_threshold"))
-    b1, b2, b3, _ = st.columns([1.6, 1.3, 1.1, 2])
-    run_clicked = b1.button("Run Auto-Decomposition / Fit", type="primary", use_container_width=True,
-                            key="spectral_fitting_mc_run")
-    refit_clicked = b2.button("Refit free parameters", type="secondary", use_container_width=True,
-                              key="spectral_fitting_mc_refit")
-    clear_clicked = b3.button("Clear all", type="secondary", use_container_width=True, key="spectral_fitting_mc_clear")
-
-    if clear_clicked:
-        _set_multi_params([])
-    if run_clicked:
-        try:
-            # spinner always shown: the call is cached after the first run, so it only flashes when it is fast
-            with st.spinner("Executing multi-component Gaussian decomposition..."):
-                sequence = _cached_spec_comp(v, y)
-            kept, why = fitting_helpers.apply_termination(v, y, sequence, max_components, rms_cutoff, chi2_threshold)
-            if kept:
-                _set_multi_params(kept)  # Spec_comp.py provides no uncertainties
-                st.caption(f"Auto-decomposition: {len(kept)} component(s) — {why}.")
-            else:
-                st.warning(f"No components met the termination criteria ({why}). The table was left unchanged.")
-        except fitting_helpers.DecompositionError as exc:
-            st.error(f"Auto-decomposition failed: {exc} Your current components were kept.")
-    if refit_clicked:
-        try:
-            with st.spinner("Refitting unlocked components..."):
-                new_params, uncs, cov = fitting_helpers.refit_free(v, y, ss["spectral_fitting_multi_comp_params"])
-            _set_multi_params(new_params, uncs, cov)
-        except fitting_helpers.FitError as exc:
-            st.error(f"Refit failed: {exc} Your current components were kept.")
-
-    edited = st.data_editor(
-        ss["spectral_fitting_multi_comp_base_df"],
-        key=f"spectral_fitting_mc_editor_{ss['spectral_fitting_multi_comp_version']}", num_rows="dynamic",
-        hide_index=True, use_container_width=True, disabled=[fitting_helpers.COL_ID],
-        column_config={
-            fitting_helpers.COL_ID: st.column_config.TextColumn("Component"),
-            fitting_helpers.COL_AMP: st.column_config.NumberColumn(f"Amplitude ({unit_label})", format="%.4f"),
-            fitting_helpers.COL_CENTER: st.column_config.NumberColumn("Center Vlsr (km/s)", format="%.4f"),
-            fitting_helpers.COL_FWHM: st.column_config.NumberColumn("FWHM (km/s)", format="%.4f", min_value=0.0),
-            fitting_helpers.COL_LOCK: st.column_config.CheckboxColumn(
-                "Lock", help="Locked components are held fixed by 'Refit free parameters'."),
-        },
-    )
-    params, problems = fitting_helpers.params_from_df(edited)
-    for msg in problems:
-        st.warning(msg)
-    ss["spectral_fitting_multi_comp_params"] = params
-    # hand-edited since the fit that produced the uncertainties?
-    stale = ss.get("spectral_fitting_multi_comp_unc_for") != params
-    uncs = None if stale else ss.get("spectral_fitting_multi_comp_uncertainties")
-    cov = None if stale else ss.get("spectral_fitting_multi_comp_covariance")
-    ss["spectral_fitting_multi_comp_residual"] = y - fitting_helpers.composite(v, params)
-    ss["spectral_fitting_multi_comp_stats"] = fitting_helpers.compute_stats(v, y, params)
-    stats = ss["spectral_fitting_multi_comp_stats"]
-    if params:
-        no_unc = "" if uncs else " · no uncertainties (run 'Refit free parameters')"
-        st.caption(f"Reduced χ² = {stats['chi2']:.4g} · RMS residual = {stats['rms_residual']:.4g} {unit_label} · "
-                   f"{len(params)} component(s){no_unc}")
-    return {"params": params, "uncertainties": uncs, "covariance": cov, "stats": stats,
-            "curve": fitting_helpers.composite(v, params)}
-
-
-def _render_2d_fit() -> dict[str, Any]:
-    """FR-16 controls + results table + covariance table (inside the open 'Fit parameters' panel).
-
-    Seven spin boxes give the starting guesses p0 for clc/2D_Gauss_fit.py's twoD_Gaussian; 'Fit 2D Gaussian' runs
-    curve_fit. The last VALID fit stays in session_state, so a failed refit keeps the previous result on screen.
-    Returns the state needed to plot and save: map, synthetic flag, stored fit (or None).
-    """
-    ss = st.session_state
-    raw = ss.get(MAP_STATE_KEY)
-    map_data = fitting_helpers.coerce_map_2d(raw)
-    synthetic = map_data is None
-    if synthetic:
-        if raw is not None:
-            st.warning(f"st.session_state.{MAP_STATE_KEY} is malformed (needs 'data' of shape (Ny, Nx) plus 'x' and "
-                       "'y' axes, all finite) and was ignored.")
-        st.info("2D Gaussian fitting requires 2D mapped observation data. No usable map is in this session, so a "
-                "synthetic test map is shown instead; it cannot be saved.")
-        try:
-            map_data = fitting_helpers.synthetic_map_2d()
-        except fitting_helpers.ClcLoadError as exc:
-            st.error(f"No test map could be generated: {exc}")
-            return {"map": None, "synthetic": True, "stored": None}
-    scope = f"{map_data.data.shape[0]}x{map_data.data.shape[1]}_{float(map_data.data.sum()):.6g}_{synthetic}"
-    defaults = fitting_helpers.default_p0_2d(map_data.x, map_data.y, map_data.data)
-    labels = ("Amplitude", "X center", "Y center", "Major axis σ_x", "Minor axis σ_y", "Position angle (°)", "Offset")
-    values: list[float] = []
-    for row in (range(0, 4), range(4, 7)):
-        for col, i in zip(st.columns(len(row)), row):
-            values.append(float(col.number_input(
-                labels[i], value=float(defaults[i]), format="%.4f", min_value=1e-6 if i in (3, 4) else None,
-                key=f"fit_2d_{i}_{scope}")))
-    p0 = tuple(values)
-    if st.button("Fit 2D Gaussian", type="primary", key="spectral_fitting_2d_run"):
-        with st.spinner("Fitting spectrum..."):
-            fit = fitting_helpers.run_2d_gauss(map_data.x, map_data.y, map_data.data, p0, map_data.unit,
-                                               map_data.axis_unit)
-        if fit.ok:
-            ss["spectral_fitting_2d_state"] = {"scope": scope, "p0": p0, "result": fit}
-            for note in fit.notes:
-                st.warning(note) if not fit.converged else st.caption(note)
-        else:
-            st.error(f"{fit.notes[0]} The previous valid fit, if any, is kept.")
-    stored = ss.get("spectral_fitting_2d_state")
-    if stored is not None and stored["scope"] != scope:
-        stored = None  # fit belongs to a different map
-    if stored is not None:
-        if stored["p0"] != p0:
-            st.caption("The starting values changed since this fit -- press 'Fit 2D Gaussian' to refit.")
-        styles.render_dataframe(pd.DataFrame(list(stored["result"].rows), columns=["Parameter", "Value", "± Error"]),
+def _result_table(result: dict | None) -> None:
+    """Show result rows and explicitly disclose unconstrained covariance/nonconvergence."""
+    if not result:
+        return
+    rows = result.get("rows", [])
+    if rows:
+        styles.render_dataframe(pd.DataFrame(rows, columns=["Parameter", "Value", "± Error"]),
                                 hide_index=True, use_container_width=True)
-        st.caption("Covariance matrix (clc units: position angle in radians):")
-        styles.render_dataframe(fitting_helpers.covariance_dataframe(stored["result"]), use_container_width=True)
+    for note in result.get("notes", []):
+        (st.caption if result.get("converged") else st.warning)(note)
+
+
+def _status(entry: dict, request: str, heavy: bool = False) -> bool:
+    """Explain errors/stale results, returning whether the cached result may be committed."""
+    if entry.get("failed_request") == request:
+        st.error(entry["error"])
+    current = fs.result_is_current(entry, request)
+    if entry.get("result") and entry.get("result_request") == request and not entry["result"].get("ok"):
+        st.info("No components satisfied the fit criteria. " + entry["result"].get("stop_reason", ""))
+    elif entry.get("result") and not current:
+        st.warning("Controls changed or the last fit failed. The previous fit is not current and cannot be saved."
+                   + (" Press Run Fit to update it." if heavy else ""))
+    elif not entry.get("result") and heavy:
+        st.caption("Set the initial guesses, then press Run Fit.")
+    return current
+
+
+def _light_fit(stage: dict, mode: str, v: np.ndarray, y: np.ndarray, source: str, unit: str) -> tuple:
+    """FR-14/15: numeric controls and cached automatic recomputation on parameter changes only."""
+    entry = fs.mode_state(stage, mode, source)
+    saved = entry["options"]
+    key = _widget_scope(mode, source)
+    amp0, center0, width0 = fh.default_gaussian_guess(v, y)
+    step = max(float(np.median(np.abs(np.diff(v)))), 1e-9)
+    columns = st.columns(3)
+    window = None
+    if mode == "1D Gaussian":
+        span = max(float(np.max(np.abs(y))), abs(float(saved.get("amplitude_initial_guess", amp0))), 1e-6) * 2
+        amp = columns[0].slider("Amplitude guess", -span, span,
+                                float(saved.get("amplitude_initial_guess", amp0)),
+                                step=span / 400, key=f"{key}_amplitude")
+        center = columns[1].slider("Center Velocity guess (km/s)", float(v.min()), float(v.max()),
+                                   float(np.clip(saved.get("center_initial_guess_kms", center0), v.min(), v.max())),
+                                   step=step, key=f"{key}_center")
+        width = columns[2].number_input("HPBW (km/s, fixed)", min_value=1e-9,
+                                        value=max(float(saved.get("hpbw_kms_fixed", width0)), 1e-9),
+                                        step=step, format="%.6f", key=f"{key}_hpbw",
+                                        help="Defaults to the measured half-maximum width; held constant in Gaussf.py.")
+        options = {"amplitude_initial_guess": amp, "center_initial_guess_kms": center, "hpbw_kms_fixed": width}
     else:
-        st.caption("Press 'Fit 2D Gaussian' to fit the map.")
-    return {"map": map_data, "synthetic": synthetic, "stored": stored}
+        center = columns[0].number_input("Velocity Center (km/s)", min_value=float(v.min()), max_value=float(v.max()),
+                                         value=float(np.clip(saved.get("peak_velocity_kms", center0),
+                                                             v.min(), v.max())),
+                                         step=step, format="%.6f", key=f"{key}_center")
+        half = int(columns[1].number_input("Peak Half-Width (channels)", min_value=1,
+                                           value=max(1, int(saved.get("half_width_channels", 10))),
+                                           step=1, key=f"{key}_half"))
+        order0 = saved.get("polynomial_order", 4)
+        order = columns[2].selectbox("Polynomial Order", fh.POLYNOMIAL_ORDERS,
+                                     index=fh.POLYNOMIAL_ORDERS.index(order0) if order0 in fh.POLYNOMIAL_ORDERS else 2,
+                                     format_func=lambda n: {2: "2nd", 3: "3rd", 4: "4th"}[n], key=f"{key}_order")
+        window = fh.fit_max_window(v, center, half)
+        options = {"peak_velocity_kms": center, "half_width_channels": half, "polynomial_order": order}
+        st.caption("The window is selected numerically. Half-width is in channels; "
+                   "the CLC upper endpoint is exclusive.")
+    _options(entry, options, mode)
+    request = fs.request_key(source, entry["options"])
+    if entry.get("last_attempt") != request:
+        with st.spinner("Fitting spectrum..."):
+            fit = (fh.run_gaussf(v, y, width, amp, center, unit) if mode == "1D Gaussian"
+                   else fh.run_fit_max(v, y, center, half, order, unit))
+        if fit.ok:
+            fs.save_result(entry, request, fit)
+        else:
+            fs.save_failure(entry, request, "; ".join(fit.notes))
+    current = _status(entry, request)
+    result = entry.get("result")
+    traces = [("Combined / calibrated spectrum", v, y, GRAPH3_COLORS[styles.get_theme_name()], "solid")]
+    if result:
+        curve_x = result.get("curve_x")
+        traces.append(("Model fit" if current else "Previous fit (not current)",
+                       v if curve_x is None else curve_x, result["curve"], styles.get_fit_line_color(), "dash"))
+    _chart("Graph 3 — Combined / calibrated spectrum + fit", _lines(traces, unit, window), CHART_KEYS[mode], source)
+    _result_table(result)
+    return entry, request, current
 
 
-styles.render_panel_open("Fit parameters")
-multi: Optional[dict[str, Any]] = None
-two_d: Optional[dict[str, Any]] = None
-if is_2d:
-    two_d = _render_2d_fit()
-elif is_multi:
-    if graph3 is not None:
-        multi = _render_multi_component(vlsr, graph3, g3_unit)
+def _map_fit(stage: dict) -> tuple:
+    """FR-16: seven spin boxes, button-gated CLC fit, observed heatmap and adjacent covariance."""
+    mode = "2D Gaussian"
+    raw = st.session_state.get("map_2d_data")
+    synthetic = raw is None
+    if synthetic:
+        stage.pop("map_snapshot", None)
+        stage.pop("map_signature", None)
+        st.info("Synthetic Test Map Active")
+        st.caption("Deterministic demonstration data, not an observation. "
+                   "Fitting is enabled; observation commit is not.")
+        try:
+            data = fh.synthetic_map_2d()
+        except fh.ClcLoadError as exc:
+            st.error(str(exc))
+            return None, "", False, True
     else:
-        st.caption("Waiting for Graph 3 before components can be fitted.")
-elif result is not None and result.rows:
-    param_df = pd.DataFrame(list(result.rows), columns=["Parameter", "Value", "± Error"])
-    styles.render_dataframe(param_df, hide_index=True, use_container_width=True)
-elif preserved is not None:
-    st.caption("Parameters of the previous valid fit:")
-    styles.render_dataframe(pd.DataFrame(list(preserved["rows"]), columns=["Parameter", "Value", "± Error"]),
-                            hide_index=True, use_container_width=True)
-else:
-    st.caption("No fit parameters -- the fit did not produce a result.")
-styles.render_panel_close()
-
-if two_d is not None and two_d["map"] is not None:
-    _stored = two_d["stored"]
-    _panel(
-        "2D Gaussian — observed map with fitted model contours",
-        fit_figures.map_figure(
-            two_d["map"].data, two_d["map"].x, two_d["map"].y, None if _stored is None else _stored["result"].model,
-            f"Intensity ({two_d['map'].unit})", two_d["map"].axis_unit, theme, styles.plotly_layout_theme(theme),
-            fit_color=styles.get_fit_line_color()),
-    )
-
-if multi is not None:
-    # Same shape as run_fit()'s FitResult for everything the commit code reads, plus the session-JSON block.
-    result = SimpleNamespace(
-        ok=bool(multi["params"]), fell_back=False, fit_type_used=MULTI_FIT_TYPE, fit_type_requested=MULTI_FIT_TYPE,
-        rows=[(r["parameter"], r["value"], r["error"])
-              for r in fitting_helpers.summary_rows(multi["params"], multi["uncertainties"])],
-        converged=True, notes=[], curve=multi["curve"],
-        multi_component=fitting_helpers.build_fitting_block(multi["params"], multi["uncertainties"],
-                                                            multi["covariance"], multi["stats"]),
-    )
-    _panel("Multi-component decomposition — spectrum, components, composite and residual",
-           _multi_figure(vlsr, graph3, multi["params"], g3_unit), "")
-
-# Graph 4 (right column above) is drawn here so it reflects this run's table edits
-with g4_slot:
-    fig4 = None
-    if is_2d:
-        st.info("Graph 4 is not used for 2D Gaussian fits -- see the map below.")
-    elif graph3 is not None:
-        traces4 = [("Graph 3", vlsr, graph3, graph3_color, "solid")]
-        if is_multi:
-            if multi is not None and multi["params"]:
-                traces4.append(("Composite model", vlsr, multi["curve"], styles.get_fit_line_color(), "dash"))
-        elif result is not None and result.ok:
-            traces4.append(("Fit" if not result.fell_back else f"Fit ({result.fit_type_used})",
-                            vlsr if result.curve_x is None else result.curve_x, result.curve,
-                            styles.get_fit_line_color(), "dash"))
-        elif preserved is not None:
-            traces4.append((f"Fit ({preserved['fit_type_used']}, previous valid)",
-                            vlsr if preserved["curve_x"] is None else preserved["curve_x"], preserved["curve"],
-                            styles.get_fit_line_color(), "dash"))
-        fig4 = _figure(traces4, f"Intensity ({g3_unit})", window=window)
-    if not is_2d:
-        _panel("Graph 4 — Fit of Graph 3", fig4, "Waiting for Graph 3.")
-
-
-# ---------------------------------------------------------------------
-# Commit fit to session — drives the progress bar and feeds Page 08's export/observation log. Not an explicit element
-# in the mockup; added so the pipeline has a real "stage complete" trigger rather than auto-marking on every
-# recompute (which would spam the audit log on every selector click).
-# TODO: confirm against design
-# ---------------------------------------------------------------------
-def _stage_summary() -> dict[str, Any]:
-    """Lightweight, JSON-serializable summary for pipeline_data (no full arrays -- those go in latest_fit).
-
-    ``fit_type`` is the model actually fitted (differs from ``fit_type_requested`` after a fallback); the formula,
-    PSS and pointing factor are recorded so a saved session states exactly what was fitted.
-    """
-    summary = {
-        "fit_type": result.fit_type_used,
-        "fit_type_requested": result.fit_type_requested,
-        "fitted_quantity": (
-            "Calibrated LCP + calibrated RCP + Pointing Correction"
-            if getattr(resolved, "is_calibrated", False)
-            else f"Graph 3 = {fitting_inputs.GRAPH3_FORMULA}"
-        ),
-        "parameters": [{"parameter": p, "value": v, "error": e} for p, v, e in result.rows],
-        "converged": result.converged,
-        "notes": list(result.notes),
-        "spectrum_source": source_key,
-        "intensity_unit": g3_unit,
-        "pss_jy_per_k": pss.value,
-        "pointing_correction_factor": pointing_factor,
-        "n_channels": int(vlsr.size),
-        "vlsr_range_kms": [float(vlsr.min()), float(vlsr.max())] if vlsr.size else [],
-    }
-    if fit_options_summary is not None:
-        summary["fit_options"] = fit_options_summary
-    block = getattr(result, "multi_component", None)
-    if block:
-        summary["multi_component"] = block  # restored by _restore_multi_from_session on Load Session
-    return summary
+        data = fh.coerce_map_2d(raw)
+        if data is None:
+            st.error("map_2d_data must contain finite data of shape (len(y), len(x)) and strictly monotonic x/y axes.")
+            return None, "", False, False
+    source = fs.signature(data.x, data.y, data.data,
+                          context={"mode": mode, "synthetic": synthetic,
+                                   "unit": data.unit, "axis_unit": data.axis_unit})
+    if not synthetic and stage.get("map_signature") != source:
+        stage["map_snapshot"] = fs.json_safe(data)
+        stage["map_signature"] = source
+    entry = fs.mode_state(stage, mode, source)
+    entry["synthetic"] = synthetic
+    defaults = fh.default_p0_2d(data.x, data.y, data.data)
+    saved = entry["options"].get("p0", defaults)
+    if len(saved) != 7:
+        saved = defaults
+    scope = _widget_scope(mode, source)
+    labels = ("Amplitude", "X center", "Y center", "Major axis (σ_x)", "Minor axis (σ_y)",
+              "Position angle (degrees)", "Offset")
+    values = []
+    for indices in (range(4), range(4, 7)):
+        for column, index in zip(st.columns(len(indices)), indices):
+            values.append(float(column.number_input(labels[index], value=float(saved[index]), format="%.6f",
+                                                     min_value=1e-9 if index in (3, 4) else None,
+                                                     key=f"{scope}_p{index}")))
+    st.caption("Axis widths are the backend's σ_x / σ_y, not FWHM; they are not reordered. Angle input is in degrees.")
+    _options(entry, {"p0": values}, mode)
+    request = fs.request_key(source, entry["options"])
+    if st.button("Run Fit", type="primary", key="fit_2d_run"):
+        with st.spinner("Fitting spectrum..."):
+            fit = fh.run_2d_gauss(data.x, data.y, data.data, values, data.unit, data.axis_unit)
+        if fit.ok:
+            fs.save_result(entry, request, fit)
+            session_store.log_event(f"2D Gaussian fitted — {'synthetic' if synthetic else 'observed'} map")
+        else:
+            fs.save_failure(entry, request, "; ".join(fit.notes))
+    current = _status(entry, request, heavy=True)
+    result = entry.get("result")
+    left, right = st.columns([1.4, 1])
+    with left:
+        fig = fit_figures.map_figure(data.data, data.x, data.y, None if result is None else result["model"],
+                                     f"Intensity ({data.unit})", data.axis_unit, styles.get_theme(),
+                                     styles.plotly_layout_theme(styles.get_theme()),
+                                     fit_color=styles.get_fit_line_color(), dashed_contours=True)
+        _chart("2D Gaussian — observed intensity and fitted contours", fig, CHART_KEYS[mode], source)
+    with right:
+        st.markdown("**Covariance matrix — backend angle units: radians**")
+        if result:
+            cov = np.asarray(result["pcov"], dtype=float)
+            styles.render_dataframe(pd.DataFrame(cov, index=fh.COV_LABELS_2D, columns=fh.COV_LABELS_2D),
+                                    use_container_width=True)
+            _result_table(result)
+        else:
+            st.caption("The 7 × 7 covariance matrix appears after a successful fit.")
+    return entry, request, current, synthetic
 
 
-def _json_cov(cov: np.ndarray) -> list[list[Optional[float]]]:
-    """Covariance -> JSON-safe nested lists (non-finite entries become null)."""
-    return [[float(c) if np.isfinite(c) else None for c in row] for row in np.asarray(cov, dtype=float)]
+def _multi_fit(stage: dict, v: np.ndarray, y: np.ndarray, source: str, unit: str) -> tuple:
+    """FR-17: editable components, preview-only reruns, explicit heavy fit and full covariance."""
+    mode = "Multi-Component"
+    entry = fs.mode_state(stage, mode, source)
+    saved = entry["options"]
+    scope = _widget_scope(mode, source)
+    with st.expander("Auto-Decomposition settings", expanded=True):
+        columns = st.columns(3)
+        limit = int(columns[0].number_input("max_components", min_value=1, max_value=fh.MAX_COMPONENTS,
+                                            value=int(saved.get("max_components", 10)), step=1, key=f"{scope}_limit"))
+        cutoff = float(columns[1].number_input("rms_cutoff (σ_RMS)", min_value=0.0,
+                                               value=float(saved.get("rms_cutoff", 5.0)), step=0.5,
+                                               key=f"{scope}_cutoff"))
+        threshold = float(columns[2].number_input("chi2_threshold (Δ reduced χ²)", min_value=0.0,
+                                                  value=float(saved.get("chi2_threshold", 0.01)), step=0.01,
+                                                  format="%.4f", key=f"{scope}_threshold"))
+        auto = st.checkbox("Auto-Decomposition: add components up to the stopping criteria",
+                           value=bool(saved.get("auto", True)), key=f"{scope}_auto")
+    st.caption("Checked Fixed/Free = fixed: amplitude, center and FWHM are all held constant. "
+               "Add or remove rows in the editor. Editing previews the model but does not run an optimizer.")
+    version = int(entry.get("editor_version", 0))
+    editor_key = f"{scope}_editor_{version}"
+    # A data_editor's base must stay constant while its delta state exists. On page
+    # revisit/session load that delta is gone, so rebuild the base from the saved values.
+    if editor_key not in st.session_state or "editor_base" not in entry:
+        entry["editor_base"] = copy.deepcopy(saved.get("components", []))
+    edited = st.data_editor(
+        fh.df_from_params(entry["editor_base"]), key=editor_key, num_rows="dynamic", hide_index=True,
+        use_container_width=True, disabled=[fh.COL_ID], column_config={
+            fh.COL_ID: st.column_config.TextColumn("Component ID"),
+            fh.COL_AMP: st.column_config.NumberColumn("Amplitude", help=f"Intensity in {unit}", format="%.6f"),
+            fh.COL_CENTER: st.column_config.NumberColumn("Center Velocity", help="km/s", format="%.6f"),
+            fh.COL_FWHM: st.column_config.NumberColumn("FWHM", help="km/s; must be greater than zero",
+                                                      min_value=1e-9, format="%.6f"),
+            fh.COL_LOCK: st.column_config.CheckboxColumn("Fixed/Free", default=False,
+                                                        help="Checked = fixed; unchecked = free."),
+        })
+    params, problems = fh.params_from_df(edited)
+    for message in problems:
+        st.warning(message)
+    options = {"components": params, "auto": auto, "max_components": limit,
+               "rms_cutoff": cutoff, "chi2_threshold": threshold}
+    _options(entry, options, mode)
+    request = fs.request_key(source, entry["options"])
+    run_col, clear_col, _ = st.columns([1, 1, 3])
+    run = run_col.button("Run Fit", type="primary", key="fit_multicomp_run",
+                         disabled=bool(problems) or (not auto and not params))
+    if clear_col.button("Clear components", key="fit_multicomp_clear"):
+        entry["options"]["components"] = []
+        entry["editor_base"] = []
+        entry["editor_version"] = version + 1
+        entry.pop("result", None)
+        session_store.log_event("Multi-Component table cleared")
+        fs.invalidate_commit(st.session_state, stage, "cleared")
+        st.rerun()
+    if run:
+        try:
+            with st.spinner("Fitting spectrum..."):
+                if auto:
+                    output = fh.run_auto_decomposition(v, y, limit, cutoff, threshold, params=params)
+                else:
+                    if all(p["fixed"] for p in params):
+                        fitted, errors = copy.deepcopy(params), [None] * len(params)
+                        covariance = np.zeros((3 * len(params), 3 * len(params))).tolist()
+                    else:
+                        fitted, errors, covariance = fh.refit_free(v, y, params)
+                    output = {"params": fitted, "uncertainties": errors, "covariance": covariance,
+                              "statistics": fh.compute_stats(v, y, fitted), "history": [],
+                              "sigma_rms": fh.estimate_noise(y), "stop_reason": "Manual component fit"}
+            fitted = output["params"]
+            estimable = bool(np.all(np.isfinite(np.asarray(output["covariance"], dtype=float))))
+            output.update(ok=bool(fitted), converged=estimable, curve=fh.composite(v, fitted),
+                          rows=[[r["parameter"], r["value"], r["error"]]
+                                for r in fh.summary_rows(fitted, output["uncertainties"])],
+                          notes=[output["stop_reason"]] + ([] if estimable else ["Covariance could not be estimated."]))
+            # Replace the editor only after success. Store the final displayed controls as
+            # the cache key, and keep the actual starting guesses as provenance.
+            output["initial_options"] = copy.deepcopy(entry["options"])
+            entry["options"]["components"] = fitted
+            entry["editor_base"] = fitted
+            entry["editor_version"] = version + 1
+            fs.save_result(entry, fs.request_key(source, entry["options"]), output)
+            session_store.log_event(f"Multi-Component fit — {len(fitted)} components; {output['stop_reason']}")
+            st.rerun()
+        except (fh.DecompositionError, fh.FitError, ImportError, ValueError) as exc:
+            fs.save_failure(entry, request, str(exc))
+    current = _status(entry, request, heavy=True) and not problems
+    fig = fit_figures.multi_figure(v, y, params, unit, styles.get_theme(),
+                                   styles.plotly_layout_theme(styles.get_theme()),
+                                   data_color=GRAPH3_COLORS[styles.get_theme_name()],
+                                   fit_color=styles.get_fit_line_color())
+    _chart("Graph 3 — decomposition and residual" + (" (preview)" if not current else ""),
+           fig, CHART_KEYS[mode], source)
+    if current:
+        result = entry["result"]
+        _result_table(result)
+        stats = result["statistics"]
+        st.caption(f"RMS residual = {stats['rms_residual']:.6g} {unit} · σ_RMS = {result['sigma_rms']:.6g} {unit}")
+        with st.expander("Full 3N × 3N covariance matrix"):
+            labels = [f"{p['id']} {name}" for p in params for name in ("Amplitude", "Center Velocity", "FWHM")]
+            styles.render_dataframe(pd.DataFrame(result["covariance"], index=labels, columns=labels),
+                                    use_container_width=True)
+            st.caption("Ordering: amplitude, center, FWHM per component. Fixed rows/columns are zero; "
+                       "unknown covariance is null in JSON, not zero.")
+    return entry, request, current
 
 
-def _commit_2d(state: dict[str, Any]) -> None:
-    """Save a 2D Gaussian fit: stage summary, audit entry, checkpoint. It has no spectrum curve, so no latest_fit."""
-    stored = state["stored"]
-    fit = stored["result"]
-    summary = {
-        "fit_type": FIT_2D_TYPE, "fit_type_requested": FIT_2D_TYPE,
-        "fitted_quantity": f"2D spatial map (st.session_state.{MAP_STATE_KEY})",
-        "parameters": [{"parameter": p, "value": v, "error": e} for p, v, e in fit.rows],
-        "covariance": _json_cov(fit.pcov), "covariance_parameters": list(fitting_helpers.COV_LABELS_2D),
-        "converged": fit.converged, "notes": list(fit.notes),
-        "fit_options": {"initial_guess": list(stored["p0"]), "position_angle_unit": "degrees"},
-        "map_shape": [int(n) for n in state["map"].data.shape],
-    }
-    st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = summary
-    # A 2D fit has no curve on the velocity axis; drop any earlier spectral overlay so Page 08 cannot show an older
-    # fit as if it belonged to this commit.
-    st.session_state.pop("latest_fit", None)
+def _commit(stage: dict, entry: dict, request: str, mode: str, v: np.ndarray,
+            source_key: str, unit: str) -> None:
+    """Commit the current successful fit, maintain Page 08 compatibility and checkpoint FR-19 state."""
+    result = entry["result"]
+    stage.update(committed_request=request, fit_type=mode, fit_type_requested=mode,
+                 fit_options=copy.deepcopy(entry["options"]),
+                 parameters=[dict(zip(("parameter", "value", "error"), row)) for row in result.get("rows", [])],
+                 converged=result.get("converged", False), notes=result.get("notes", []),
+                 intensity_unit=unit, spectrum_source=source_key)
+    if mode == "2D Gaussian":
+        stage["fitted_quantity"] = "Observed 2D spatial map"
+        for key in ("pss_jy_per_k", "pointing_correction_factor", "n_channels", "vlsr_range_kms"):
+            stage.pop(key, None)
+        stage["covariance"] = result["pcov"]
+        stage["covariance_parameters"] = list(fh.COV_LABELS_2D)
+        st.session_state.pop("latest_fit", None)
+    else:
+        curve = fh.align_curve(v, result["curve"], result.get("curve_x"))
+        st.session_state["latest_fit"] = {
+            "fit_type": mode, "spectrum_source": source_key, "intensity_unit": unit,
+            "vlsr": v.tolist(), "fit_curve": fs.json_safe(curve), "input_signature": entry["input_signature"]}
+    stage.pop("multi_component", None)
+    if mode == "Multi-Component":
+        stage["multi_component"] = fh.build_fitting_block(result["params"], result["uncertainties"],
+                                                          result["covariance"], result["statistics"])
     session_store.mark_stage_complete(THIS_STAGE_KEY)
-    session_store.log_event(f"Spectral fit committed — {FIT_2D_TYPE} fitted to the {summary['map_shape'][0]} x "
-                            f"{summary['map_shape'][1]} map")
+    session_store.log_event(f"Spectral fit committed — {mode}")
     session_store.checkpoint_session("Spectral fit committed")
     if not st.session_state.get("checkpoint_error"):
         st.success("Fit saved to session and checkpointed.")
 
 
-if is_2d:
-    # a synthetic test map is development-only data: refuse to save it (same policy as the placeholder spectrum)
-    can_save = bool(two_d and two_d["map"] is not None and not two_d["synthetic"] and two_d["stored"] is not None)
-else:
-    can_save = result is not None and result.ok and graph3_ready
-save_col, next_col, _ = st.columns([1, 1.4, 3])
-with save_col:
-    save_clicked = st.button("Save fit to session", type="secondary", disabled=not can_save, use_container_width=True)
-with next_col:
-    # "Do this next" action -> primary (style guide §4). Enabled even without a saved fit so the pipeline can proceed.
-    next_clicked = st.button("Continue to Export & Session →", type="primary", use_container_width=True,
-                             key="fitting_next_btn")
+def main() -> None:
+    """Render Stage 7; a missing 1D spectrum never prevents the independent 2D test-map workflow."""
+    st.set_page_config(page_title="HARTSPEC — Spectral Fitting", layout="wide")
+    session_store.init_session_state()
+    render_sidebar(CURRENT_STAGE)
+    styles.inject_base_css()
+    styles.render_page_header("Spectral Fitting", "Gaussian / polynomial / multi-component fits",
+                               CURRENT_STAGE, session_store.completed_before(CURRENT_STAGE))
+    stage = fs.ensure_stage(st.session_state.pipeline_data)
+    if st.session_state.get("fit_type") == "Multi-component":
+        st.session_state["fit_type"] = "Multi-Component"
+    st.session_state.setdefault("fit_type", stage["fit_type_requested"])
+    if st.session_state["fit_type"] not in FIT_TYPES:
+        st.session_state["fit_type"] = FIT_TYPES[0]
+    st.markdown('<div class="hs-eyebrow">FIT TYPE</div>', unsafe_allow_html=True)
+    mode = st.radio("Fit type", FIT_TYPES, horizontal=True, label_visibility="collapsed", key="fit_type")
+    if stage["fit_type_requested"] != mode:
+        session_store.log_event(f"Fit type changed — {mode}")
+    stage.update(fit_type=mode, fit_type_requested=mode)
 
-if save_clicked and is_2d:
-    _commit_2d(two_d)
-elif save_clicked:
-    summary = _stage_summary()
-    st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = summary
-    if summary.get("multi_component"):
-        # remember it so the page doesn't "restore" its own save (key is under the existing spectral_fitting_ namespace)
-        st.session_state["spectral_fitting_multi_comp_saved_block"] = summary["multi_component"]
-    # Full curves live in session_state directly (not pipeline_data) for Page 08's overlay/export -- the same
-    # "summaries in pipeline_data, arrays in session_state" split as Pages 02/03/04. `spectrum_source` encodes
-    # spectrum + PSS + pointing correction, so Page 08 refuses an overlay computed on different inputs.
-    st.session_state["latest_fit"] = {
-        "fit_type": result.fit_type_used,
-        "spectrum_source": source_key,
-        "intensity_unit": g3_unit,
-        "vlsr": vlsr.tolist(),
-        # Page 08 plots/exports this channel-for-channel, so a window fit's curve is resampled onto the full axis
-        "fit_curve": _json_curve(fitting_helpers.align_curve(vlsr, result.curve, getattr(result, "curve_x", None))),
-    }
-    session_store.mark_stage_complete(THIS_STAGE_KEY)
-    session_store.log_event(
-        f"Spectral fit committed — {result.fit_type_used} fitted to Graph 3 "
-        f"(PSS {pss.value:.4f}, pointing correction {pointing_factor:.4f}, {resolved.source_key} spectrum)"
-    )
-    session_store.checkpoint_session("Spectral fit committed")
-    if not st.session_state.get("checkpoint_error"):
-        st.success("Fit saved to session and checkpointed.")
+    resolved = spectrum_resolution.resolve_spectrum(st.session_state, read_bridge=baseline_editor_bridge.read_bridge,
+                                                    fingerprint=baseline_editor_bridge.spectrum_fingerprint)
+    v, lcp, rcp = resolved.vlsr, resolved.channels["LCP"], resolved.channels["RCP"]
+    st.caption(f"Spectrum source: {resolved.source_label}")
+    for note in resolved.notes:
+        st.warning(note)
+    if resolved.is_placeholder:
+        st.info("Graphs 1 and 2 contain placeholder spectra. Load/reduce observations for spectral fitting.")
+    source = fs.signature(v, lcp, rcp, context=resolved.source_key)
+    left, right = st.columns(2)
+    with left:
+        _chart("Graph 1 — LCP", _lines([("LCP", v, lcp, "#1F77B4", "solid")], resolved.intensity_unit),
+               "chart_fit_lcp", source)
+    with right:
+        _chart("Graph 2 — RCP", _lines([("RCP", v, rcp, "#FF7F0E", "solid")], resolved.intensity_unit),
+               "chart_fit_rcp", source)
+    with st.expander("Polarization pair average"):
+        average, mean = fitting_inputs.pair_average(lcp, rcp)
+        average_trace = ("Pair average", v, average, GRAPH3_COLORS[styles.get_theme_name()], "solid")
+        _chart("(LCP + RCP) / 2", _lines([average_trace], resolved.intensity_unit, hline=mean),
+               "chart_fit_average", source)
+    entry, request, current, synthetic = None, "", False, False
+    unit, export_source = fitting_inputs.GRAPH3_UNIT, ""
+    if mode == "2D Gaussian":
+        entry, request, current, synthetic = _map_fit(stage)
+        unit = str(stage.get("map_snapshot", {}).get("unit", "map units"))
+    else:
+        pss = fitting_inputs.pss_from_pipeline(st.session_state.pipeline_data)
+        pointing = fitting_inputs.pointing_factor_from_pipeline(st.session_state.pipeline_data)
+        blockers = []
+        if resolved.is_placeholder:
+            blockers.append("an observed spectrum")
+        elif not resolved.is_calibrated and resolved.source_key != spectrum_resolution.SOURCE_BASELINE:
+            blockers.append("the baseline-flattened spectrum from Stage 04")
+        if pss is None:
+            blockers.append("PSS calibration from Stage 05")
+        if pointing is None:
+            blockers.append("pointing correction from Stage 06")
+        if blockers:
+            st.warning("Graph 3 needs " + "; ".join(blockers) + ".")
+        else:
+            # Preserve the established owner's formula. Never apply PSS twice to Stage 05 output.
+            # TODO: confirm against design — see build spec §3: the pre-existing formula adds the pc factor.
+            graph3 = (lcp + rcp + pointing if resolved.is_calibrated
+                      else fitting_inputs.graph3(lcp, rcp, pss.value, pointing))
+            export_source = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing)
+            stage.update(pss_jy_per_k=pss.value, pointing_correction_factor=pointing,
+                         fitted_quantity=("Calibrated LCP + calibrated RCP + Pointing Correction"
+                                          if resolved.is_calibrated else fitting_inputs.GRAPH3_FORMULA),
+                         n_channels=int(v.size), vlsr_range_kms=[float(v.min()), float(v.max())])
+            source = fs.signature(v, graph3, context={"mode": mode, "source": resolved.source_key,
+                                                      "pss": pss.value, "pc": pointing, "unit": unit})
+            if v.size < 3 or not np.all(np.isfinite(v)) or not np.all(np.isfinite(graph3)) or v.max() <= v.min():
+                st.error("Fitting needs at least three finite channels and a nonzero velocity range.")
+            elif not (np.all(np.diff(v) > 0) or np.all(np.diff(v) < 0)):
+                st.error("The velocity axis must be strictly monotonic; fix duplicate/unsorted channels upstream.")
+            else:
+                st.caption(f"Graph 3 uses PSS = {pss.value:.6g} Jy/K and the existing additive pointing term "
+                           f"{pointing:.6g}; no additional baseline offset is fitted.")
+                if mode == "Multi-Component":
+                    entry, request, current = _multi_fit(stage, v, graph3, source, unit)
+                else:
+                    entry, request, current = _light_fit(stage, mode, v, graph3, source, unit)
+    fs.invalidate_commit(st.session_state, stage, request)
+    save_col, next_col, _ = st.columns([1, 1.5, 2])
+    if save_col.button("Save fit to session", disabled=not current or synthetic,
+                       key="fit_save", use_container_width=True):
+        _commit(stage, entry, request, mode, v, export_source, unit)
+    if next_col.button("Continue to Export & Session →", type="primary", key="fitting_next_btn",
+                       use_container_width=True):
+        st.switch_page(NEXT_PAGE)
 
-if next_clicked:
-    st.switch_page(NEXT_PAGE)
+
+main()
