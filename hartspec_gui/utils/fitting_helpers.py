@@ -3,19 +3,9 @@
 #
 # Pure Python (no Streamlit import) so every function is unit-testable. clc/Spec_comp.py is NEVER modified (CON-01).
 #
-# Facts about clc/Spec_comp.py that shape this module (verified against the file itself, not the written spec):
-#   * Signature is Spec_comp(Vlsr, Amp, half_width); half_width is accepted but never used inside the function.
-#   * It performs exactly THREE sequential subtract-and-fit Gaussian fits via specutils.fit_lines (astropy fitter).
-#   * It RETURNS NOTHING (results are local variables), has no termination options, no covariance and no locking, and
-#     it calls plt.* / print. The file also has no import statements of its own.
-# Consequences:
-#   * run_spec_comp() temporarily supplies the missing names, swaps plt for a no-op and wraps fit_lines with a recorder
-#     so each fitted Gaussian is captured exactly as Spec_comp computed it. Module globals are restored afterwards.
-#   * Termination criteria are applied to that sequence. Each Spec_comp fit works on the residual left by the previous
-#     ones, so stopping after k components gives exactly the first k components -- stopping early is equivalent.
-#     max_components > 3 therefore cannot add components (Spec_comp stops at 3).
-#   * Spec_comp gives no uncertainties. Uncertainties and parameter locking come from refit_free(), a scipy
-#     curve_fit refit of the user's table that is clearly separate from Spec_comp's numbers.
+# Spec_comp.py fits exactly three sequential Gaussians and returns None. The recorder below exposes its
+# unmodified results. run_auto_decomposition repeatedly requests its first residual component, then performs
+# an explicitly separate joint refit for covariance/locking. It is NOT presented as the original CLI output.
 from __future__ import annotations
 
 import ast
@@ -42,12 +32,13 @@ FWHM_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 MAX_COMPONENTS = 20
 SPEC_COMP_MAX_COMPONENTS = 3  # Spec_comp.py hard-codes three sequential fits
 
-COL_ID = "Component"
+COL_ID = "Component ID"
 COL_AMP = "Amplitude"
-COL_CENTER = "Center Vlsr (km/s)"
-COL_FWHM = "FWHM (km/s)"
-COL_LOCK = "Lock"
+COL_CENTER = "Center Velocity"
+COL_FWHM = "FWHM"
+COL_LOCK = "Fixed/Free"
 TABLE_COLUMNS = [COL_ID, COL_AMP, COL_CENTER, COL_FWHM, COL_LOCK]
+FIT_TYPES = ("1D Gaussian", "Polynomial Peak", "2D Gaussian", "Multi-Component")
 
 Params = list[dict[str, Any]]  # [{"id": "Comp 1", "amplitude": .., "center": .., "fwhm": .., "fixed": bool}, ...]
 
@@ -90,13 +81,15 @@ def estimate_noise(y: np.ndarray) -> float:
     For white noise sigma, var(y[i+1] - 2 y[i] + y[i-1]) = 6 sigma^2. First differences were tried and read 20-30 %
     high because steep line wings leak into them.
 
-    # TODO: confirm against design -- the written spec does not say how sigma_RMS is measured; replace with the
-    # pipeline's own noise estimate if one exists.
+    This is the specified Stage 7 estimator, not the RMS of a signal-contaminated spectrum.
     """
     y = np.asarray(y, dtype=float)
     if y.size < 3:
         return float("nan")
     d2 = y[2:] - 2.0 * y[1:-1] + y[:-2]
+    d2 = d2[np.isfinite(d2)]
+    if not d2.size:
+        return float("nan")
     mad = np.median(np.abs(d2 - np.median(d2)))
     return float(1.4826 * mad / math.sqrt(6.0))
 
@@ -125,13 +118,27 @@ class _NullPlt:
         return lambda *args, **kwargs: None
 
 
-def _patch_spec_comp_namespace(module: ModuleType, recorded: list[Any]) -> dict[str, tuple[bool, Any]]:
+class _StopSpecComp(Exception):
+    """Internal control flow: stop after an already-recorded legacy component."""
+
+
+def _patch_spec_comp_namespace(module: ModuleType, recorded: list[Any], max_fits: Optional[int] = None
+                               ) -> dict[str, tuple[bool, Any]]:
     """Give Spec_comp the names it uses but never imports; record every fit_lines result. Returns restore info."""
-    names = ("np", "u", "models", "Spectrum1D", "fit_lines", "plt")
+    names = ("np", "u", "models", "Spectrum1D", "fit_lines", "plt", "print")
     saved = {n: (n in vars(module), vars(module).get(n)) for n in names}
     ns = vars(module)
     try:
-        ns.setdefault("np", np)
+        # Spec_comp calls np.random.seed(0). Give it a private random generator so one
+        # browser session cannot reset NumPy's global RNG for unrelated work.
+        base_np = ns.get("np", np)
+        class LocalNumpy:
+            random = np.random.RandomState(0)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(base_np, name)
+
+        ns["np"] = LocalNumpy()
         if "u" not in ns or "models" not in ns:
             from astropy import units as u
             from astropy.modeling import models
@@ -151,10 +158,13 @@ def _patch_spec_comp_namespace(module: ModuleType, recorded: list[Any]) -> dict[
     def recording_fit_lines(*args: Any, **kwargs: Any) -> Any:
         model = real_fit_lines(*args, **kwargs)
         recorded.append(model)
+        if max_fits is not None and len(recorded) >= max_fits:
+            raise _StopSpecComp
         return model
 
     ns["fit_lines"] = recording_fit_lines
     ns["plt"] = _NullPlt()
+    ns["print"] = lambda *args, **kwargs: None
     return saved
 
 
@@ -181,13 +191,14 @@ def _model_to_component(model: Any) -> dict[str, float]:
 
 
 def run_spec_comp(vlsr: np.ndarray, amp: np.ndarray, half_width: float = 1.0,
-                  module: Optional[ModuleType] = None) -> Params:
+                  module: Optional[ModuleType] = None, *, max_fits: Optional[int] = None) -> Params:
     """Run clc/Spec_comp.py unmodified and return its sequential Gaussian fits as a params list (all unlocked).
 
     Args:
         vlsr: velocity axis (km/s). amp: intensity (K or Jy).
         half_width: forwarded to Spec_comp, which currently ignores it.
         module: override for tests; defaults to ``clc.Spec_comp``.
+        max_fits: optional early-stop count (1-3); None retains exact legacy three-fit behaviour.
     Raises:
         DecompositionError: bad input, missing dependency, or any exception raised inside Spec_comp.
     """
@@ -203,11 +214,15 @@ def run_spec_comp(vlsr: np.ndarray, amp: np.ndarray, half_width: float = 1.0,
     except (ImportError, AttributeError) as exc:
         raise DecompositionError(f"clc/Spec_comp.py could not be loaded: {exc}") from exc
 
+    if max_fits is not None and max_fits not in (1, 2, 3):
+        raise DecompositionError("max_fits must be 1, 2, 3 or None.")
     recorded: list[Any] = []
     with _SPEC_COMP_LOCK:
-        saved = _patch_spec_comp_namespace(mod, recorded)
+        saved = _patch_spec_comp_namespace(mod, recorded, max_fits)
         try:
             func(v.copy(), y.copy(), half_width)
+        except _StopSpecComp:
+            pass
         except Exception as exc:  # any failure inside the legacy module must not crash the server
             raise DecompositionError(f"Spec_comp.py raised {type(exc).__name__}: {exc}") from exc
         finally:
@@ -257,13 +272,22 @@ def refit_free(v: np.ndarray, y: np.ndarray, params: Params) -> tuple[Params, li
     locked components or when curve_fit cannot estimate them; covariance rows/cols of locked parameters are 0.
     Raises FitError on non-convergence, singular matrices or an infeasible starting table.
     """
-    v = np.asarray(v, dtype=float)
-    y = np.asarray(y, dtype=float)
+    try:
+        v, y = _spectrum_arrays(v, y, 4)
+    except (TypeError, ValueError) as exc:
+        raise FitError(str(exc)) from exc
     if not params:
         raise FitError("There are no components to fit.")
+    if len(params) > MAX_COMPONENTS:
+        raise FitError(f"At most {MAX_COMPONENTS} components are supported.")
+    for p in params:
+        if not all(np.isfinite(p[k]) for k in ("amplitude", "center", "fwhm")) or p["fwhm"] <= 0:
+            raise FitError("Components need finite values and strictly positive FWHM.")
     free = [i for i, p in enumerate(params) if not p["fixed"]]
     if not free:
         raise FitError("All components are locked -- unlock at least one to refit.")
+    if v.size <= 3 * len(free):
+        raise FitError("There must be more data channels than free fit parameters.")
     fixed_curve = composite(v, [p for p in params if p["fixed"]])
 
     def model(x: np.ndarray, *theta: float) -> np.ndarray:
@@ -294,8 +318,9 @@ def refit_free(v: np.ndarray, y: np.ndarray, params: Params) -> tuple[Params, li
         if errs is not None:
             uncertainties[i] = {"amplitude_err": float(errs[3 * j]), "center_err": float(errs[3 * j + 1]),
                                 "fwhm_err": float(errs[3 * j + 2])}
-            for k, i2 in enumerate(free):
-                covariance[3 * i:3 * i + 3, 3 * i2:3 * i2 + 3] = pcov[3 * j:3 * j + 3, 3 * k:3 * k + 3]
+        for k, i2 in enumerate(free):
+            # Unknown covariance is NaN/inf (serialized as null), never a false zero uncertainty.
+            covariance[3 * i:3 * i + 3, 3 * i2:3 * i2 + 3] = pcov[3 * j:3 * j + 3, 3 * k:3 * k + 3]
     return new_params, uncertainties, covariance.tolist()
 
 
@@ -321,7 +346,7 @@ def params_from_df(df: pd.DataFrame) -> tuple[Params, list[str]]:
     for n, (_, row) in enumerate(df.iterrows(), start=1):
         try:
             amp, cen, fwhm = float(row[COL_AMP]), float(row[COL_CENTER]), float(row[COL_FWHM])
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             problems.append(f"Row {n} is incomplete and is ignored until filled in.")
             continue
         if not all(np.isfinite([amp, cen, fwhm])):
@@ -331,9 +356,9 @@ def params_from_df(df: pd.DataFrame) -> tuple[Params, list[str]]:
         elif len(params) >= MAX_COMPONENTS:
             problems.append(f"Row {n}: at most {MAX_COMPONENTS} components are supported -- row ignored.")
         else:
-            lock = row[COL_LOCK]
+            lock = row.get(COL_LOCK, False)
             params.append({"id": "", "amplitude": amp, "center": cen, "fwhm": fwhm,
-                           "fixed": bool(lock) if lock is not None and lock == lock else False})
+                           "fixed": bool(lock) if not pd.isna(lock) else False})
     return renumber(params), problems
 
 
@@ -402,22 +427,29 @@ def summary_rows(params: Params, uncertainties: Optional[list]) -> list[dict[str
 
 
 # ---------------------------------------------------------------------
-# Persistent-JSON mapping: pipeline_data["07_spectral_fitting"]["multi_component"]  <->  stages.fitting
+# Persistent-JSON mapping: pipeline_data["07_spectral_fitting"] <-> stages.fitting (all four modes)
 # (called by utils/session_store.py; kept here so it is testable without Streamlit)
 # ---------------------------------------------------------------------
 FITTING_STAGE_KEY = "07_spectral_fitting"
 
 
 def stages_from_pipeline(pipeline_data: Mapping[str, Any]) -> dict[str, Any]:
-    """Derive the JSON ``stages`` object from live pipeline_data: ``{"fitting": <block>}`` or ``{}``.
-
-    Derived on every write, so switching to another fit type (whose summary has no multi_component block) drops
-    ``stages.fitting`` instead of leaving a stale one behind.
-    """
+    """Serialize every active Stage 7 mode under stages.fitting; retain legacy multi saves."""
     stage = pipeline_data.get(FITTING_STAGE_KEY) if isinstance(pipeline_data, Mapping) else None
-    block = stage.get("multi_component") if isinstance(stage, Mapping) else None
+    if not isinstance(stage, Mapping):
+        return {}
+    if isinstance(stage.get("modes"), dict):
+        mode = stage.get("fit_type_requested", stage.get("fit_type", FIT_TYPES[0]))
+        entry = stage["modes"].get(mode, {})
+        kinds = dict(zip(FIT_TYPES, ("gaussian_1d", "polynomial_peak", "gaussian_2d", "multi_component")))
+        return {"fitting": {"type": kinds.get(mode, mode), "params": entry.get("options", {}),
+                            "state": dict(stage)}}
+    block = stage.get("multi_component")
     if isinstance(block, dict) and block.get("type") == "multi_component":
         return {"fitting": block}
+    if stage.get("fit_options") is not None or stage.get("parameters") is not None:
+        return {"fitting": {"type": stage.get("fit_type"), "params": stage.get("fit_options", {}),
+                            "state": dict(stage)}}
     return {}
 
 
@@ -434,10 +466,14 @@ def validate_stages(stages: Any) -> None:
 def merge_stages_into_pipeline(pipeline_data: dict[str, Any], stages: Any) -> dict[str, Any]:
     """Put ``stages.fitting`` back where Page 07 reads it (in place). ``stages.fitting`` wins over a stale copy.
 
-    If the file holds only ``stages.fitting`` (no Page 07 summary), a minimal summary is created so the Fit type
-    control is seeded as Multi-component.
+    New envelopes restore the complete per-mode state. Legacy multi-component-only envelopes
+    still create a minimal summary so their controls can be replayed.
     """
     fitting = stages.get("fitting") if isinstance(stages, dict) else None
+    if isinstance(fitting, dict) and isinstance(fitting.get("state"), dict):
+        import copy
+        pipeline_data[FITTING_STAGE_KEY] = copy.deepcopy(fitting["state"])
+        return pipeline_data
     if not isinstance(fitting, dict) or fitting.get("type") != "multi_component":
         return pipeline_data
     stage = pipeline_data.get(FITTING_STAGE_KEY)
@@ -458,13 +494,10 @@ def merge_stages_into_pipeline(pipeline_data: dict[str, Any], stages: Any) -> di
 #     columns 'Vlsr' and 'ave_pol' (its docstring says 'Amp'); the window is range(chan - hw, chan + hw), i.e. the
 #     upper end is exclusive and a window running off the start would silently wrap; it returns
 #     (chans, peak amplitude, fit_x, fit) with the curve sampled at 50 points; it prints to stdout.
-#   * 2D_Gauss_fit.py is a DEMO SCRIPT: importing it runs a fit, saves 2D_Gauss.pdf and calls plt.show(). Only its
-#     ``twoD_Gaussian`` function is needed, so it is read out of the source with ``ast`` and executed alone.
-#     TODO: confirm against design -- guarding the demo with ``if __name__ == "__main__":`` would let it be imported
-#     normally (a Phase 0-style mechanical change; not made here).
+#   * 2D_Gauss_fit.py's demo is now guarded by __main__. Normal imports use the real function.
+#     The source-path extractor remains for backwards compatibility with older test callers.
 # ---------------------------------------------------------------------
 POLYNOMIAL_ORDERS = (2, 3, 4)  # FR-15 selector: 2nd to 4th order
-# TODO: confirm against design -- the spec gives no default half-width (in channels) for the polynomial window.
 DEFAULT_HALF_WIDTH_CHANNELS = 10
 PARAM_NAMES_2D = ("Amplitude", "X center", "Y center", "Major axis (σ_x)", "Minor axis (σ_y)", "Position angle",
                   "Offset")
@@ -586,7 +619,9 @@ def run_gaussf(vlsr: Any, intensity: Any, hpbw: float, amp_guess: float, center_
         ("Center (Vlsr)", _fmt(popt[1], "km/s"), _fmt_err(perr[1], "km/s")),
         ("FWHM (HPBW)", _fmt(hpbw, "km/s"), "fixed"),
     )
-    return FitResult(name, name, np.asarray(model(v, *popt), dtype=float), rows, tuple(notes), converged)
+    return FitResult(name, name, np.asarray(model(v, *popt), dtype=float), rows, tuple(notes), converged,
+                     parameters={"amplitude": float(popt[0]), "center": float(popt[1]), "hpbw": float(hpbw)},
+                     covariance=np.asarray(pcov, dtype=float))
 
 
 def fit_max_window(vlsr: Any, peak_vel: float, half_width: int) -> Optional[tuple[float, float]]:
@@ -650,7 +685,9 @@ def run_fit_max(vlsr: Any, intensity: Any, peak_vel: float, half_width: int, ord
              "of the fitted curve inside the window."]
     if peak_index in (0, fit.size - 1):
         notes.append("The polynomial peak sits on the edge of the window; recentre or widen the window.")
-    return FitResult(name, name, fit, rows, tuple(notes), True, curve_x=fit_x)
+    return FitResult(name, name, fit, rows, tuple(notes), True, curve_x=fit_x,
+                     parameters={"peak_amplitude": float(peak_amp), "peak_velocity": float(fit_x[peak_index]),
+                                 "polynomial_order": int(order)})
 
 
 def align_curve(vlsr: Any, curve: Any, curve_x: Any = None) -> np.ndarray:
@@ -716,6 +753,8 @@ def coerce_map_2d(raw: Any) -> Optional[MapData]:
         return None
     if not (np.all(np.isfinite(data)) and np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
         return None
+    if not all(np.all(np.diff(a) > 0) or np.all(np.diff(a) < 0) for a in (x, y)):
+        return None
     return MapData(data, x, y, str(raw.get("unit", "map units")), str(raw.get("axis_unit", "map units")))
 
 
@@ -746,8 +785,7 @@ def twoD_gaussian_model(source_path: Optional[str] = None) -> Callable:
     try:
         path = source_path
         if path is None:
-            spec = importlib.util.find_spec("clc.2D_Gauss_fit")  # locates the file without executing it
-            path = None if spec is None else spec.origin
+            return importlib.import_module("clc.2D_Gauss_fit").twoD_Gaussian
         if not path:
             raise ClcLoadError("clc/2D_Gauss_fit.py was not found.")
         return _extract_twoD_gaussian(str(path))
@@ -756,11 +794,7 @@ def twoD_gaussian_model(source_path: Optional[str] = None) -> Callable:
 
 
 def synthetic_map_2d(model: Optional[Callable] = None, source_path: Optional[str] = None) -> MapData:
-    """Deterministic 41 x 41 test map (development only -- callers must refuse to save it).
-
-    TODO: confirm against design -- the spec says to synthesise this from the Stage 6 compass measurements; that
-    session structure has not been provided, so the map is generated from SYNTHETIC_TRUTH_2D instead.
-    """
+    """Deterministic 41 x 41 test map, explicitly labelled synthetic and never an observation result."""
     model = model or twoD_gaussian_model(source_path)
     axis = np.linspace(-10.0, 10.0, 41)
     xx, yy = np.meshgrid(axis, axis)
@@ -804,6 +838,8 @@ def run_2d_gauss(x_axis: Any, y_axis: Any, data: Any, p0_ui: Any, unit: str = "m
             popt, pcov = curve_fit(gauss2d, (xx, yy), z.ravel(), p0=p0_clc)
     except (RuntimeError, ValueError, np.linalg.LinAlgError) as exc:
         return _failed_2d(f"2D Gaussian fit did not converge ({exc}). Try different starting values.")
+    if not np.all(np.isfinite(popt)):
+        return _failed_2d("The optimizer returned non-finite parameters.")
     pcov = np.asarray(pcov, dtype=float)
     converged = bool(np.all(np.isfinite(pcov)))
     perr = np.sqrt(np.abs(np.diag(pcov)))
@@ -825,3 +861,93 @@ def covariance_dataframe(result: Fit2DResult) -> pd.DataFrame:
         return pd.DataFrame(columns=list(COV_LABELS_2D))
     cov = np.where(np.isfinite(result.pcov), result.pcov, np.nan)
     return pd.DataFrame(cov, index=list(COV_LABELS_2D), columns=list(COV_LABELS_2D))
+
+
+# ---------------------------------------------------------------------
+# FR-17 orchestration (explicit Run Fit only; never called during chart rendering)
+# ---------------------------------------------------------------------
+def run_auto_decomposition(v: Any, y: Any, max_components: int = 10, rms_cutoff: float = 5.0,
+                           chi2_threshold: float = 0.01, params: Optional[Params] = None,
+                           seed_runner: Optional[Callable] = None) -> dict[str, Any]:
+    """Grow a locked/free model using CLC residual seeds, with a joint covariance refit.
+
+    Each seed is the first Gaussian fitted by unmodified Spec_comp.py on the current
+    residual. Repeating that call removes the CLI's hard-coded three-component cap.
+    Joint curve_fit refinement is a separate GUI operation, not a claim of CLI parity.
+    A candidate must reduce reduced chi-square by at least chi2_threshold. Noise is
+    estimated once from the observed spectrum, not repeatedly from the residual.
+    """
+    try:
+        v, y = _spectrum_arrays(v, y, 10)
+    except (TypeError, ValueError) as exc:
+        raise DecompositionError(str(exc)) from exc
+    if (isinstance(max_components, bool) or int(max_components) != max_components
+            or not 1 <= max_components <= MAX_COMPONENTS):
+        raise DecompositionError(f"max_components must be an integer from 1 to {MAX_COMPONENTS}.")
+    if not np.all(np.isfinite([rms_cutoff, chi2_threshold])) or min(rms_cutoff, chi2_threshold) < 0:
+        raise DecompositionError("Termination thresholds must be finite and non-negative.")
+    kept = [dict(p) for p in (params or [])]
+    if len(kept) > max_components:
+        raise DecompositionError("The table already exceeds max_components; remove rows or increase the limit.")
+    uncs, cov = [None] * len(kept), np.zeros((3 * len(kept), 3 * len(kept))).tolist()
+    if kept and any(not p["fixed"] for p in kept):
+        kept, uncs, cov = refit_free(v, y, kept)
+    sigma = estimate_noise(y)
+    if not np.isfinite(sigma):
+        raise DecompositionError("Noise could not be estimated from this spectrum.")
+    floor = np.finfo(float).eps * max(1.0, float(np.max(np.abs(y)))) * 100
+    noise = max(sigma, floor)
+
+    def score(components: Params) -> float:
+        """Reduced chi-square using one fixed observed-noise scale throughout the search."""
+        dof = v.size - 3 * sum(not p["fixed"] for p in components)
+        if dof <= 0:
+            raise FitError("Too many free parameters for this spectrum.")
+        return float(np.sum(((y - composite(v, components)) / noise) ** 2) / dof)
+
+    history = []
+    previous = score(kept)
+    reason = f"stopped at max_components = {max_components}"
+    runner = seed_runner or run_spec_comp
+    while len(kept) < max_components:
+        residual = y - composite(v, kept)
+        peak = float(np.max(residual))
+        if peak <= max(rms_cutoff * noise, floor):
+            reason = "residual peak is below the sigma_RMS cutoff"
+            break
+        sequence = runner(v, residual, max_fits=1)
+        if not sequence:
+            reason = "CLC returned no candidate component"
+            break
+        candidate = dict(sequence[0], fixed=False)
+        if (not all(np.isfinite(candidate[k]) for k in ("amplitude", "center", "fwhm"))
+                or candidate["fwhm"] <= 0 or not v.min() <= candidate["center"] <= v.max()):
+            raise DecompositionError("CLC returned an invalid component seed.")
+        if candidate["amplitude"] < max(rms_cutoff * noise, floor):
+            reason = "candidate amplitude is below the sigma_RMS cutoff"
+            break
+        trial, trial_unc, trial_cov = refit_free(v, y, renumber(kept + [candidate]))
+        current = score(trial)
+        improvement = previous - current
+        history.append({"components": len(trial), "chi2": current, "improvement": improvement})
+        if improvement < chi2_threshold or improvement <= 0:
+            reason = "candidate did not meet chi2_threshold"
+            break
+        if trial[-1]["amplitude"] < max(rms_cutoff * noise, floor):
+            reason = "refitted candidate is below the sigma_RMS cutoff"
+            break
+        kept, uncs, cov, previous = trial, trial_unc, trial_cov, current
+    return {"params": renumber(kept), "uncertainties": uncs, "covariance": cov,
+            "statistics": compute_stats(v, y, kept), "sigma_rms": sigma,
+            "history": history, "stop_reason": reason}
+
+
+def run_fit(fit_type: str, vlsr: Any, intensity: Any, unit: str = "K") -> FitResult:
+    """Backwards-compatible legacy dispatcher; Page 07 uses the explicit CLC adapters.
+
+    Retains the historical call signature and results for existing callers/tests.
+    The old two-peak 1D fallback is deliberately NOT used for the spatial 2D UI.
+    """
+    from utils.spectral_fitting_logic import run_fit as legacy_run_fit
+    legacy_name = "Multi-component" if fit_type == "Multi-Component" else fit_type
+    return legacy_run_fit(legacy_name, vlsr, intensity, unit)

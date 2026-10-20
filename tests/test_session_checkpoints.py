@@ -890,25 +890,29 @@ def test_pointing_incomplete_inputs_clear_the_stage(browser):
 
 
 def test_fit_commit_records_parameters_and_log_before_checkpoint(browser):
+    from utils import fitting_helpers as fh, fitting_state as fs
     ready(browser)
     browser.ui.begin()
-    source = ast.parse((APP_ROOT / "pages/07_Spectral_Fitting.py").read_text(encoding="utf-8"))
-    summary = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "_stage_summary")
-    save = next(node for node in source.body if isinstance(node, ast.If) and ast.unparse(node.test) == "save_clicked")
-    result = SimpleNamespace(fit_type_used="1D Gaussian", fit_type_requested="1D Gaussian", rows=[("peak", "2", "0.1")],
-                             converged=True, notes=[], curve=np.asarray([1., 2.]))
-    namespace = dict(Any=object, st=browser.ui, session_store=browser.store, save_clicked=True,
-                     THIS_STAGE_KEY="07_spectral_fitting", result=result, source_key="fixture", g3_unit="Jy",
-                     pss=SimpleNamespace(value=2.0), pointing_factor=1.2, vlsr=np.asarray([0., 1.]),
-                     resolved=SimpleNamespace(source_key="baseline"),
-                     fitting_inputs=SimpleNamespace(GRAPH3_FORMULA="fixture-formula"))
-    code = ast.fix_missing_locations(ast.Module(body=[summary, save], type_ignores=[]))
-    exec(compile(code, "actual_fit_commit", "exec"), namespace)
+    path = APP_ROOT / "pages/07_Spectral_Fitting.py"
+    source = ast.parse(path.read_text(encoding="utf-8"))
+    commit = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "_commit")
+    stage = fs.ensure_stage(browser.state["pipeline_data"])
+    stage["pss_jy_per_k"] = 2.0
+    entry = {"options": {"hpbw_kms_fixed": 1.0}, "input_signature": "fixture",
+             "result": {"rows": [["peak", "2", "0.1"]], "converged": True,
+                        "notes": [], "curve": [1., 2.]}}
+    stage["modes"]["1D Gaussian"] = entry
+    namespace = dict(st=browser.ui, session_store=browser.store, copy=copy, np=np, fs=fs, fh=fh,
+                     THIS_STAGE_KEY="07_spectral_fitting")
+    code = ast.fix_missing_locations(ast.Module(body=[commit], type_ignores=[]))
+    exec(compile(code, str(path), "exec"), namespace)
+    namespace["_commit"](stage, entry, "fixture-request", "1D Gaussian", np.asarray([0., 1.]), "fixture", "Jy")
     data = json.loads(Path(browser.state["checkpoint_path"]).read_text(encoding="utf-8"))
     assert data["pipeline_data"]["07_spectral_fitting"]["pss_jy_per_k"] == 2.0
     assert data["pipeline_data"]["07_spectral_fitting"]["parameters"][0]["parameter"] == "peak"
+    assert data["stages"]["fitting"]["type"] == "gaussian_1d"
     assert data["audit_log"][-1]["message"].startswith("Spectral fit committed")
-    assert "latest_fit" not in data  # Runtime curves require recomputation, not a fake recovered result.
+    assert "latest_fit" not in data  # Export-only mirror; per-mode cache is in stages.fitting.state.
 
 
 def test_export_complete_records_completion_before_checkpoint(browser):

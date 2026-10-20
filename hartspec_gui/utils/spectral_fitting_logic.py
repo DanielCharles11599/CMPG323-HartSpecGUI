@@ -73,6 +73,10 @@ class FitResult:
     converged: bool
     curve_x: np.ndarray | None = None  # x of ``curve`` when it is not sampled on the full velocity axis (fit_max.py)
 
+    # Full-precision adapter output; display strings must never be used for replay.
+    parameters: dict[str, float] | None = None
+    covariance: np.ndarray | None = None
+
     @property
     def ok(self) -> bool:
         """True when a fit curve was produced."""

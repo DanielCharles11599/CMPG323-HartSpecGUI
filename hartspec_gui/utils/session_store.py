@@ -188,6 +188,7 @@ _REDUCTION_STATE_KEYS = frozenset({
     "loaded_spectra",
     "calibrated_spectrum",
     "latest_fit",
+    "map_2d_data",
 })
 
 # Explicit defaults prevent still-mounted frontend controls from restoring the
@@ -296,9 +297,13 @@ def _seed_reduction_controls(state: MutableMapping[str, Any], pipeline_data: Map
 
     fitting = pipeline_data.get("07_spectral_fitting", {})
     if isinstance(fitting, Mapping):
+        # A saved spatial map is an explicit observed input, never the synthetic fallback.
+        if isinstance(fitting.get("map_snapshot"), dict):
+            import copy
+            state["map_2d_data"] = copy.deepcopy(fitting["map_snapshot"])
         # Prefer the requested control value over a fallback model's result.
         fit_type = fitting.get("fit_type_requested", fitting.get("fit_type"))
-        if fit_type in ("1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component"):
+        if fit_type in ("1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component", "Multi-Component"):
             state["fit_type"] = fit_type
         if fitting.get("polarization") in ("LCP", "RCP"):
             state["fit_polarization"] = fitting["polarization"]
@@ -436,7 +441,7 @@ def _bootstrap_recovery() -> None:
 
 
 def _session_payload() -> dict[str, Any]:
-    """Capture committed stage metadata and applied mapping, not draft widgets/caches."""
+    """Capture pipeline state, including replayable Stage 7 controls/results, not raw FITS arrays."""
     state = st.session_state
     applied_ui: dict[str, Any] = {}
     if "file_loader" in state.get("pipeline_data", {}):
@@ -444,12 +449,9 @@ def _session_payload() -> dict[str, Any]:
             applied_ui["file_loader_manual_mapping_global"] = state["file_loader_manual_mapping_global"]
         if state.get("file_loader_mapping_mode") in ("Auto", "Manual"):
             applied_ui["file_loader_mapping_mode"] = state["file_loader_mapping_mode"]
-    # Spec 6.6: persistent key stages.fitting, derived from pipeline_data (which keeps its copy for the pages).
-    # Deliberately inline and builtin-only: tests exec this function alone, so it may not use module-level names.
-    fit_stage = state["pipeline_data"].get("07_spectral_fitting")
-    fit_block = fit_stage.get("multi_component") if isinstance(fit_stage, dict) else None
-    is_multi = isinstance(fit_block, dict) and fit_block.get("type") == "multi_component"
-    stages = {"fitting": fit_block} if is_multi else {}
+    # Local import keeps this function usable by the existing isolated-AST session tests.
+    from utils.fitting_helpers import stages_from_pipeline
+    stages = stages_from_pipeline(state["pipeline_data"])
     return checkpoint_store.json_safe({
         "session_id": state["session_id"],
         "pipeline_data": state["pipeline_data"],

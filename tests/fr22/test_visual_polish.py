@@ -93,9 +93,10 @@ def test_sidebar_does_not_force_a_colour_on_all_descendants():
     assert 'caret-color: var(--hs-text-body)' in css
 
 
-def test_fitting_mode_limitations_are_visible_without_changing_model_ids():
+def test_fitting_modes_describe_real_spatial_and_iterative_models():
     text = (APP / "pages/07_Spectral_Fitting.py").read_text(encoding="utf-8")
-    assert 'if fit_type == "2D Gaussian"' in text
-    assert 'elif fit_type == "Multi-component"' in text
-    assert "not a spatial 2D Gaussian fit" in text
-    assert "fixed three-component Gaussian fit" in text
+    assert "def _map_fit" in text and "fh.run_2d_gauss" in text
+    assert "Synthetic Test Map Active" in text
+    assert "fh.run_auto_decomposition" in text
+    assert "not a spatial 2D Gaussian fit" not in text
+    assert "fixed three-component Gaussian fit" not in text

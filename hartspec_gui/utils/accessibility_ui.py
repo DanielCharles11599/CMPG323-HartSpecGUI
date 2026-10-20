@@ -110,7 +110,7 @@ def _inspect(figure: go.Figure, key: str, labels: list[str]) -> None:
     st.markdown(_table_html(pd.DataFrame([values]), labels[index]), unsafe_allow_html=True)
 
 
-def render_plotly_chart(figure: Any, **kwargs):
+def render_plotly_chart(figure: Any, *, key: str | None = None, **kwargs):
     """Provide view-only pan/zoom, series selection, value inspection and font scaling.
 
     All state uses an accessibility namespace, never a pipeline-stage namespace.
@@ -118,7 +118,9 @@ def render_plotly_chart(figure: Any, **kwargs):
     """
     st = _streamlit()
     styles = _styles()
-    key = _key("chart")
+    # Separate chart identity from data-dependent accessibility-control identity.
+    chart_key = key if key is not None else _key("chart")
+    key = f"_a11y_{chart_key}"
     original = go.Figure(figure)
     # View settings must not leak onto new data drawn in the same page slot.
     payload = [{name: value for name, value in trace.to_plotly_json().items()
@@ -168,4 +170,11 @@ def render_plotly_chart(figure: Any, **kwargs):
                 display.update_layout(**{f"{axis}axis": {"range": bounds, "autorange": False}})
         _inspect(original, key, labels)
     display = scaled_figure(display, styles.get_font_scale())
-    return st.plotly_chart(display, **kwargs)
+    # 1.32 accepts key via **kwargs but does not use it as a widget identity.
+    # Stable Plotly revisions + distinct trace uids also keep view state isolated.
+    if display.layout.uirevision is None:
+        display.update_layout(uirevision=chart_key)
+    for index, trace in enumerate(display.data):
+        if trace.uid is None:
+            trace.uid = f"{chart_key}_{index}"
+    return st.plotly_chart(display, key=chart_key, **kwargs)
