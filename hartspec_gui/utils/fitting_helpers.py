@@ -132,6 +132,7 @@ def _patch_spec_comp_namespace(module: ModuleType, recorded: list[Any], max_fits
         # Spec_comp calls np.random.seed(0). Give it a private random generator so one
         # browser session cannot reset NumPy's global RNG for unrelated work.
         base_np = ns.get("np", np)
+
         class LocalNumpy:
             random = np.random.RandomState(0)
 

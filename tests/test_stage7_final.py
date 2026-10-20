@@ -207,8 +207,10 @@ def test_auto_can_exceed_legacy_three_component_limit_and_returns_full_covarianc
 def test_auto_noise_cutoff_prevents_any_backend_call():
     v = np.linspace(-20, 20, 1024)
     y = np.random.default_rng(10).normal(0, .1, v.size)
+
     def forbidden(*args, **kwargs):
         raise AssertionError("Noise should not reach the CLC fitter")
+
     result = fh.run_auto_decomposition(v, y, seed_runner=forbidden)
     assert not result["params"] and "cutoff" in result["stop_reason"]
 
@@ -223,8 +225,10 @@ def test_auto_preserves_fixed_components():
     assert np.all(np.asarray(output["covariance"])[:3] == 0)
 
 
-@pytest.mark.parametrize("kwargs", [{"max_components": 0}, {"max_components": 21}, {"max_components": 1.5},
-                                   {"rms_cutoff": -1}, {"chi2_threshold": np.nan}])
+@pytest.mark.parametrize("kwargs", [
+    {"max_components": 0}, {"max_components": 21}, {"max_components": 1.5},
+    {"rms_cutoff": -1}, {"chi2_threshold": np.nan},
+])
 def test_auto_rejects_invalid_termination_settings(kwargs):
     with pytest.raises(fh.DecompositionError):
         fh.run_auto_decomposition(np.arange(20.), np.ones(20), **kwargs)
@@ -236,7 +240,11 @@ def test_recorder_early_stop_and_rng_isolation():
     mod.u = mod.models = mod.Spectrum1D = object()
     model = SimpleNamespace(amplitude=2., mean=0., stddev=1.)
     mod.fit_lines = lambda *a, **k: model
-    exec("def Spec_comp(v, y, half_width):\n    np.random.seed(0)\n    for i in range(3):\n        fit_lines()\n", vars(mod))
+    exec(
+        "def Spec_comp(v, y, half_width):\n"
+        "    np.random.seed(0)\n    for i in range(3):\n        fit_lines()\n",
+        vars(mod),
+    )
     before = np.random.get_state()
     original = dict(vars(mod))
     result = fh.run_spec_comp(np.arange(20.), np.ones(20), module=mod, max_fits=1)

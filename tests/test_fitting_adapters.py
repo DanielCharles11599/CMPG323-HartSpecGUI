@@ -234,14 +234,63 @@ def test_2d_adapter_matches_direct_clc_execution_to_6_sig_figs():
     assert abs(popt[1] - 1.5) < 0.1 and abs(popt[2] - (-2.0)) < 0.1  # sanity: injected centre recovered
 
 
-def test_2d_adapter_angle_is_given_in_degrees_and_reported_in_degrees():
+@pytest.mark.parametrize("sx,sy,angle_degrees", [(6.0, 6.0, 20.0), (7.0, 4.0, 20.0), (4.0, 7.0, 110.0)])
+def test_2d_adapter_angle_is_given_in_degrees_and_reported_in_degrees(monkeypatch, sx, sy, angle_degrees):
+    """Check unit conversion explicitly, and compare the ellipse rather than an arbitrary axis ordering."""
     x, y, z, truth = _map()
-    result = fh.run_2d_gauss(x, y, z, (2.5, 0.0, 0.0, 6.0, 6.0, 20.0, 9.0))  # 20 deg ~ 0.35 rad start
-    assert result.ok
+    initial = np.array([2.5, 0.0, 0.0, sx, sy, angle_degrees, 9.0])
+    captured = []
+
+    def measured(model, xy, values, *, p0):
+        captured.append(np.array(p0, copy=True))
+        return curve_fit(model, xy, values, p0=p0)
+
+    monkeypatch.setattr(fh, "curve_fit", measured)
+    result = fh.run_2d_gauss(x, y, z, initial)
+    assert result.ok and result.converged
+    expected_p0 = initial.copy()
+    expected_p0[5] = np.radians(angle_degrees)
+    assert len(captured) == 1
+    np.testing.assert_array_equal(captured[0], expected_p0)
+    assert initial[5] == angle_degrees  # the UI's array must not be mutated
     angle_row = next(r for r in result.rows if r[0] == "Position angle")
-    assert angle_row[1].endswith("°")
-    # theta only determines the surface through sin/cos, so compare modulo the model's symmetry via the fitted surface
-    np.testing.assert_allclose(result.popt[5] % np.pi, truth[5] % np.pi, atol=0.05)
+    assert angle_row[1] == f"{np.degrees(result.popt[5]):.4g} °"
+    assert angle_row[2] == f"{np.degrees(np.sqrt(abs(result.pcov[5, 5]))):.4g} °"
+
+    # (sigma_x, sigma_y, theta) and (sigma_y, sigma_x, theta + pi/2) give
+    # the same CLC surface. Only this comparison uses a common major-axis
+    # convention; production popt/pcov must stay in the backend's raw order.
+    fitted_angle = result.popt[5] + (np.pi / 2 if abs(result.popt[3]) < abs(result.popt[4]) else 0.0)
+    true_angle = truth[5] + (np.pi / 2 if abs(truth[3]) < abs(truth[4]) else 0.0)
+    angle_error = (fitted_angle - true_angle + np.pi / 2) % np.pi - np.pi / 2
+    np.testing.assert_allclose(angle_error, 0.0, rtol=0.0, atol=0.05)  # original angular tolerance
+    np.testing.assert_allclose(np.sort(np.abs(result.popt[3:5])), np.sort(np.abs(truth[3:5])), rtol=0.0, atol=0.1)
+    xx, yy = np.meshgrid(x, y)
+    noiseless = fh.twoD_gaussian_model(_clc_2d_path())((xx, yy), *truth).reshape(z.shape)
+    np.testing.assert_allclose(result.model, noiseless, rtol=0.0, atol=0.05)  # fixture noise sigma is 0.05
+
+
+def test_2d_adapter_preserves_raw_swapped_axes_and_radian_covariance(monkeypatch):
+    """Do not reorder parameters or convert covariance just to satisfy a display-angle test."""
+    x, y, z, truth = _map()
+    backend = np.array(truth)
+    backend[3], backend[4] = truth[4], truth[3]
+    backend[5] += np.pi / 2 + 2 * np.pi
+    covariance = np.diag(np.arange(1.0, 8.0) * 0.001)
+    covariance[1, 5] = covariance[5, 1] = 0.0002
+
+    def fixed_result(model, xy, values, *, p0):
+        assert p0[5] == pytest.approx(np.radians(20.0), rel=1e-12)
+        return backend.copy(), covariance.copy()
+
+    monkeypatch.setattr(fh, "curve_fit", fixed_result)
+    result = fh.run_2d_gauss(x, y, z, (2.5, 0.0, 0.0, 6.0, 6.0, 20.0, 9.0))
+    assert result.ok and result.converged
+    np.testing.assert_array_equal(result.popt, backend)
+    np.testing.assert_array_equal(result.pcov, covariance)
+    xx, yy = np.meshgrid(x, y)
+    expected = fh.twoD_gaussian_model(_clc_2d_path())((xx, yy), *truth).reshape(z.shape)
+    np.testing.assert_allclose(result.model, expected, rtol=1e-12, atol=1e-12)
 
 
 def test_2d_adapter_does_not_execute_the_clc_demo_script():

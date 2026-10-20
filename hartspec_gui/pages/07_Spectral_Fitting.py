@@ -40,8 +40,10 @@ def _chart(title: str, fig: go.Figure, key: str, source: str = "") -> None:
 def _lines(traces: list, unit: str, window: Any = None, **kwargs: Any) -> go.Figure:
     """Build a themed spectral chart; all supplied x/y arrays remain full resolution."""
     theme = styles.get_theme()
-    return fit_figures.spectrum_figure(traces, f"Intensity ({unit})", theme,
-                                      styles.plotly_layout_theme(theme), window=window, **kwargs)
+    return fit_figures.spectrum_figure(
+        traces, f"Intensity ({unit})", theme,
+        styles.plotly_layout_theme(theme), window=window, **kwargs,
+    )
 
 
 def _widget_scope(mode: str, source: str) -> str:
@@ -116,9 +118,20 @@ def _light_fit(stage: dict, mode: str, v: np.ndarray, y: np.ndarray, source: str
                                            value=max(1, int(saved.get("half_width_channels", 10))),
                                            step=1, key=f"{key}_half"))
         order0 = saved.get("polynomial_order", 4)
-        order = columns[2].selectbox("Polynomial Order", fh.POLYNOMIAL_ORDERS,
-                                     index=fh.POLYNOMIAL_ORDERS.index(order0) if order0 in fh.POLYNOMIAL_ORDERS else 2,
-                                     format_func=lambda n: {2: "2nd", 3: "3rd", 4: "4th"}[n], key=f"{key}_order")
+        order_labels = ("2nd", "3rd", "4th")
+        # Streamlit 1.32 AppTest serializes selectboxes by str(value), not format_func.
+        # Keep the widget value equal to its label; only fitting/session data use integers.
+        # Restore only an absent widget; an incoming edit must beat the previous saved order.
+        order_key = f"{key}_order_label"
+        if order_key not in st.session_state:
+            initial_index = fh.POLYNOMIAL_ORDERS.index(order0) if order0 in fh.POLYNOMIAL_ORDERS else 2
+            st.session_state[order_key] = order_labels[initial_index]
+        # In 1.32, changing index changes widget identity even with the same key.
+        # Keep it fixed; Session State supplies the actual initial/restored selection.
+        label = columns[2].selectbox(
+            "Polynomial Order", order_labels, index=0, key=order_key,
+        )
+        order = fh.POLYNOMIAL_ORDERS[order_labels.index(label)]
         window = fh.fit_max_window(v, center, half)
         options = {"peak_velocity_kms": center, "half_width_channels": half, "polynomial_order": order}
         st.caption("The window is selected numerically. Half-width is in channels; "
@@ -184,9 +197,10 @@ def _map_fit(stage: dict) -> tuple:
     values = []
     for indices in (range(4), range(4, 7)):
         for column, index in zip(st.columns(len(indices)), indices):
-            values.append(float(column.number_input(labels[index], value=float(saved[index]), format="%.6f",
-                                                     min_value=1e-9 if index in (3, 4) else None,
-                                                     key=f"{scope}_p{index}")))
+            values.append(float(column.number_input(
+                labels[index], value=float(saved[index]), format="%.6f",
+                min_value=1e-9 if index in (3, 4) else None, key=f"{scope}_p{index}",
+            )))
     st.caption("Axis widths are the backend's σ_x / σ_y, not FWHM; they are not reordered. Angle input is in degrees.")
     _options(entry, {"p0": values}, mode)
     request = fs.request_key(source, entry["options"])
@@ -251,10 +265,12 @@ def _multi_fit(stage: dict, v: np.ndarray, y: np.ndarray, source: str, unit: str
             fh.COL_ID: st.column_config.TextColumn("Component ID"),
             fh.COL_AMP: st.column_config.NumberColumn("Amplitude", help=f"Intensity in {unit}", format="%.6f"),
             fh.COL_CENTER: st.column_config.NumberColumn("Center Velocity", help="km/s", format="%.6f"),
-            fh.COL_FWHM: st.column_config.NumberColumn("FWHM", help="km/s; must be greater than zero",
-                                                      min_value=1e-9, format="%.6f"),
-            fh.COL_LOCK: st.column_config.CheckboxColumn("Fixed/Free", default=False,
-                                                        help="Checked = fixed; unchecked = free."),
+            fh.COL_FWHM: st.column_config.NumberColumn(
+                "FWHM", help="km/s; must be greater than zero", min_value=1e-9, format="%.6f",
+            ),
+            fh.COL_LOCK: st.column_config.CheckboxColumn(
+                "Fixed/Free", default=False, help="Checked = fixed; unchecked = free.",
+            ),
         })
     params, problems = fh.params_from_df(edited)
     for message in problems:
@@ -364,8 +380,10 @@ def main() -> None:
     session_store.init_session_state()
     render_sidebar(CURRENT_STAGE)
     styles.inject_base_css()
-    styles.render_page_header("Spectral Fitting", "Gaussian / polynomial / multi-component fits",
-                               CURRENT_STAGE, session_store.completed_before(CURRENT_STAGE))
+    styles.render_page_header(
+        "Spectral Fitting", "Gaussian / polynomial / multi-component fits",
+        CURRENT_STAGE, session_store.completed_before(CURRENT_STAGE),
+    )
     stage = fs.ensure_stage(st.session_state.pipeline_data)
     if st.session_state.get("fit_type") == "Multi-component":
         st.session_state["fit_type"] = "Multi-Component"

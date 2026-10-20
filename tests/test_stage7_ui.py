@@ -41,8 +41,10 @@ class UI:
                                    theme="light", font_scale=100)
         self.controls, self.pressed, self.charts, self.messages = {}, set(), {}, []
         self.widgets, self.keys, self.saved = {}, set(), None
-        self.column_config = SimpleNamespace(**{name: lambda *a, **k: None
-                                               for name in ("TextColumn", "NumberColumn", "CheckboxColumn")})
+        self.column_config = SimpleNamespace(**{
+            name: lambda *a, **k: None
+            for name in ("TextColumn", "NumberColumn", "CheckboxColumn")
+        })
 
     def __enter__(self):
         return self
@@ -113,6 +115,8 @@ class UI:
     def selectbox(self, label, options, *, key, index=0, **kwargs):
         value = self._value(label, key, options[index])
         assert value in options
+        self.widgets[key]["options"] = tuple(options)
+        self.widgets[key]["format_func"] = kwargs.get("format_func", str)
         return value
 
     def checkbox(self, label, *, key, value=False, **kwargs):
@@ -166,9 +170,11 @@ def _page_namespace(ui, monkeypatch):
         ui.session_state["audit_log"].append({"ts": "00:00:00", "message": message})
 
     def checkpoint(message):
-        ui.saved = json.loads(json.dumps({"pipeline_data": ui.session_state.pipeline_data,
-                                         "stages": fh.stages_from_pipeline(ui.session_state.pipeline_data),
-                                         "audit_log": ui.session_state["audit_log"]}, allow_nan=False))
+        ui.saved = json.loads(json.dumps({
+            "pipeline_data": ui.session_state.pipeline_data,
+            "stages": fh.stages_from_pipeline(ui.session_state.pipeline_data),
+            "audit_log": ui.session_state["audit_log"],
+        }, allow_nan=False))
 
     store = SimpleNamespace(init_session_state=lambda: None, log_event=log, completed_before=lambda n: 0,
                             mark_stage_complete=lambda key: ui.session_state["completed_stages"].add(key),
@@ -176,7 +182,9 @@ def _page_namespace(ui, monkeypatch):
     namespace = dict(Any=Any, np=np, pd=pd, go=go, st=ui, copy=copy, json=json, styles=styles, session_store=store,
                      fh=fh, fs=fs, fitting_inputs=fitting_inputs, fit_figures=fit_figures,
                      spectrum_resolution=spectrum_resolution, render_sidebar=lambda n: None,
-                     baseline_editor_bridge=SimpleNamespace(read_bridge=lambda s: None, spectrum_fingerprint=lambda s: "x"))
+                     baseline_editor_bridge=SimpleNamespace(
+                         read_bridge=lambda s: None, spectrum_fingerprint=lambda s: "x",
+                     ))
     tree = ast.parse((APP / "pages/07_Spectral_Fitting.py").read_text())
     nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.Assign))]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP / "pages/07_Spectral_Fitting.py"), "exec"), namespace)
@@ -250,6 +258,63 @@ def test_polynomial_window_and_curve_are_both_on_graph3(page):
     assert fig.data[1].line.dash == "dash"
     entry = page.ui.session_state.pipeline_data[fs.STAGE_KEY]["modes"]["Polynomial Peak"]
     assert entry["options"]["half_width_channels"] == 10
+
+
+@pytest.mark.parametrize("order,label", [(2, "2nd"), (3, "3rd"), (4, "4th")])
+def test_polynomial_labels_restore_and_serialize_as_integer_orders(page, order, label):
+    """Widget labels match 1.32 AppTest serialization; the persisted scientific order remains an int."""
+    observed(page.ui)
+    page.ui.controls["fit_type"] = "Polynomial Peak"
+    stage = fs.ensure_stage(page.ui.session_state.pipeline_data)
+    stage["modes"]["Polynomial Peak"] = {"options": {"polynomial_order": order}}
+    page.run()
+    entry = stage["modes"]["Polynomial Peak"]
+    widget_key = next(key for key, widget in page.ui.widgets.items() if widget["label"] == "Polynomial Order")
+    widget = page.ui.widgets[widget_key]
+    assert widget["options"] == ("2nd", "3rd", "4th")
+    assert widget["value"] == label
+    # This is the exact displayed-value lookup that failed inside AppTest 1.32.
+    displayed = [widget["format_func"](option) for option in widget["options"]]
+    assert displayed.index(str(widget["value"])) == order - 2
+    assert type(entry["options"]["polynomial_order"]) is int
+    assert entry["options"]["polynomial_order"] == order
+    page.ui.pressed.add("fit_save")
+    page.run()
+    assert page.ui.saved["stages"]["fitting"]["params"]["polynomial_order"] == order
+
+    # A pre-hotfix numeric widget may still exist in a live Streamlit session.
+    # It must not replace the new string-valued widget when the page reruns.
+    page.ui.session_state.pop(widget_key)
+    page.ui.session_state[widget_key.removesuffix("_label")] = order
+    page.run()
+    assert page.ui.widgets[widget_key]["value"] == label
+
+
+def test_polynomial_label_edits_refit_once_and_survive_mode_switches(page, monkeypatch):
+    observed(page.ui)
+    calls = []
+    original = fh.run_fit_max
+
+    def measured(*args, **kwargs):
+        calls.append(args[4])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fh, "run_fit_max", measured)
+    page.ui.controls["fit_type"] = "Polynomial Peak"
+    page.run()
+    assert calls == [4]
+    for label, order in (("2nd", 2), ("3rd", 3), ("4th", 4)):
+        page.ui.controls["Polynomial Order"] = label
+        page.run()
+        page.run()
+        assert calls[-1] == order
+    assert calls == [4, 2, 3, 4]
+    page.ui.controls["fit_type"] = "Multi-Component"
+    page.run()
+    page.ui.controls["fit_type"] = "Polynomial Peak"
+    page.run()
+    assert calls == [4, 2, 3, 4]
+    assert not page.ui.widgets["fit_save"]["disabled"]
 
 
 def test_2d_fallback_runs_only_on_explicit_button(page, monkeypatch):
