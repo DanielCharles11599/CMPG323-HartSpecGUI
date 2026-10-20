@@ -14,8 +14,10 @@
 # Graph 3 is only drawn from the PRE-calibration (K) spectrum: a spectrum already scaled by Page 05 would have PSS
 # applied twice.
 #
-# The fitting itself lives in utils/spectral_fitting_logic.py (pure, unit-tested); no clc/Gaussf.py call is made
-# directly -- see that module's header for the open FR-15 / FR-16 / FR-17 questions (all marked TODO).
+# The Plotly
+# figures are built by utils/fit_figures.py (pure, unit-tested). FR mapping: FR-14 1D Gaussian (clc/Gaussf.py), FR-15
+# Polynomial Peak (clc/fit_max.py), FR-16 2D Gaussian (clc/2D_Gauss_fit.py, on st.session_state.map_2d_data), FR-17
+# Multi-component (clc/Spec_comp.py). The clc/ calls go through the adapters in utils/fitting_helpers.py.
 #   # TODO: confirm against design -- Graph 3 ADDS the pointing correction factor as written in the owner's formula;
 #   # pointcor() returns a multiplicative factor. See utils/fitting_inputs.py.
 from __future__ import annotations
@@ -28,16 +30,22 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from plotly.subplots import make_subplots
 
-from utils import baseline_editor_bridge, fitting_helpers, fitting_inputs, session_store, spectrum_resolution, styles
+from utils import (baseline_editor_bridge, fit_figures, fitting_helpers, fitting_inputs, session_store,
+                   spectrum_resolution, styles)
 from utils.sidebar import render_sidebar
-from utils.spectral_fitting_logic import FIT_TYPES, FitResult, run_fit
+from utils.spectral_fitting_logic import FIT_TYPES, FitResult
 
 THIS_STAGE_KEY = "07_spectral_fitting"
 CURRENT_STAGE = 7  # 1-indexed, per utils/sidebar.py + utils/styles.py convention
 NEXT_PAGE = "pages/08_Export_and_Session.py"
 MULTI_FIT_TYPE = "Multi-component"  # must match the label in utils.spectral_fitting_logic.FIT_TYPES
+GAUSSIAN_FIT_TYPE = "1D Gaussian"
+POLYNOMIAL_FIT_TYPE = "Polynomial Peak"
+FIT_2D_TYPE = "2D Gaussian"
+MAP_STATE_KEY = "map_2d_data"  # {"data": (Ny, Nx), "x": (Nx,), "y": (Ny,)} written by Stage 2 / Stage 6
+# Graph 3 is a combined trace, so it must not look like pure LCP (blue) or RCP (orange): neutral slate / cyan by theme.
+GRAPH3_COLORS = {"light": "#4B5563", "dark": "#22D3EE"}
 
 st.set_page_config(page_title="HARTSPEC — Spectral Fitting", layout="wide")
 session_store.init_session_state()
@@ -51,26 +59,66 @@ styles.render_page_header(
     session_store.completed_before(CURRENT_STAGE),
 )
 theme = styles.get_theme()
+graph3_color = GRAPH3_COLORS[styles.get_theme_name()]
 
 
 def _figure(traces: list[tuple[str, Any, Any, str, str]], y_title: str, height: int = 280,
-            hline: Optional[float] = None) -> go.Figure:
-    """Themed line chart. traces = (name, x, y, colour, dash); backgrounds follow bg-panel (Plotly doesn't inherit)."""
-    fig = go.Figure()
-    for name, x, y, color, dash in traces:
-        fig.add_scatter(x=x, y=y, mode="lines", line=dict(color=color, width=1.6, dash=dash), name=name)
-    if hline is not None and np.isfinite(hline):
-        fig.add_hline(y=hline, line=dict(color=theme["text-muted"], width=1, dash="dot"))
-    fig.update_layout(**styles.plotly_layout_theme(theme))
-    fig.update_layout(
-        height=height, margin=dict(l=40, r=20, t=10, b=40),
-        paper_bgcolor=theme["bg-panel"], plot_bgcolor=theme["bg-panel"],
-        font=dict(color=theme["text-body"]),
-        legend=dict(orientation="h", y=-0.25),
-        xaxis=dict(title="Vlsr (km/s)", showgrid=False, zeroline=False, color=theme["text-muted"]),
-        yaxis=dict(title=y_title, showgrid=False, zeroline=False, color=theme["text-muted"]),
-    )
-    return fig
+            hline: Optional[float] = None, window: Optional[tuple[float, float]] = None) -> go.Figure:
+    """Themed line chart (see utils/fit_figures.py). traces = (name, x, y, colour, dash); window = highlighted km/s."""
+    return fit_figures.spectrum_figure(traces, y_title, theme, styles.plotly_layout_theme(theme), height=height,
+                                       hline=hline, window=window)
+
+
+def _run_clc_fit(fit_type_name: str, v: np.ndarray, y: np.ndarray, scope: str, unit_label: str
+                 ) -> tuple[Optional[FitResult], Optional[tuple[float, float]], Optional[dict[str, Any]]]:
+    """FR-14 / FR-15: render the controls, run the clc adapter, return (result, window to highlight, saved options).
+
+    1D Gaussian (clc/Gaussf.py): amplitude and centre sliders and an HPBW spin box. Amplitude and centre are the
+    curve_fit starting point; the HPBW is held fixed (Gaussf.py takes it as a constant).
+    Polynomial Peak (clc/fit_max.py): peak velocity and half-width (in CHANNELS, as fit_max takes it) inputs --
+    Streamlit 1.32 has no Plotly click events (CON-06) -- plus a 2nd-4th order selector.
+    Widget keys include ``scope`` so they reset when the underlying data changes.
+    """
+    if fit_type_name == GAUSSIAN_FIT_TYPE:
+        amp0, center0, hpbw0 = fitting_helpers.default_gaussian_guess(v, y)
+        amp_max = amp0 * 2.0 if amp0 > 0 else 1.0
+        c1, c2, c3 = st.columns(3)
+        amp = c1.slider("Amplitude (initial guess)", 0.0, amp_max, float(min(max(amp0, 0.0), amp_max)),
+                        step=amp_max / 200.0, key=f"fit_1d_amp_{scope}")
+        center = c2.slider("Center velocity (km/s, initial guess)", float(v.min()), float(v.max()), center0,
+                           step=float(np.mean(np.abs(np.diff(v)))), key=f"fit_1d_center_{scope}")
+        hpbw = c3.number_input("HPBW (km/s, held fixed)", min_value=0.01, value=float(max(hpbw0, 0.01)), step=0.1,
+                               format="%.2f", key=f"fit_1d_hpbw_{scope}")
+        with st.spinner("Fitting spectrum..."):  # always shown; usually well inside the 2 s budget (NFR-01)
+            result = fitting_helpers.run_gaussf(v, y, hpbw, amp, center, unit_label)
+        return result, None, {"amplitude_initial_guess": float(amp), "center_initial_guess_kms": float(center),
+                              "hpbw_kms_fixed": float(hpbw)}
+    if fit_type_name == POLYNOMIAL_FIT_TYPE:
+        step = float(np.mean(np.abs(np.diff(v))))
+        c1, c2, c3 = st.columns(3)
+        peak = c1.number_input("Peak velocity (km/s)", min_value=float(v.min()), max_value=float(v.max()),
+                               value=float(v[np.argmax(y)]), step=0.1, format="%.2f", key=f"fit_poly_peak_{scope}")
+        # TODO: confirm against design -- the default half-width is a placeholder; the spec gives none.
+        half = c2.number_input("Half-width window (channels)", min_value=1, step=1,
+                               value=fitting_helpers.DEFAULT_HALF_WIDTH_CHANNELS, key=f"fit_poly_half_{scope}",
+                               help="Channels on either side of the peak velocity, as clc/fit_max.py takes it.")
+        order = c3.selectbox("Polynomial order", fitting_helpers.POLYNOMIAL_ORDERS,
+                             index=len(fitting_helpers.POLYNOMIAL_ORDERS) - 1,
+                             format_func=lambda o: {2: "2nd order", 3: "3rd order", 4: "4th order"}[o],
+                             key=f"fit_poly_order_{scope}")
+        st.caption(f"Window ≈ ±{int(half) * step:.2f} km/s around the channel nearest the peak velocity.")
+        with st.spinner("Fitting spectrum..."):
+            result = fitting_helpers.run_fit_max(v, y, float(peak), int(half), int(order), unit_label)
+        window = fitting_helpers.fit_max_window(v, float(peak), int(half))
+        return result, window, {"peak_velocity_kms": float(peak), "half_width_channels": int(half),
+                                "polynomial_order": int(order),
+                                "window_kms": list(window) if window is not None else None}
+    return None, None, None
+
+
+def _json_curve(curve: np.ndarray) -> list[Optional[float]]:
+    """Curve -> JSON-safe list (NaN outside a polynomial window becomes null; JSON has no NaN)."""
+    return [float(x) if np.isfinite(x) else None for x in np.asarray(curve, dtype=float)]
 
 
 def _panel(title: str, fig: Optional[go.Figure], placeholder: str = "") -> None:
@@ -91,12 +139,13 @@ st.markdown('<div class="hs-eyebrow">Fit Type</div>', unsafe_allow_html=True)
 # "Page 07's Fit type" radio label contrast, confirming this is the established widget choice for this control.
 fit_type = st.radio("Fit type", FIT_TYPES, horizontal=True, label_visibility="collapsed", key="fit_type")
 is_multi = fit_type == MULTI_FIT_TYPE
+is_2d = fit_type == FIT_2D_TYPE
 st.caption("The fit is applied to Graph 3 and shown in Graph 4. Graphs 1 and 2 show the input channels.")
 # Describe the existing implementation honestly; do not change fitting algorithms here.
-if fit_type == "2D Gaussian":
+if fit_type == FIT_2D_TYPE:
     st.info(
-        "Current implementation: two Gaussian components on a 1D velocity spectrum, "
-        "not a spatial 2D Gaussian fit. The full image/heatmap fit is not implemented here."
+        "The 2D Gaussian fit works on the spatial map, not on Graph 3: set the seven starting values below and press "
+        "'Fit 2D Gaussian'. Graph 4 is not used in this mode."
     )
 elif fit_type == "Multi-component":
     st.info(
@@ -150,6 +199,9 @@ if blockers:
 graph3: Optional[np.ndarray] = None
 result: Optional[FitResult] = None
 source_key = ""
+fit_options_summary: Optional[dict[str, Any]] = None  # controls used, saved with the fit
+window: Optional[tuple[float, float]] = None  # polynomial window highlighted on Graphs 3 and 4
+preserved: Optional[dict[str, Any]] = None  # last valid fit of this type, shown when the new fit fails
 if graph3_ready:
     if resolved.is_calibrated:
         # Page 05 already applied ATcor and PSS.
@@ -159,8 +211,18 @@ if graph3_ready:
             lcp, rcp, pss.value, pointing_factor
         )
     source_key = fitting_inputs.graph3_source_key(resolved.source_key, pss.value, pointing_factor)
-    if not is_multi:
-        result = run_fit(fit_type, vlsr, graph3, fitting_inputs.GRAPH3_UNIT)
+    if fit_type in (GAUSSIAN_FIT_TYPE, POLYNOMIAL_FIT_TYPE):
+        result, window, fit_options_summary = _run_clc_fit(fit_type, vlsr, graph3, source_key,
+                                                           fitting_inputs.GRAPH3_UNIT)
+        # last valid fit per fit type, kept in session_state so a failed refit does not blank the plot
+        last_key = f"spectral_fitting_last_good_{fit_type}"
+        if result.ok:
+            st.session_state[last_key] = {"source": source_key, "fit_type_used": result.fit_type_used,
+                                          "curve": result.curve, "curve_x": result.curve_x, "rows": result.rows}
+        else:
+            previous = st.session_state.get(last_key)
+            if previous and previous["source"] == source_key:
+                preserved = previous
 
 saved_fit = st.session_state.get("latest_fit")
 if saved_fit and graph3_ready and saved_fit.get("spectrum_source") != source_key:
@@ -169,6 +231,8 @@ if saved_fit and graph3_ready and saved_fit.get("spectrum_source") != source_key
 if result is not None:
     for note in result.notes:
         (st.warning if result.ok else st.error)(note)
+if preserved is not None:
+    st.caption("Showing the previous valid fit of this type (not the failed one above); it cannot be saved.")
 
 # ---------------------------------------------------------------------
 # Graphs 1 & 2 — LCP, RCP
@@ -200,8 +264,8 @@ with left:
         ("Graph 3 — Calibrated (LCP + RCP) + Pointing Correction"
          if resolved.is_calibrated
          else "Graph 3 — [(LCP + RCP) × PSS] + Pointing Correction"),
-        None if graph3 is None else _figure([("Graph 3", vlsr, graph3, theme["accent"], "solid")],
-                                            f"Intensity ({g3_unit})"),
+        None if graph3 is None else _figure([("Graph 3", vlsr, graph3, graph3_color, "solid")],
+                                            f"Intensity ({g3_unit})", window=window),
         "Waiting for the inputs listed above.",
     )
 with right:
@@ -219,29 +283,9 @@ if pss is not None and pointing_factor is not None:
 
 
 def _multi_figure(v: np.ndarray, y: np.ndarray, params: fitting_helpers.Params, unit_label: str) -> go.Figure:
-    """Main plot (data, components, composite) over a residual subplot; backgrounds follow bg-panel."""
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.06)
-    fig.add_scatter(x=v, y=y, mode="lines", name="Graph 3", line=dict(color=theme["accent"], width=1.6), row=1, col=1)
-    for p, curve in zip(params, fitting_helpers.component_curves(v, params)):
-        fig.add_scatter(x=v, y=curve, mode="lines", name=p["id"],
-                        line=dict(color=theme["text-muted"], width=1, dash="dot"), row=1, col=1)
-    model = fitting_helpers.composite(v, params)
-    if params:
-        fig.add_scatter(x=v, y=model, mode="lines", name="Composite model",
-                        line=dict(color=styles.get_fit_line_color(), width=1.6, dash="dash"), row=1, col=1)
-    fig.add_scatter(x=v, y=y - model, mode="lines", name="Residual (data − model)",
-                    line=dict(color=theme["text-muted"], width=1.2), row=2, col=1)
-    fig.add_hline(y=0, line=dict(color=theme["border-subtle"], width=1), row=2, col=1)
-    fig.update_layout(**styles.plotly_layout_theme(theme))
-    fig.update_layout(height=460, margin=dict(l=40, r=20, t=10, b=40), paper_bgcolor=theme["bg-panel"],
-                      plot_bgcolor=theme["bg-panel"], font=dict(color=theme["text-body"]),
-                      legend=dict(orientation="h", y=-0.15))
-    fig.update_xaxes(showgrid=False, zeroline=False, color=theme["text-muted"])
-    fig.update_yaxes(showgrid=False, zeroline=False, color=theme["text-muted"])
-    fig.update_xaxes(title_text="Vlsr (km/s)", row=2, col=1)
-    fig.update_yaxes(title_text=f"Intensity ({unit_label})", row=1, col=1)
-    fig.update_yaxes(title_text="Residual", row=2, col=1)
-    return fig
+    """Dual-panel decomposition plot (see utils/fit_figures.py): data + components + composite over the residual."""
+    return fit_figures.multi_figure(v, y, params, unit_label, theme, styles.plotly_layout_theme(theme),
+                                    data_color=graph3_color, fit_color=styles.get_fit_line_color())
 
 
 @st.cache_data(show_spinner=False)
@@ -354,9 +398,69 @@ def _render_multi_component(v: np.ndarray, y: np.ndarray, unit_label: str) -> di
             "curve": fitting_helpers.composite(v, params)}
 
 
+def _render_2d_fit() -> dict[str, Any]:
+    """FR-16 controls + results table + covariance table (inside the open 'Fit parameters' panel).
+
+    Seven spin boxes give the starting guesses p0 for clc/2D_Gauss_fit.py's twoD_Gaussian; 'Fit 2D Gaussian' runs
+    curve_fit. The last VALID fit stays in session_state, so a failed refit keeps the previous result on screen.
+    Returns the state needed to plot and save: map, synthetic flag, stored fit (or None).
+    """
+    ss = st.session_state
+    raw = ss.get(MAP_STATE_KEY)
+    map_data = fitting_helpers.coerce_map_2d(raw)
+    synthetic = map_data is None
+    if synthetic:
+        if raw is not None:
+            st.warning(f"st.session_state.{MAP_STATE_KEY} is malformed (needs 'data' of shape (Ny, Nx) plus 'x' and "
+                       "'y' axes, all finite) and was ignored.")
+        st.info("2D Gaussian fitting requires 2D mapped observation data. No usable map is in this session, so a "
+                "synthetic test map is shown instead; it cannot be saved.")
+        try:
+            map_data = fitting_helpers.synthetic_map_2d()
+        except fitting_helpers.ClcLoadError as exc:
+            st.error(f"No test map could be generated: {exc}")
+            return {"map": None, "synthetic": True, "stored": None}
+    scope = f"{map_data.data.shape[0]}x{map_data.data.shape[1]}_{float(map_data.data.sum()):.6g}_{synthetic}"
+    defaults = fitting_helpers.default_p0_2d(map_data.x, map_data.y, map_data.data)
+    labels = ("Amplitude", "X center", "Y center", "Major axis σ_x", "Minor axis σ_y", "Position angle (°)", "Offset")
+    values: list[float] = []
+    for row in (range(0, 4), range(4, 7)):
+        for col, i in zip(st.columns(len(row)), row):
+            values.append(float(col.number_input(
+                labels[i], value=float(defaults[i]), format="%.4f", min_value=1e-6 if i in (3, 4) else None,
+                key=f"fit_2d_{i}_{scope}")))
+    p0 = tuple(values)
+    if st.button("Fit 2D Gaussian", type="primary", key="spectral_fitting_2d_run"):
+        with st.spinner("Fitting spectrum..."):
+            fit = fitting_helpers.run_2d_gauss(map_data.x, map_data.y, map_data.data, p0, map_data.unit,
+                                               map_data.axis_unit)
+        if fit.ok:
+            ss["spectral_fitting_2d_state"] = {"scope": scope, "p0": p0, "result": fit}
+            for note in fit.notes:
+                st.warning(note) if not fit.converged else st.caption(note)
+        else:
+            st.error(f"{fit.notes[0]} The previous valid fit, if any, is kept.")
+    stored = ss.get("spectral_fitting_2d_state")
+    if stored is not None and stored["scope"] != scope:
+        stored = None  # fit belongs to a different map
+    if stored is not None:
+        if stored["p0"] != p0:
+            st.caption("The starting values changed since this fit -- press 'Fit 2D Gaussian' to refit.")
+        styles.render_dataframe(pd.DataFrame(list(stored["result"].rows), columns=["Parameter", "Value", "± Error"]),
+                                hide_index=True, use_container_width=True)
+        st.caption("Covariance matrix (clc units: position angle in radians):")
+        styles.render_dataframe(fitting_helpers.covariance_dataframe(stored["result"]), use_container_width=True)
+    else:
+        st.caption("Press 'Fit 2D Gaussian' to fit the map.")
+    return {"map": map_data, "synthetic": synthetic, "stored": stored}
+
+
 styles.render_panel_open("Fit parameters")
 multi: Optional[dict[str, Any]] = None
-if is_multi:
+two_d: Optional[dict[str, Any]] = None
+if is_2d:
+    two_d = _render_2d_fit()
+elif is_multi:
     if graph3 is not None:
         multi = _render_multi_component(vlsr, graph3, g3_unit)
     else:
@@ -364,9 +468,23 @@ if is_multi:
 elif result is not None and result.rows:
     param_df = pd.DataFrame(list(result.rows), columns=["Parameter", "Value", "± Error"])
     styles.render_dataframe(param_df, hide_index=True, use_container_width=True)
+elif preserved is not None:
+    st.caption("Parameters of the previous valid fit:")
+    styles.render_dataframe(pd.DataFrame(list(preserved["rows"]), columns=["Parameter", "Value", "± Error"]),
+                            hide_index=True, use_container_width=True)
 else:
     st.caption("No fit parameters -- the fit did not produce a result.")
 styles.render_panel_close()
+
+if two_d is not None and two_d["map"] is not None:
+    _stored = two_d["stored"]
+    _panel(
+        "2D Gaussian — observed map with fitted model contours",
+        fit_figures.map_figure(
+            two_d["map"].data, two_d["map"].x, two_d["map"].y, None if _stored is None else _stored["result"].model,
+            f"Intensity ({two_d['map'].unit})", two_d["map"].axis_unit, theme, styles.plotly_layout_theme(theme),
+            fit_color=styles.get_fit_line_color()),
+    )
 
 if multi is not None:
     # Same shape as run_fit()'s FitResult for everything the commit code reads, plus the session-JSON block.
@@ -384,16 +502,24 @@ if multi is not None:
 # Graph 4 (right column above) is drawn here so it reflects this run's table edits
 with g4_slot:
     fig4 = None
-    if graph3 is not None:
-        traces4 = [("Graph 3", vlsr, graph3, theme["accent"], "solid")]
+    if is_2d:
+        st.info("Graph 4 is not used for 2D Gaussian fits -- see the map below.")
+    elif graph3 is not None:
+        traces4 = [("Graph 3", vlsr, graph3, graph3_color, "solid")]
         if is_multi:
             if multi is not None and multi["params"]:
                 traces4.append(("Composite model", vlsr, multi["curve"], styles.get_fit_line_color(), "dash"))
         elif result is not None and result.ok:
-            traces4.append(("Fit" if not result.fell_back else f"Fit ({result.fit_type_used})", vlsr, result.curve,
+            traces4.append(("Fit" if not result.fell_back else f"Fit ({result.fit_type_used})",
+                            vlsr if result.curve_x is None else result.curve_x, result.curve,
                             styles.get_fit_line_color(), "dash"))
-        fig4 = _figure(traces4, f"Intensity ({g3_unit})")
-    _panel("Graph 4 — Fit of Graph 3", fig4, "Waiting for Graph 3.")
+        elif preserved is not None:
+            traces4.append((f"Fit ({preserved['fit_type_used']}, previous valid)",
+                            vlsr if preserved["curve_x"] is None else preserved["curve_x"], preserved["curve"],
+                            styles.get_fit_line_color(), "dash"))
+        fig4 = _figure(traces4, f"Intensity ({g3_unit})", window=window)
+    if not is_2d:
+        _panel("Graph 4 — Fit of Graph 3", fig4, "Waiting for Graph 3.")
 
 
 # ---------------------------------------------------------------------
@@ -426,13 +552,49 @@ def _stage_summary() -> dict[str, Any]:
         "n_channels": int(vlsr.size),
         "vlsr_range_kms": [float(vlsr.min()), float(vlsr.max())] if vlsr.size else [],
     }
+    if fit_options_summary is not None:
+        summary["fit_options"] = fit_options_summary
     block = getattr(result, "multi_component", None)
     if block:
         summary["multi_component"] = block  # restored by _restore_multi_from_session on Load Session
     return summary
 
 
-can_save = result is not None and result.ok and graph3_ready
+def _json_cov(cov: np.ndarray) -> list[list[Optional[float]]]:
+    """Covariance -> JSON-safe nested lists (non-finite entries become null)."""
+    return [[float(c) if np.isfinite(c) else None for c in row] for row in np.asarray(cov, dtype=float)]
+
+
+def _commit_2d(state: dict[str, Any]) -> None:
+    """Save a 2D Gaussian fit: stage summary, audit entry, checkpoint. It has no spectrum curve, so no latest_fit."""
+    stored = state["stored"]
+    fit = stored["result"]
+    summary = {
+        "fit_type": FIT_2D_TYPE, "fit_type_requested": FIT_2D_TYPE,
+        "fitted_quantity": f"2D spatial map (st.session_state.{MAP_STATE_KEY})",
+        "parameters": [{"parameter": p, "value": v, "error": e} for p, v, e in fit.rows],
+        "covariance": _json_cov(fit.pcov), "covariance_parameters": list(fitting_helpers.COV_LABELS_2D),
+        "converged": fit.converged, "notes": list(fit.notes),
+        "fit_options": {"initial_guess": list(stored["p0"]), "position_angle_unit": "degrees"},
+        "map_shape": [int(n) for n in state["map"].data.shape],
+    }
+    st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = summary
+    # A 2D fit has no curve on the velocity axis; drop any earlier spectral overlay so Page 08 cannot show an older
+    # fit as if it belonged to this commit.
+    st.session_state.pop("latest_fit", None)
+    session_store.mark_stage_complete(THIS_STAGE_KEY)
+    session_store.log_event(f"Spectral fit committed — {FIT_2D_TYPE} fitted to the {summary['map_shape'][0]} x "
+                            f"{summary['map_shape'][1]} map")
+    session_store.checkpoint_session("Spectral fit committed")
+    if not st.session_state.get("checkpoint_error"):
+        st.success("Fit saved to session and checkpointed.")
+
+
+if is_2d:
+    # a synthetic test map is development-only data: refuse to save it (same policy as the placeholder spectrum)
+    can_save = bool(two_d and two_d["map"] is not None and not two_d["synthetic"] and two_d["stored"] is not None)
+else:
+    can_save = result is not None and result.ok and graph3_ready
 save_col, next_col, _ = st.columns([1, 1.4, 3])
 with save_col:
     save_clicked = st.button("Save fit to session", type="secondary", disabled=not can_save, use_container_width=True)
@@ -441,7 +603,9 @@ with next_col:
     next_clicked = st.button("Continue to Export & Session →", type="primary", use_container_width=True,
                              key="fitting_next_btn")
 
-if save_clicked:
+if save_clicked and is_2d:
+    _commit_2d(two_d)
+elif save_clicked:
     summary = _stage_summary()
     st.session_state.setdefault("pipeline_data", {})[THIS_STAGE_KEY] = summary
     if summary.get("multi_component"):
@@ -455,7 +619,8 @@ if save_clicked:
         "spectrum_source": source_key,
         "intensity_unit": g3_unit,
         "vlsr": vlsr.tolist(),
-        "fit_curve": result.curve.tolist(),
+        # Page 08 plots/exports this channel-for-channel, so a window fit's curve is resampled onto the full axis
+        "fit_curve": _json_curve(fitting_helpers.align_curve(vlsr, result.curve, getattr(result, "curve_x", None))),
     }
     session_store.mark_stage_complete(THIS_STAGE_KEY)
     session_store.log_event(

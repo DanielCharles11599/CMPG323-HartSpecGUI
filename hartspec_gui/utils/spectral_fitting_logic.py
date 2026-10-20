@@ -1,5 +1,12 @@
 # spectral_fitting_logic.py — FR-14/15/16/17: pure (Streamlit-free) spectral line fitting for Page 07.
 #
+# FR mapping (Technical Specs §4.6 / User Stories §3.3): FR-14 1D Gaussian, FR-15 Polynomial Peak, FR-16 2D Gaussian,
+# FR-17 Multi-component; FIT_TYPES is in that order (the order of the Page 07 control).
+#
+# STATUS: Page 07 no longer calls run_fit(). The page now uses the clc/ adapters in utils/fitting_helpers.py
+# (run_gaussf / run_fit_max / run_2d_gauss, results returned as FitResult). This module still provides FitResult,
+# FIT_TYPES and the scipy reproductions below, which are kept for their tests until the team confirms they can go.
+#
 # Extracted from 07_Spectral_Fitting.py so the fitting code can be unit-tested (70% coverage target on
 # fitting code) without a Streamlit runtime. The model mathematics is unchanged from the page-local
 # versions: same Gaussian parameterisation, same scipy.optimize.curve_fit calls, same initial guesses for
@@ -21,10 +28,8 @@
 # clc/ numerics does not apply here.
 #
 # TODO: confirm against design
-#   * FR-15 "2D Gaussian": implemented as a two-component 1D Gaussian on the velocity spectrum (reading (b) in
-#     the page header). Confirm against the spec.
-#   * FR-16 "Polynomial Peak": the polynomial is fitted over the FULL velocity range, and "Peak Vlsr" is the
-#     argmax of that polynomial. Confirm whether the spec intends a window around the line peak (and its width).
+#   * The "2D Gaussian" two-component 1D fit and the full-range polynomial below are superseded on the page by the
+#     spatial clc/2D_Gauss_fit.py fit (FR-16) and clc/fit_max.py window fit (FR-15); see utils/fitting_helpers.py.
 #   * FR-17 "Multi-component": number of components is fixed at 3. Confirm the spec's count / selection rule.
 #   * All Gaussian fits assume an emission line (positive peak), as for maser spectra; an absorption line is
 #     not fitted correctly.
@@ -38,7 +43,7 @@ import numpy as np
 from scipy.optimize import OptimizeWarning, curve_fit
 from scipy.signal import find_peaks
 
-FIT_TYPES = ["1D Gaussian", "2D Gaussian", "Polynomial Peak", "Multi-component"]
+FIT_TYPES = ["1D Gaussian", "Polynomial Peak", "2D Gaussian", "Multi-component"]  # FR-14, 15, 16, 17
 
 FWHM_PER_SIGMA = 2.3548  # kept identical to the original page-local constant (exact value is 2.35482...)
 POLYNOMIAL_ORDER = 4
@@ -55,7 +60,8 @@ class FitError(ValueError):
 class FitResult:
     """Outcome of one fit request.
 
-    ``curve`` is None when no fit could be produced; ``notes`` then says why. ``rows`` are display-ready
+    ``curve`` is None when no fit could be produced; ``notes`` then says why. ``curve_x`` is None when ``curve``
+    is aligned channel-for-channel with the input velocities. ``rows`` are display-ready
     ``(parameter, value, error)`` strings for the fit-parameters table.
     """
 
@@ -65,6 +71,7 @@ class FitResult:
     rows: tuple[tuple[str, str, str], ...]
     notes: tuple[str, ...]
     converged: bool
+    curve_x: np.ndarray | None = None  # x of ``curve`` when it is not sampled on the full velocity axis (fit_max.py)
 
     @property
     def ok(self) -> bool:
@@ -183,7 +190,7 @@ def _fit_1d(v: np.ndarray, y: np.ndarray, unit: str):
 
 
 def _fit_two_component(v: np.ndarray, y: np.ndarray, unit: str):
-    """FR-15 (reading (b), see module TODO) -- two Gaussians on the velocity spectrum plus a shared offset."""
+    """FR-16 interim (see module TODO) -- two Gaussians on the velocity spectrum plus a shared offset."""
     seeds = seed_indices(v, y, 2)[::-1]  # tallest first: component 1 is the dominant line
     if len(seeds) < 2:
         raise RuntimeError("Could not find two separated peaks to seed a two-component fit.")
@@ -204,7 +211,7 @@ def _fit_two_component(v: np.ndarray, y: np.ndarray, unit: str):
 
 
 def _fit_polynomial(v: np.ndarray, y: np.ndarray, unit: str):
-    """FR-16 -- polynomial fit; see the module TODO on full-range vs around-the-peak."""
+    """FR-15 -- polynomial fit; see the module TODO on full-range vs around-the-peak."""
     coeffs = np.polyfit(v, y, POLYNOMIAL_ORDER)
     curve = np.polyval(coeffs, v)
     rows = [(f"Coefficient x^{POLYNOMIAL_ORDER - k}", f"{c:.4g}", "—") for k, c in enumerate(coeffs)]
