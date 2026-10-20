@@ -88,7 +88,7 @@ SOURCE_DEPENDENT_SESSION_PREFIXES = (
     "pointing_", "fit_", "spectral_fitting_", "export_",
 )
 SOURCE_DEPENDENT_SESSION_KEYS = frozenset({
-    "loaded_spectrum", "loaded_spectra", "calibrated_spectrum", "latest_fit",
+    "loaded_spectrum", "loaded_spectra", "calibrated_spectrum", "latest_fit", "map_2d_data",
 })
 _SOURCE_CONTROL_DEFAULTS = {
     "file_loader_mapping_mode": "Auto",
@@ -325,7 +325,8 @@ def invalidate_loaded_input_dependents(state: MutableMapping[str, Any], *, new_s
         pipeline.pop(stage, None)
     for key in list(state):
         if isinstance(key, str) and (
-            key in ("calibrated_spectrum", "latest_fit") or key.startswith(LOADED_INPUT_DEPENDENT_PREFIXES)
+            key in ("calibrated_spectrum", "latest_fit", "map_2d_data")
+            or key.startswith(LOADED_INPUT_DEPENDENT_PREFIXES)
         ):
             del state[key]
     # These controls belong to later pages, not the currently mounted loader.

@@ -120,6 +120,17 @@ def app(monkeypatch, tmp_path):
     env = types.ModuleType("utils.env")
     env.load_dotenv_if_present = lambda: None
     monkeypatch.setitem(sys.modules, "streamlit", st)
+    # Page 2 imports components even though this headless flow only calls its
+    # load/handoff functions. Isolate that import instead of depending on a
+    # real Streamlit module left in sys.modules by another test.
+    components = types.ModuleType("streamlit.components")
+    components.__path__ = []
+    components_v1 = types.ModuleType("streamlit.components.v1")
+    components_v1.html = lambda *args, **kwargs: None
+    components_v1.iframe = lambda *args, **kwargs: None
+    components.v1, st.components = components_v1, components
+    monkeypatch.setitem(sys.modules, "streamlit.components", components)
+    monkeypatch.setitem(sys.modules, "streamlit.components.v1", components_v1)
     monkeypatch.setitem(sys.modules, "utils", utils)
     monkeypatch.setitem(sys.modules, "utils.env", env)
     monkeypatch.setenv("SESSIONS_PATH", str(tmp_path / "sessions"))
@@ -204,6 +215,7 @@ def seed_old(app):
         "bandpass_applied_mode": "Position Switch", "bandpass_mode": "Position Switch",
         "baseline_corrected_spectrum": spectrum(), "baseline_editor_seen_event_ids": ["old-event"],
         "calibrated_spectrum": spectrum(900), "latest_fit": {"fit_curve": [900, 901]},
+        "map_2d_data": {"data": [[1.0] * 3 for _ in range(3)], "x": [0, 1, 2], "y": [0, 1, 2]},
         "pointing_cached_result": {"old": True}, "calibration_cached_result": {"old": True},
         "spectral_fitting_cached_result": {"old": True}, "export_cached_result": {"old": True},
         "file_loader_ingest_result::a1.fits": {"old": True},
@@ -275,6 +287,32 @@ def test_clears_every_known_downstream_cache_and_intent(app):
     assert state["fit_type"] == "1D Gaussian"
     assert state["fit_polarization"] == "LCP"
     assert set(state["pipeline_data"]) == {"01_source_browser", "extension_metadata"}
+    assert "map_2d_data" not in state  # independent assertion, not derived from the registry under test
+
+
+def test_changed_loaded_input_set_clears_spatial_map_but_preserves_loader_evidence(app):
+    """Quarantine/validation changes cannot leave a previous observation's spatial map behind."""
+    state = seed_old(app)
+    loaded = state["loaded_spectra"]
+    loader = state["pipeline_data"]["file_loader"]
+    source = state["pipeline_data"]["01_source_browser"]
+    app.invalidate.invalidate_loaded_input_dependents(state, new_session_id="new-validated-inputs")
+    assert "map_2d_data" not in state
+    assert "latest_fit" not in state
+    assert "07_spectral_fitting" not in state["pipeline_data"]
+    assert state["loaded_spectra"] is loaded
+    assert state["pipeline_data"]["file_loader"] is loader
+    assert state["pipeline_data"]["01_source_browser"] is source
+    assert state["session_id"] == "new-validated-inputs"
+
+
+def test_invalid_loaded_input_replacement_does_not_clear_spatial_map(app):
+    """Replacement-ID validation must precede every cleanup, including the new map key."""
+    state = seed_old(app)
+    before = copy.deepcopy(state)
+    with pytest.raises(ValueError):
+        app.invalidate.invalidate_loaded_input_dependents(state, new_session_id="old-a")
+    assert state == before
 
 
 def test_source_cleanup_namespaces_match_tested_step1_registry(app):
@@ -422,7 +460,9 @@ def test_invalid_live_state_is_rejected_without_partial_cleanup(app, key, value)
 def test_baseline_only_invalidation_still_preserves_pointing_and_inputs(app):
     state = seed_old(app)
     pointing = state["pipeline_data"]["06_pointing_correction"]
+    spatial_map = state["map_2d_data"]
     app.invalidate.invalidate_baseline_dependents(state)
+    assert state["map_2d_data"] is spatial_map  # an independent spatial map is not a 1D-baseline dependency
     assert "06_pointing_correction" in state["completed_stages"]
     assert state["pipeline_data"]["06_pointing_correction"] is pointing
     assert state["pointing_cached_result"] == {"old": True}

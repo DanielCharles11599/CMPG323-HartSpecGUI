@@ -80,6 +80,14 @@ def test_native_1d_poly_selector_and_cached_1d(native_app, monkeypatch):
     at.radio(key="fit_type").set_value("Polynomial Peak").run()
     assert not at.exception and not at.button(key="fit_save").disabled
     assert at.number_input[1].value == 10
+    assert at.selectbox[0].options == ["2nd", "3rd", "4th"]
+    assert at.selectbox[0].value == "4th"
+    for label, order in (("2nd", 2), ("3rd", 3), ("4th", 4)):
+        at.selectbox[0].set_value(label).run()
+        assert not at.exception and not at.button(key="fit_save").disabled
+        entry = at.session_state["pipeline_data"][fs.STAGE_KEY]["modes"]["Polynomial Peak"]
+        assert type(entry["options"]["polynomial_order"]) is int
+        assert entry["options"]["polynomial_order"] == order
     at.radio(key="fit_type").set_value("Multi-Component").run()
     assert not at.exception
     entry = at.session_state["pipeline_data"][fs.STAGE_KEY]["modes"]["Multi-Component"]
@@ -87,3 +95,9 @@ def test_native_1d_poly_selector_and_cached_1d(native_app, monkeypatch):
     assert entry["options"]["max_components"] == 10
     assert entry["options"]["rms_cutoff"] == 5.0
     assert entry["options"]["chi2_threshold"] == .01
+    at.radio(key="fit_type").set_value("Polynomial Peak").run()
+    assert not at.exception and at.selectbox[0].value == "4th"
+    at.run()  # serialize the restored dropdown as well, not only the first render
+    assert not at.exception
+    at.radio(key="fit_type").set_value("1D Gaussian").run()
+    assert not at.exception and len(calls) == 1
