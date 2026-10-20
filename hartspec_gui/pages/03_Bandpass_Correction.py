@@ -85,6 +85,13 @@ def _read_observation_metadata(path_string: str, mtime_ns: int | None) -> tuple[
         return None, ""
 
 
+def _quarantine_metadata() -> Mapping[str, Any]:
+    """SPPOINT/POSITION that Page 02 recorded for files it moved to Flagged/ (they are gone from their old path)."""
+    loader = st.session_state.get("pipeline_data", {}).get("file_loader", {})
+    meta = loader.get("quarantined_meta") if isinstance(loader, Mapping) else None
+    return meta if isinstance(meta, Mapping) else {}
+
+
 def _candidate_pairs() -> tuple[list[Pair], list[str]]:
     """Use JC's observation ordering, but permit only verified pairs to run.
 
@@ -99,6 +106,7 @@ def _candidate_pairs() -> tuple[list[Pair], list[str]]:
     entries: list[dict[str, Any]] = []
     unknown_directories: set[str] = set()
     notes: list[str] = []
+    quarantine_meta = _quarantine_metadata()
     for filename in filenames:
         ingest = st.session_state.get(f"file_loader_ingest_result::{filename}")
         raw = getattr(ingest, "spectrum", None)
@@ -107,6 +115,12 @@ def _candidate_pairs() -> tuple[list[Pair], list[str]]:
         path = path.absolute()
         pointing = _pointing_value(spectrum.get("pointing", spectrum.get("SPPOINT")))
         position = str(spectrum.get("position", spectrum.get("POSITION", "")) or "").strip().upper()
+        saved = quarantine_meta.get(filename)
+        if (pointing is None or not position) and isinstance(saved, Mapping):
+            # Quarantined files were moved away: use the metadata recorded before the move, so the file still
+            # holds its pairing slot (and its pair is dropped) instead of blocking the whole observation.
+            pointing = _pointing_value(saved.get("pointing")) if pointing is None else pointing
+            position = position or str(saved.get("position") or "").strip().upper()
         if pointing is None or not position:
             try:
                 mtime = path.stat().st_mtime_ns
@@ -682,3 +696,4 @@ if stored_result and stored_result.get("mode") == st.session_state["bandpass_mod
     _render_before_after(stored_result)
     if st.button("Continue to Baseline Block Editor →", type="primary", key="continue_to_baseline"):
         st.switch_page("pages/04_Baseline_Editor.py")
+        

@@ -567,6 +567,25 @@ def _quarantine_destination_text() -> str:
     return f"`{fits_ingest.quarantine_dir(_quarantine_base_dir())}`"
 
 
+def _read_pairing_metadata(path: Path) -> dict:
+    """SPPOINT / POSITION of a file, read from its headers (never its data).
+
+    Recorded just before a quarantine move so Page 03 can still tell which slot the file occupied in its
+    observation's integration sequence once the file is gone from its original path. Unreadable fields are None/"",
+    which Page 03 treats as "unknown" (the conservative choice).
+    """
+    meta: dict = {"pointing": None, "position": ""}
+    try:
+        with fits.open(path) as hdul:
+            raw = hdul[0].header.get("SPPOINT")
+            meta["pointing"] = int(float(raw)) if raw is not None and float(raw).is_integer() else None
+            if len(hdul) > 2:
+                meta["position"] = str(hdul[2].header.get("POSITION", "") or "").strip().upper()
+    except Exception:  # noqa: BLE001 -- best effort; never block a quarantine over metadata
+        pass
+    return meta
+
+
 def _quarantine_file(filename: str) -> None:
     """Move the file to Flagged/ for real (FR-03 handoff step 5), via
     `fits_ingest.move_to_quarantine()`, then record it in session state
@@ -580,6 +599,8 @@ def _quarantine_file(filename: str) -> None:
     FLAGGED (not silently marked QUARANTINED when it never actually
     moved) rather than crashing the page.
     """
+    # Read before the move: afterwards the file no longer exists at its original path.
+    pairing_meta = _read_pairing_metadata(fits_ingest.get_archive_root() / filename)
     try:
         dest_path = fits_ingest.move_to_quarantine(filename, base_dir=_quarantine_base_dir())
     except fits_ingest.QuarantineError as exc:
@@ -589,6 +610,10 @@ def _quarantine_file(filename: str) -> None:
 
     st.session_state.setdefault("file_loader_quarantined", set())
     st.session_state["file_loader_quarantined"].add(filename)
+    # Kept in pipeline_data (JSON-safe) so it survives Save/Load and checkpoints; publish_validated_handoff()
+    # preserves unknown keys of this summary.
+    loader_stage = st.session_state.setdefault("pipeline_data", {}).setdefault(STAGE_KEY, {})
+    loader_stage.setdefault("quarantined_meta", {})[filename] = pairing_meta
     st.session_state.pop("file_loader_quarantine_error", None)
 
     # A file quarantined AFTER already loading successfully would otherwise
@@ -1792,3 +1817,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

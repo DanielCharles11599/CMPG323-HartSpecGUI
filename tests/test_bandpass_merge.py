@@ -648,3 +648,14 @@ def test_saved_pair_matches_after_dropdown_order_changes_on_load(app):
     assert app.state["bandpass_pair_index"] == 0
     assert names_used(app) == ["c.fits", "d.fits"]
     assert app.state["session_id"] == sid
+
+
+def test_quarantined_member_moved_off_disk_keeps_its_pairing_slot(app):
+    seed_pairs(app)
+    fake_headers(app, {"b.fits": (0, "ON")})
+    app.page._quarantine_file("b.fits")
+    assert not (app.archive / "b.fits").exists()
+    app.run_bandpass()
+    assert not any("Cannot determine SPPOINT" in m for m in app.ui.messages)
+    assert names_used(app) == ["c.fits", "d.fits"]
+    assert any("not substituted" in m for m in app.ui.messages)
