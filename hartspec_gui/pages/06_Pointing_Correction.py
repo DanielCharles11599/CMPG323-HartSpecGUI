@@ -628,6 +628,16 @@ def main() -> None:
             powers = dict(entry["powers"])
             hpbw = hpbw_header
     if scan is None:
+        _quarantined = st.session_state.get("file_loader_quarantined", set())
+        _meta = st.session_state.get("pipeline_data", {}).get("file_loader", {}).get("quarantined_meta", {})
+        _lost = {n: m for n, m in _meta.items() if n in _quarantined and m.get("pointing") == 1}
+        if _lost:
+            st.warning(
+                "These quarantined files belonged to a pointing scan (SPPOINT = 1), so that scan is incomplete: "
+                + ", ".join(f"{n} ({m.get('position') or '?'})" for n, m in _lost.items())
+            )
+    
+    if scan is None:
         powers, hpbw_entered = _render_manual_entry()
         hpbw = hpbw_entered if hpbw_entered > 0 else None
 
