@@ -11,3 +11,6 @@ matplotlib>=3.7
 
 # Required by clc/load_file2.py (DATE-OBS convention loader) 
 specutils==1.20.3
+
+#deployment specific dependancies
+pyarrow==19.0.1
