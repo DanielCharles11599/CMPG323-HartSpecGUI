@@ -156,6 +156,7 @@ from astropy.io import fits
 from utils import fits_ingest, session_store, sidebar, styles
 from utils.file_loader_logic import publish_validated_handoff, restore_saved_quarantine
 from utils.source_browser_logic import THIS_STAGE_KEY as SOURCE_BROWSER_STAGE_KEY
+from utils.source_browser_logic import SourceFileEntry, run_observation_block_sort
 
 logger = logging.getLogger(__name__)
 
@@ -640,6 +641,34 @@ def _quarantine_file(filename: str) -> None:
     session_store.checkpoint_session("Confirmed quarantine recorded")
 
 
+def _resort_blocks_after_quarantine() -> None:
+    """Re-run File_check on the files that remain, if Page 01's sort had failed (flagged files broke it).
+
+    Only acts when Page 01 recorded a File_check error. If the sort still fails (other flagged files remain),
+    the previous state is left untouched.
+    """
+    selection = st.session_state.get("pipeline_data", {}).get(SOURCE_BROWSER_STAGE_KEY, {})
+    if not isinstance(selection, Mapping) or not selection.get("file_check_error"):
+        return
+    quarantined = st.session_state.get("file_loader_quarantined", set())
+    pairs = [(rel, path) for rel, path in zip(selection.get("selected_files") or [],
+                                              selection.get("fits_file_paths") or []) if rel not in quarantined]
+    if not pairs:
+        return
+    entries = [SourceFileEntry(path=Path(path), filename=Path(path).name, size_mb=0.0, status="OK")
+               for _rel, path in pairs]
+    workspace = session_store.SESSIONS_DIR / st.session_state["session_id"] / "workspace"
+    try:
+        outcome = run_observation_block_sort(
+            entries, workspace, selection.get("source_name"), selection.get("frequency_mhz"))
+    except Exception as exc:  # noqa: BLE001 -- still failing: keep the previous state
+        session_store.log_event(f"Block sorting after quarantine still failed -- {type(exc).__name__}: {exc}")
+        return
+    selection.update(observation_blocks=outcome.blocks, discarded_files=outcome.discarded_files,
+                     file_check_workspace=str(outcome.work_dir), file_check_error=None)
+    session_store.log_event(f"File_check re-run after quarantine — {len(outcome.blocks)} observation block(s)")
+
+
 def _build_validation_rows(filenames: list[str]) -> list[dict]:
     """Real per-file validation rows, replacing the old static
     VALIDATION_ROWS sample data (FR-03 handoff step 3).
@@ -765,6 +794,7 @@ def _render_validation_table() -> None:
                 with st.spinner(f"Quarantining {len(flagged_pending_files)} file(s)…"):
                     for target in flagged_pending_files:
                         _quarantine_file(target)
+                _resort_blocks_after_quarantine()
                 quarantined_now = st.session_state.get("file_loader_quarantined", set())
                 failed = [f for f in flagged_pending_files if f not in quarantined_now]
                 if failed:
@@ -890,6 +920,7 @@ def _render_validation_table() -> None:
                             ):
                                 with st.spinner(f"Quarantining {row['file']}…"):
                                     _quarantine_file(row["file"])
+                                    _resort_blocks_after_quarantine()
                                 st.session_state["file_loader_pending_quarantine"] = None
                                 st.rerun()
                             st.markdown('<span class="hs-compact-btn-marker"></span>', unsafe_allow_html=True)
