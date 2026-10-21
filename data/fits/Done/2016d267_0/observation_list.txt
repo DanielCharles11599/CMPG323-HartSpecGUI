@@ -1,4 +1,0 @@
-2016d267_13h29m22s_Spec_sharmila_G328.24-0.55.fits ON 0 -52.283
-2016d267_13h33m02s_Spec_sharmila_G328.24-0.55.fits ON 0 -74.76119
-2016d267_13h37m12s_Spec_sharmila_G328.24-0.55.fits ON 0 -52.283
-2016d267_13h41m22s_Spec_sharmila_G328.24-0.55.fits ON 0 -74.76119

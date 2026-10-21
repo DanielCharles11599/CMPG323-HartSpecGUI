@@ -1,6 +1,0 @@
-2011d225_17h30m22s_Spec_sharmila_G328.24-0.55.fits HPN 1 -52.283
-2011d225_17h31m37s_Spec_sharmila_G328.24-0.55.fits HPS 1 -74.76119
-2011d225_17h32m47s_Spec_sharmila_G328.24-0.55.fits HPE 1 -52.283
-2011d225_17h34m27s_Spec_sharmila_G328.24-0.55.fits HPW 1 -74.76119
-2011d225_17h35m37s_Spec_sharmila_G328.24-0.55.fits ON 1 -52.283
-2011d225_17h36m32s_Spec_sharmila_G328.24-0.55.fits ON 1 -74.76119

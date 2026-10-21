@@ -1,358 +1,0 @@
-SIMPLE  =                    T                                                  BITPIX  =                    8                                                  NAXIS   =                    0                                                  EXTEND  =                    T                                                  DATE    = '2021-09-21T12:56:47' / file creation date (YYYY-MM-DDThh:mm:ss UT)   COMMENT information about the object, from scheduler task                       OBJECT  = 'G328.24-0.55'       / Name of object                                 LONGITUD=     238.525458333333 / Longitude of object                            LATITUDE=    -53.8463888888889 / Latitude of object                             COORDSYS= 'EQUATORIAL'         / Input coordinate system                        EQUINOX =                1950. / Input coordinate equinox                       RADECSYS= 'ICRS    '           / Input reference frame                          COMMENT information about the scan, from scheduler task                         OBSERVER= 'S. GOEDHART'        / Principal Investigator                         OBSLOCAL= 'sharmila'           /  On-site observer                              PROJNAME= '6.7-GHz methanol maser monitoring periodic sources' / Short name for PROPOSAL= '2003.005'           / Observing proposal ID                          COMMENT information about the antenna                                           TELESCOP= 'HartRAO 26m Antenna' / Telescope name                                UPGRADE = 'Surface upgrade completed !!' / Antenna surface status               FOCUS   =             4.609375 / Sub-reflector focus                            TILT    =                   0. / Sub-reflector tilt                             TAMBIENT=     301.287280181885 / [K] Ambient temperature                        PRESSURE=                864.5 / [mbar] Atmospheric pressure                    HUMIDITY=     13.2856885375977 / [%] Humidity                                   WINDSPD =          0.830078125 / [m/s] Wind Speed                               SCANTYPE= 'SPECTRUM'           / scantype of observation                        COMMENT Information about the spectrum                                          DATE-OBS= '2021-09-21T12:56:28' / Date of start of observation                  FEEDSYS = 'syparm/feed/04.5S'  / microwave feed system                          SIMULATE=                    0 / Simulated ? TRUE=non-0 FALSE=0                 RESTFREQ=          6668518000. / [Hz] Line Rest Frequency                       BANDWDTH=             1000000. / [Hz] requested bandwidth                       SPBW    =             1000000. / [Hz] Spectrometer bandwidth                    SPVLSR  =                 -41. / [km/s] Centre Vlsr                             SPCHAN  =                 1024 / Number of spectrometer channels                SPFS    =              500000. / [Hz] Frequency-switching offset                SPPSLON =                   0. / [Deg] Position-switching offset in Longitude   SPPSLAT =                   0. / [Deg] Position-switching offset in Latitude    SPTIME  =                  15. / [s] Integration time per scan                  SPPOINT =                    1 / Offset pointing? TRUE=non-0 FALSE=0            OFFSETNS=                    0 / Offset by HHPBW NORTH (+1) or SOUTH (-1)?      OFFSETEW=                    1 / Offset by HHPBW EAST (+1) or WEST (-1)?        END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             XTENSION= 'BINTABLE'           / binary table extension                         BITPIX  =                    8 / 8-bit bytes                                    NAXIS   =                    2 / 2-dimensional binary table                     NAXIS1  =                   87 / width of table in bytes                        NAXIS2  =                    1 / number of rows in table                        PCOUNT  =                    0 / size of special data area                      GCOUNT  =                    1 / one data group (required keyword)              TFIELDS =                    6 / number of fields in each row                   EXTNAME = '04.5S   '           / name of this binary table extension            FEEDTYPE= 'Diagonal'           / Feedtype                                       BMOFFHA =                -0.51 / Beam offset in HA                              BMOFFDEC=               -0.021 / Beam offset in Dec                             HPBW    =                0.116 / Half-power beamwidth in degrees                FNBW    =                 0.27 / Beamwidth to first nulls in degrees            SNBW    =                 0.54 / Beamwidth to second nulls, in degrees          DICHROIC= '(Off)   '           / Dichroic reflector position ON or OFF          PHASECAL= '(Off)   '           / Mark 4 VLBI phase calibration ON or OFF        NOMTSYS =                  45. / [K] Nominal minimum system temperature         TTYPE1  = 'Feedsys '           / label for field                                TFORM1  = '27A     '           / format of field                                TTYPE2  = 'FeedSys_RF_Hi'      / label for field                                TFORM2  = '1D      '           / format of field                                TDISP2  = 'D12.5   '                                                            TTYPE3  = 'FeedSys_RF_Lo'      / label for field                                TFORM3  = '1D      '           / format of field                                TDISP3  = 'D12.5   '                                                            TTYPE4  = 'Mixer   '           / label for field                                TFORM4  = '28A     '           / format of field                                TTYPE5  = 'Mixer_RF_Lo'        / label for field                                TFORM5  = '1D      '           / format of field                                TDISP5  = 'D12.5   '                                                            TUNIT5  = 'MHz     '                                                            TTYPE6  = 'Mixer_RF_Hi'        / label for field                                TFORM6  = '1D      '           / format of field                                TDISP6  = 'D12.5   '                                                            TUNIT6  = 'MHz     '                                                            END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             4.5cm Single Feed Cryogenic@ºô     @·     4.5cm Narrowband Mixer Chain@·     @ºô                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              XTENSION= 'BINTABLE'           / binary table extension                         BITPIX  =                    8 / 8-bit bytes                                    NAXIS   =                    2 / 2-dimensional binary table                     NAXIS1  =                   12 / width of table in bytes                        NAXIS2  =                 1025 / number of rows in table                        PCOUNT  =                    0 / size of special data area                      GCOUNT  =                    1 / one data group (required keyword)              TFIELDS =                    3 / number of fields in each row                   EXTNAME = 'Spectra '           / name of this binary table extension            FRONTEND= '04.5S   '           / Frontend ID                                    CENTFREQ=             6668.018 / [MHz] Backend centre frequency                 BANDWDTH=                   1. / [MHz] Bandwidth of backend                     TCAL1   =                 14.2 / [K] Cal noise diode value for channel 1        TCALSIG1=                   0. / [K] uncertainty in TCAL1                       TCALFRQ1=                6670. / [Hz] Frequency the calibration applies to      TCALDAT1= '19000101'           / Calibration date                               TCAL2   =                  21. / [K] Cal noise diode value for channel 2        TCALSIG2=                   0. / [K] uncertainty in TCAL2                       TCALFRQ2=                6670. / [Hz] Frequency the calibration applies to      TCALDAT2= '19000101'           / Calibration date                               TTYPE1  = 'Vlsr    '           / label for field                                TFORM1  = '1E      '           / format of field                                TUNIT1  = 'km/s    '                                                            TTYPE2  = 'Polstate1'          / label for field                                TFORM2  = '1E      '           / format of field                                TUNIT2  = 'Kelvins '                                                            TTYPE3  = 'Polstate4'          / label for field                                TFORM3  = '1E      '           / format of field                                TUNIT3  = 'Kelvins '                                                            POSITION= 'HPE     '           / Position identifier                            END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             ÂQ!ËAæNUBë¹ÂPôÖAâA%B=†ÂPÇáAçœ%BÙAÂPšìAåDBZ@ÂPmøAèèàBCJÂPAAêXeBH«ÂPAìPˆBypÂOçAì”BõÂOº$AëmBÀ)ÂO/AîªèB#RQÂO`:Aìt½B ¬ÂO3FAìØµB$ÍÂOQAú$B)Í-ÂNÙ\Aô6 B'w·ÂN¬gAø7MB(jÂNrAÿø(B/>sÂNR}BõüB-8ÂN%‰B´7B0gÃÂMø”BsB2/ÂMËŸB'óB5êÏÂMžªBqMB:ü0ÂMqµBs´B:ÞóÂMDÀBgDB:ãÂMÌBhaBB“ÂLê×BBAK¥ÂL½âBnùBC`@ÂLíB¶ÁBCÔHÂLcøBÉBK±ÂL7Bý¨BPNÂL
-BDBR¼˜ÂKÝBBEBVxÂK°%BêBW8wÂKƒ0BžB[,HÂKV;B$žBb©üÂK)FB%iíB^¤xÂJüRB%,BeÀ¨ÂJÏ]B)wBf¤ˆÂJ¢hB+ž¤Bl-	ÂJusB,_SBmŸÉÂJH~B.Á Bs¡UÂJ‰B1:ÐBvÑwÂIî•B6`xBsžÂIÁ B9ÝB~
-}ÂI”«B9èB‚dCÂIg¶B;~íBÔüÂI:ÁB@B†tÂIÌBCáŒB†{–ÂHàØBC7ëBˆÇÂH³ãBE¿BŠ5ÇÂH†îBI]wBˆ6KÂHYùBJUB‹ÌÂH-BLŒ¨B‹|¿ÂH BL8+BM7ÂGÓBRõSB’³”ÂG¦&BWK)B‰*ÂGy1BVßB“ŸCÂGL<B[HÿB“í)ÂGGBXýB™ÔÐÂFòRBdYB—J°ÂFÅ^BgJ…B$ÈÂF˜iBdXBž9«ÂFktBjhB¡yÃÂF>Bm6OB Ï´ÂFŠBkÚ5B¢gÂEä•BjœUB£@LÂE·¡BmdiB¥ sÂEŠ¬Bo±B¢GÂE]·BqÝgB¥ÖWÂE0ÂBq]B¢\@ÂEÍBlc‡B¥n¥ÂDÖØBs™ÑB¢ˆ­ÂD©ãBsÅ»B¨DvÂD|ïBtÿ×B¨â‘ÂDOúBv½xB¨)qÂD#Bu ÐB©K/ÂCöBwÞ÷B©ØPÂCÉBx…B©8ŸÂCœ&B}¶¸B¬ÓÂCo2B~>kB®ú=ÂCB=B‚?ËB²d³ÂCHB}ËìB¯ùÂBèSB¼‡B´rñÂB»^B‚ÑB´®WÂBŽiB„ åB³Š§ÂBauB/CB³  ÂB4€B‚•B¶ºPÂB‹B‚wŠB±údÂAÚ–B{ÝÛB±-xÂA­¡B9B³%±ÂA€¬B‡B­/ãÂAS¸B­3B³\HÂA&ÃB÷ÐB²jÂ@ùÎBh<B±_Â@ÌÙB¿ÐB²¼‘Â@ŸäB‚YÏB´KÂ@rïB…xìB´:(Â@EûB/µB¯õÕÂ@B…Ú÷B¶PÐÂ?ìB„6tB¯ óÂ?¿Bƒ…™B´§Â?’'B†
-­B²ØÄÂ?e2B…2B¶€«Â?8>BƒKŠB³UÂ?IB„ç(BµÉÔÂ>ÞTB‚ÓãB±œÄÂ>±_B‚ï·B³–ÿÂ>„jBƒ™3B³MGÂ>WuB‚úïB´DÍÂ>*B…ÿ\B·%PÂ=ýŒB„Ž5B¶Ì5Â=Ð—B‡¸pB´ Â=£¢B…qB²ö3Â=v­B†/ûB±¹Â=I¸Bƒì>B´9Â=ÄB„XB´!@Â<ïÏB‚×”B¶~ Â<ÂÚB„ ­B³$¯Â<•åBƒ"ÂB³n„Â<hðBƒº¢BµÌýÂ<;ûB„ŒB»˜Â<Bƒ;7B³’?Â;âB…7¥B²ñ¥Â;µBƒ#ÈB±ÃÂ;ˆ(BƒÎDB·™³Â;[3Bƒ5ÓB´•Â;.>B‚	mB³ý³Â;JBƒ"7B³ÆÂ:ÔUB‚Å©B¶³»Â:§`B„öKB²†hÂ:zkBƒyBµîÐÂ:MvB…o/B²Û·Â: B…•Bµ‘!Â9óŒB…UB´l™Â9Æ˜Bƒ)OB¸/Â9™£B…°™B±~qÂ9l®B…ËBµa…Â9?¹B„Y-Bµ¬˜Â9ÄB‚©+B´æÌÂ8åÏB…3ñB¶´Â8¸ÛBƒB«B·M\Â8‹æB…»ôB³àÐÂ8^ñB…ÿüB·'Â81üB…·OBµ+5Â8B‡±)B¸ùQÂ7ØB†ËBµ®×Â7«B†ÅÒB·GoÂ7~)B†ÛèB¸ÍÂ7Q4Bƒ.kB¶¢­Â7$?B†Ê'B¸ÅÂ6÷JB‹÷ÌB¾ì€Â6ÊUBÏØB¿¿ùÂ6aB”UBÆRãÂ6plBš:|BË’Â6CwB¡ÚBÕäSÂ6‚B¥>lBÓØpÂ5éB¡[ÿBÚJmÂ5¼˜B£›BÖïÂ5¤BšM°BÌØ5Â5b¯B™wGBÏèÂ55ºB•º:BÄ“ÃÂ5ÅB‘qŽBÄà—Â4ÛÐB“uBÅ#Â4®ÛBšÕBÊ°wÂ4çBŸòïB×˜ÓÂ4TòB©/øBå£Â4'ýBºs`Bî)ÈÂ3ûBÈFÏC\ÌÂ3ÎBÕáÏC‡ôÂ3¡BÕ*CŸÂ3t*BÛiC˜&Â3G5BÝãqCµÂ3@BåR-C†ýÂ2íKBì˜CÒ­Â2ÀVBë‘CU‹Â2“aBêžáC-Â2fmBåxCC¾ÃÂ29xBßY+CÈÞÂ2ƒB×t{C	Â1ßŽBÏ&óCDÂ1²™BÀHíBû¾ Â1…¤Bº;Bðû<Â1X°B±z	Bê˜pÂ1+»B®ç¼BæQ§Â0þÆB¢4BÖt™Â0ÑÑBî™BÐñµÂ0¤ÜB–y_BÈ­Â0wçB”ûšBÇõ7Â0JóBÇ%BÃwyÂ0þB‹ËÄBÀ-¤Â/ñ	B‹0dB¿›0Â/ÄB‰ÄB¹jØÂ/—B‰£4B¸eWÂ/j*B…¬¤B·Ý3Â/=6Bˆ*‹B¸éûÂ/AB‡
-B¹T)Â.ãLB†þÅB¸ŠÂ.¶WB‰T÷B»êÂ.‰bBˆ9KB¹{íÂ.\mBŠ¡Bº‡Â./xB uBÁW˜Â.„B’sBÃb Â-ÕB•¥BÉÇ±Â-¨šB“³mBÅ]ÛÂ-{¥B–
-!BÇ(Â-N°B‘N7BÈ Â-!»B’-aBÂµøÂ,ôÇB’?BÅÂ,ÇÒBŽ[BÃ³Â,šÝB²€BÀ­…Â,mèB¾™B¼ Â,@óBŠÎiBºs{Â,þBŠ¼AB¶ýÂ+ç
-B‰;B¹Š8Â+ºBˆ4wB¶šUÂ+ B…‰WB¹kÈÂ+`+B„µàB¶ÿÀÂ+36B‡X©B·X£Â+AB†+B·2˜Â*ÙMB…¤B¶¹pÂ*¬XB„òpB¸mõÂ*cB‰$$BºDÂ*RnB…‘ƒBµèÓÂ*%yB…iB³Â)ø„B„~aB¸¡ëÂ)ËB…ÓB³ÉÂ)ž›B…| B¸ñDÂ)q¦B„<GB³VüÂ)D±B„BåB´”‰Â)¼B†ÍÔB·{Â(êÇB†óBµßÂ(½ÓB†ÒïB¶PÂ(ÞB„f{B³mµÂ(céB…üB²–äÂ(6ôBƒ±ÈB²­uÂ(	ÿB„¬mB¶/1Â'Ý
-B‡ŸœB´Â¯Â'°BµÈB¶‹ˆÂ'ƒ!B„¥pBµMÃÂ'V,BƒcB³ÃDÂ')7B„LB´›éÂ&üBBƒÍB³Î!Â&ÏMB„êBµ|<Â&¢YB„)\BµšÝÂ&udB‚íýB³JsÂ&HoB„ìB´Ô{Â&zB„8µB´kDÂ%î…B‚³(B´BsÂ%ÁB‚»mB³»ÃÂ%”œBƒF§Bµ eÂ%g§B…JñB¶xçÂ%:²B‚™yB³ÁHÂ%½B„³LB²<¨Â$àÈB…0B³ÇíÂ$³ÓB‚ÀB¶µ3Â$†ßB†ý³B´EÂ$YêB„n B´>#Â$,õB‚¦9BµØ•Â$  B„AÏB·S{Â#ÓBƒ!KB´3aÂ#¦B3»B´ÁPÂ#y!B„qKB´—±Â#L-Bƒ£0B´’ÜÂ#8B‚\BµœíÂ"òCB„²1B³Ò_Â"ÅNBƒhjB³Ô!Â"˜YB„Õ…B´t“Â"kdB…	B±¸¿Â">pBƒtûB¶6•Â"{B‚‹×B¶¹Â!ä†B…*EB¸ŸüÂ!·‘B…»ÖB´“ÕÂ!ŠœB…€NB³‰ëÂ!]§B†ùYB³zÂ!0³Bƒª9B¶+§Â!¾Bƒ#ÃB·áÂ ÖÉB…³˜Bµ>Â ©ÔBƒî(Bµ“Â |ßB…fB¸ÇÓÂ OêB‚.áB´5Â "öB‚S3B¶£ÂöB€mB´ØÀÂÉB†\ƒB³ÛgÂœB‚œB¶“?Âo"B„øBµ"<ÂB-B„¥ìB´ZØÂ9B…²kB³
-…ÂèDB†W#B´'@Â»OB„4MBµÂŽZB‡áxBµâƒÂaeB†ŸwB´»Â4pB…?0B´¸DÂ|B„½ŸBµ1ÀÂÚ‡B„
-"B´þàÂ­’B„¯ Bµ×MÂ€Bˆ	wBµ„,ÂS¨B‚ÌûBµîƒÂ&³B†£5B³ÁGÂù¿B…žCBµæíÂÌÊB…T­B¸M¤ÂŸÕB‡ù¨B¶%qÂràBŠ-óB¸¿´ÂEëB‡0LB¹§õÂöB†EOB¹7@ÂìBŠ…B·üÂ¿B†á—B¸Ô´Â’Bˆ §B¸ý¿Âe#B‰Ä\BºUÍÂ8.B‹WcBº¨ÔÂ9B‡3rB½øØÂÞEB‹ŒB¿%ŸÂ±PB‰ŽìB½Ð“Â„[BŒNCB»ˆÂWfBŠ|-B¼ CÂ*qB‹ÓQBºu¼Âý|BŠìÛB¼ÔíÂÐˆBŠþƒB¸}Â£“B‹´CB¸¯ýÂvžB‰¶ïB¾ÂI©B‹ÔyB¿Š%Â´B‰ÛBÀ+Âï¿BŽø¹BÂìÂÂÊBÇ„BÆÂ•ÖB–=BÁËŒÂháB“žmBÃ+åÂ;ìBêíBÂ(Â÷BŒšÛBÅÈ}ÂâB÷tBÂ±eÂµBsÇBÆýkÂˆB’1>BÃîÑÂ[$B“‰mBÉ›Â./B–ôBÍåËÂ:B›ä«BÓ5ÄÂÔEB &»BÕÎhÂ§PB¥ßBØî;Âz\B¤C_BÜ`ÂMgB£TÝBÛŠmÂ rB¡Ï;BØ÷CÂó}B¡|BØ„ÂÆˆBŸßBØ_CÂ™“Bžç	BÓˆ­ÂlŸB›Á)BÐ‚ÓÂ?ªB›¸9BÐíŸÂµB˜f×BÉÇËÂåÀB˜ñBÊ´Â¸ËB•}BÈ¼<Â‹ÖB—A6BÍB•Â^âB–cBÅ«Â1íB”°ùBÉ.ÕÂøBŽ&BÅÛ¥ÂØB›uBÂi›Â«B’\BÀÑèÂ~BB¾90ÂQ%Bˆƒ)Bº£Â$0BˆC'B¹iáÂ÷;BˆÐéB¸æŸÂÊFB‰Ê_B»]ÂQBˆ²B¼g­Âp\B‰êàBºõ•ÂChBŠ¼˜B½^sÂsBŠˆBºëeÂé~B‡ŠB»ÀÅÂ¼‰B‰²qB¸ß|Â”B…Ç¡B·1ˆÂbŸB„ŒÆB¸u9Â5«Bƒ8ïB·Õ+Â¶B„oïB¹3ÂÛÁBƒÉvB³¡Â®ÌB…ÈçB¶(½Â×BƒTwB´“SÂTâB‚¬éBµªpÂ'îB…KÙB¹ïëÂúùBð³B´å‹ÂÎB…šB²¶áÂ¡B‚ŒB¶ìœÂtB„1B³ºÂG%B„®hBµß¼Â1B„@ÉBµCUÂí<B„@òBµÂøÂÀGB„æ|B´;Â“RB…l!B´šÅÂf]BƒÈ?B³•tÂ9hBƒJBµÁ;ÂtB‚£ÆBµKÂßB…OB³MeÂ²ŠBƒaõB³ÉÌÂ…•B„B´¨ýÂX B„±B´	ÅÂ+«B„gTB³­Âþ¶B„ôB²ÐPÂÑÂBƒÕ}B´™©Â¤ÍB‚Á,Bµ‰CÂwØB„ýŸB± «ÂJãB…;±B´ŠaÂîB„Ø+B´ûåÂðùBïB´îsÂÄB†£ B³‰8Â—B†|ÙB´3‰ÂjB…úB¹‡EÂ=&B…™B·'£Â1B†0ÇB¹¢ðÂ
-ã<B…JdB³êÛÂ
-¶HB‚›¯B´NÂ
-‰SB„Ì¸B´šåÂ
-\^B†íBµÓÂ
-/iB„$„B´°+Â
-tB„›B¶`gÂ	ÕB„ÄLB´ÍÂ	¨‹B„ÐgB²˜Â	{–B†qBµC`Â	N¡B…pBµÙÂ	!¬B…¤ÔB´J=Âô·B„ª·B³åˆÂÇÂBƒÑB´<ÂšÎB…¥ÏBµðÂmÙBƒýCB´‰LÂ@äB„`¹B¶T„ÂïB„c=B³ HÂæúB„û£Bµ{_ÂºBƒ{ýB¶¯àÂBˆüBµ¨Â`B‚{BµR¸Â3'B„ÁB³‚ÀÂ2B†ÐBµr‹ÂÙ=B„UÈB³QKÂ¬HB„|MB²û¸ÂTB…0B´_©ÂR_B€×B´¦-Â%jB‡Bµ ÂøuB„µËB´ÕDÂË€B…ÉB´jÌÂž‹B†OšBµp Âq—Bƒ†9B¸VHÂD¢B†‡{B±Ï Â­B†[B·q”Âê¸BƒõõBµEµÂ½ÃBˆk‹B·ucÂÎB„yB¶“ÂcÚB„óB±jüÂ6åB„‘0B´ÖkÂ	ðB…„+B´V ÂÜûB…TÄB³SÂ°B…ÇíB¸"˜ÂƒB„”¾Bµ™dÂVB†Y›BµcÂ)(B…ó•B´“Âü3B„p½B¼`øÂÏ>BˆâB·ªÂ¢IB‡*ðB¼Ö|ÂuTB‹ŒB»ŠPÂH_B‰ÙB¾ÌßÂkB‹!¿B½·°ÂîvB‹³ÖB»â\ÂÁBŠÿÛBº¥äÂ”ŒB‡>ÇB·ôWÂg—BˆFÃB·çÂ:¢B‡gÑBºéÂ®BƒN+B¶™éÂ à¹B„ aB´»ÏÂ ³ÄB„´õB¶¡'Â †ÏB†náB´ðÃÂ YÚB†B¸\%Â ,åB‰6ÀB¶!ÓÁÿÿáB…HEB¶À¹Áÿ¥øB…\<Bº2sÁÿLB„CWBºdHÁþò$B„1SB½ÊÅÁþ˜;B„ aB²¸MÁþ>QB„ÝÇB´²sÁýägBƒ‚ïB²kåÁýŠ~BƒÅ.B¶Áý0”Bƒ‡MB³–{ÁüÖªB„ÅŒB¶xìÁü|ÁB„]tB¶ú€Áü"×B„ÃBµ‹7ÁûÈíB„cB´‹`ÁûoB‚þ>B³úƒÁûB‚(OB³ÝÁú»0B„ýBµ ´ÁúaFB„ŒB°”ÅÁú]B…§B±L‹Áù­sB†—B´??ÁùS‰Bƒl™BµáèÁøù BƒOuB±#ÁøŸ¶B…‡­B±ÉqÁøEÌBƒ{Bµ8Á÷ëãB„º|B· =Á÷‘ùB‚Bµ­íÁ÷8B…ÞßB¶lÀÁöÞ&Bƒ{µB¶w©Áö„<B„É¨B¶6µÁö*RBƒ2B²ÞÁõÐiB„TB²Ò(ÁõvB‡|§BµÝ5Áõ•B…ŸBµŽÁôÂ¬B…‡BµCáÁôhÂB„²ùBµvØÁôØB„D¯BµÚÁó´ïBƒ…ãB¯²Áó[Bƒï‘B´>MÁóB…QiBµI Áò§2B‚ðrBµB½ÁòMHB†ÙB´ŒÁñó^B‚\íB³£TÁñ™uBƒñ}B´¸7Áñ?‹B…Ç¹B´Z;Áðå¡B„@B²2µÁð‹¸B‚‚íB´kÓÁð1ÎBƒñdB·ÂdÁï×äB‚ÕÿB²±MÁï}ûB…ÀB´+IÁï$B‚’çB·ðÁîÊ'B‚ý5B´é«Áîp>BýLCàYÁîTBƒ”^B¸ßDÁí¼jB‚þ‘B¶®ÃÁíbB‚
-ÕB³f›Áí—Bƒ0²B³H#Áì®­Bƒ„oB¶$ÕÁìTÄB„¢¯B´hÓÁëúÚB„œB´tÁë ðB‚ ×B±3ÁëGBƒë/B·
-`ÁêíB…•{B±eÁê“3BƒáB´ÛÁê9JBƒ¢B±3Áéß`Bƒ"ëB°rÁé…vB„¯WB³PÁé+Bƒ#+B·=pÁèÑ£B„¨B²¿;Áèw¹B„•ãB³-œÁèÐB‚IÓB±ÿØÁçÃæB‚Ð]B²Á½ÁçiüBù{B¶¹¥ÁçB„~ˆB·^Áæ¶)BgB±9‡Áæ\?Bƒ7GB²Š;ÁæVB†ÛB³ò…Áå¨lB‚éfBµÔMÁåN‚B„ÊàB²›ÍÁäô˜B…ÉB´7ÏÁäš¯B‚¼B±í”Áä@ÅB…‰AB·mïÁãæÛBƒl§B´ÜÔÁãŒòB‚¿B´
-#Áã3B„/àB´Z3ÁâÙB„Þ	B¶ÔMÁâ5BƒŽdB³¬Áâ%KB„}gBµ‡yÁáËaBƒaB³f ÁáqxB†’?B¶¾ÁáŽB„BaB²ãÁà½¤B„Z Bµ“eÁàc»B…–±B²© Áà	ÑB…MMB°È'Áß¯çB„/B´•ÁßUþB‚«êB²7ÁÞüB‚eiB´žûÁÞ¢*B„éÕB³V”ÁÞHAB„-ÌB²ÁÝîWBƒÊ–B¸ûèÁÝ”mBƒ™¶B´pÁÝ:„B…éAB´ÇlÁÜàšBƒ•¥B´¿¥ÁÜ†°B…ŒB´õ§ÁÜ,ÇBƒaB·D“ÁÛÒÝBÎaB±ËyÁÛxóBƒÏ"B±EÁÛ
-B…zíB³£/ÁÚÅ BƒïÀB¸ú·ÁÚk6B…MpB¶ÏÁÚMBƒ"B°wÁÙ·cBƒÑB²”ÁÙ]yB…@ÇB³špÁÙBÐFB³Æ}ÁØ©¦B‚êB¸<]ÁØO¼B„`¡B³àÌÁ×õÓB…íYB²{Á×›éB…nGBµÌøÁ×AÿB„WBµgÁÖèB†>yB³?ÐÁÖŽ,B„4·B´SÁÖ4BBƒ÷×B´J{ÁÕÚYB„áŽB¶½õÁÕ€oB†}B±€˜ÁÕ&…B‚ç›B´û¥ÁÔÌœBƒBµ8ÁÔr²B…O¿B·'ÿÁÔÈBƒ+÷B²ZðÁÓ¾ßBƒøéB±ãóÁÓdõB˜‹B²:óÁÓBƒ“GB´ÎÁÒ±"Bƒh‡B³8ÑÁÒW8Bƒ€B·…mÁÑýNBƒäB²’­ÁÑ£eB‚‘B´ÝUÁÑI{B„_åB´÷ÁÐï‘B‚Ì£BµOóÁÐ•¨BƒB±\ÁÐ;¾BƒH°B³ÛüÁÏáÔB…lB³9ÁÏ‡ëB…§cB³é€ÁÏ.B„TéB³oWÁÎÔB†Î•Bµ7ÁÎz-BƒaoB¶%ÁÎ DBƒ‰1Bµ×ÁÍÆZBƒ,B´PÁÍlpB„jÕB´[ÁÍ‡Bƒ¾¤B´[ÁÌ¸B„]PB¸×ÁÌ^³B„dˆB±¬½ÁÌÊB‚B²cçÁËªàB‚ŽkB´(3ÁËPöB‚*“B²ÖTÁÊ÷B‚â#B³ª4ÁÊ#BŸ¡B²ºÌÁÊC9B„èB¶£ÈÁÉéPB‚ˆ_B²ÀÁÉfB‚¸BBµ_ßÁÉ5|B‚ŸDB´ˆ[ÁÈÛ“B—B´g‹ÁÈ©B‚™B³ÓØÁÈ'¿B‚ŠQB³Ý÷ÁÇÍÖB„T¿B´cÁÇsìB„=ŒBµÇpÁÇBƒ?cBµìÀÁÆÀB‚ÏqB´áãÁÆf/BƒˆsB´ó5ÁÆEBƒ GB·ó{ÁÅ²\BƒcƒBµ§ŒÁÅXrB…Â‰B¶áÉÁÄþˆBƒ½B²¸ÁÄ¤ŸB…”«Bµ´ÁÄJµBƒSB´\-ÁÃðËBƒ+<B³2¬ÁÃ–âB‚ãòB´pÁÃ<øB„fÉBµD§ÁÂãB‚ÚB² ÁÂ‰%B‚„ãBµ²'ÁÂ/;B…íÝB±¤(ÁÁÕQBƒŒwBµUyÁÁ{hBƒ¸SB±¹µÁÁ!~B„¿yB³Ù”ÁÀÇ”B‚cõB¸e•ÁÀm«B…›Bµy½ÁÀÁB…5ÐB±‡[Á¿¹×B…³B·9½Á¿_îB„¯B³ƒÁ¿Bƒ¾†B³ÏëÁ¾¬B&B²·Á¾R1BƒÅeBµà!Á½øGBƒ~•B±ÖéÁ½ž]B…ž‡B²ë»Á½DtBƒFOB´2·Á¼êŠB„…9B³¨cÁ¼ BëB³ÏÁ¼6·B…PPB³üßÁ»ÜÍB„ò3B±€OÁ»‚ãB‚W(B¸GÁ»(úB„.sB±žÁºÏB„0Bµ­ãÁºu&Bƒ¡ B´À\Áº=B†þÃB´˜$Á¹ÁSB‚õB·æ•Á¹giB„7ZB´ùsÁ¹B‚ì;B¶!ëÁ¸³–BƒB´ÛÁ¸Y¬B‚EWB´÷CÁ·ÿÂB‚°ÛB°ËÄÁ·¥ÙBƒ›§B±
-¼Á·KïBƒP+B¸ÕÁ¶òB„ÃÇB²ƒÁ¶˜B„£LB¸;àÁ¶>2BƒC[B°ƒÁµäHB…¡B³¹±ÁµŠ_B„øñB³ñ\Áµ0uBƒIÌB²BÁÁ´Ö‹B†6âB²]Á´|¢B„I˜B´5ïÁ´"¸B„^§B²æMÁ³ÈÎBƒ¨	B±§Á³nåB‚ý\B´JwÁ³ûBYÃB²fÐÁ²»Bƒ0B±ÛÁ²a(B†'B³BìÁ²>B‚+HBµîÁ±­TB‚¾ñB³Œ…Á±SkB‚â#B³•åÁ°ùBƒ"B·ƒÁ°Ÿ—B…/¢B±Ú9Á°E®BƒdjB·%/Á¯ëÄB‚LžB´o‡Á¯‘ÚBƒµüB´Ö½Á¯7ñB‚Ï Bµ° Á®ÞB‚¸xB¶ª”Á®„B‚~KB´ƒÁ®*4B„ñ.Bµn Á­ÐJB„aBµMÁ­v`B†%hBµ+ÐÁ­wBƒ÷˜B´úÁ¬ÂB„YBµÇÁ¬h£B…ØBµð—Á¬ºB‚›]B±™1Á«´ÐBƒ˜ÌB³ kÁ«ZæBƒ1BµwÅÁ« ýBƒyLB´0çÁª§B„çzB´hÁªM)B…fhBµuuÁ©ó@B‚/´B¶=Á©™VBƒ§ B±iÀÁ©?lBƒYaBµ¦»Á¨åƒB–B´aåÁ¨‹™B„Æ—Bµ³EÁ¨1¯Bƒ“5Bµ&dÁ§×ÆB„7{BµëÁ§}ÜB„õ B²Š-Á§#òB„þòB´CÁ¦Ê	B…B±æ€Á¦pB„<èB³¤IÁ¦5B‚g±Bµ»èÁ¥¼LB†!B´`àÁ¥bbB‚WIB³€tÁ¥xBÉB³ŸtÁ¤®BƒÀÁB³'ŸÁ¤T¥BÑçB³©sÁ£ú»BƒBµ]Á£ ÒBƒôÝB².åÁ£FèB„R‰B°ž»Á¢ìþB†2ëB³jÉÁ¢“BôÈB°qoÁ¢9+B™üB¶`ôÁ¡ßAB‚?B±eßÁ¡…WB‚_B²GÁ¡+nBƒ†›B·½ãÁ Ñ„Bƒí«B´ãóÁ wšBƒŒ,B³KÁ ±B…*	Bµô˜ÁŸÃÇB‚;B¶osÁŸiÝBƒ/KB¶ÁŸôB„PB²èûÁž¶
-B‚C³B³PÁž\ B‚Ÿ³B³§uÁž7BÁƒBµÈ£Á¨MB‚&
-B´›™ÁNcB„QB±­ÁœôzBƒŒB´CÁœšBƒ^ÉB´'(Áœ@¦B‚gËB´žhÁ›æ½B‚B²{Á›ŒÓB…cB±.³Á›2éBƒ˜CB¸$CÁšÙ B„Œ5B¶oÁšBƒÕÍB´ÀcÁš%,B€íWB®ÉØÁ™ËCB™'B³TDÁ™qYBƒßsB±£;Á™oB‚í«B·,Á˜½†B‚QB²y¼Á˜cœB‚ÎJB²ghÁ˜	²B€TrB¯âLÁ—¯ÉBƒ¡ÙBµC]Á—UßB†GÁB³:øÁ–ûõBTmB³»Á–¢B‚D}B´ƒÁ–H"B‚)óBµsËÁ•î8BƒP/B³ÍùÁ•”OBƒ%µB²âÅÁ•:eB„Ê*B¶P¤Á”à{BÛœB´·±Á”†’BƒÎuB´‘Á”,¨B…}B³tÁ“Ò¾B½XB³ Á“xÕBààB´•ÅÁ“ëB„hB´ÁÀÁ’ÅB…†WBµf…Á’kB…ÁB²ú³Á’.BƒI×B²Ê½Á‘·DB‚éMBµbKÁ‘][B‚B³9³Á‘qBƒ:wB²N—Á©‡B…æUB´KÁOžBƒB²ÐUÁõ´B‚ôB¸YÐÁ›ÊBƒ#¿B²1ÁAáB‚EüB¶…-ÁŽç÷BƒÖAB´ÁŽŽB„‘‘B¸ôÁŽ4$B‚ÐsB¶ž;ÁÚ:BƒpB²ëÁ€PB]HB²dÁ&fB„SLB´.0ÁŒÌ}Bƒ_lB¶ÏÁŒr“B‚XB²/ÍÁŒ©BÚ¿BµÕHÁ‹¾ÀBƒk‡B¶¯uÁ‹dÖBƒCéBµôPÁ‹
-ìB‚ˆyB´þ˜ÁŠ±BƒE½B´•ÁŠWB‚Ü¨B³ú—Á‰ý/B‚ËšB°°ÅÁ‰£FBƒEB´ÏÁ‰I\B†ç°B´ÁˆïrB‡ ›B·±³Áˆ•‰B…½üB°1xÁˆ;ŸBÁBµ/ÓÁ‡áµBƒF<Bµ 0Á‡‡ÌB„r˜B·ÀùÁ‡-âBƒggB³Z“Á†ÓøBƒõFB¶=³Á†zB‚¢oB´|‘Á† %B…lBµ´ØÁ…Æ;B€ñÚB¶›!Á…lRBƒb«Bµ1ÅÁ…hB‚èB¶WÁ„¸~BƒVABµ`Á„^•BægB²ÒéÁ„«B…NÝB´È³ÁƒªÁB‚‘çBµNYÁƒPØB‚èbB´g½Á‚öîB…r¥B·µxÁ‚B„8-B³î Á‚CB„]ÓB·ƒÈÁé1B„ÝÇB´ÛôÁGB…“B²×UÁ5^Bƒ­0Bµ_Á€ÛtB…¢£B´àÅÁ€ŠBÕB²¿}Á€'¡Bƒ0BµEÁ›nB…ÅêB¶ÓÐÁ~ç›B…póB¸Á~3ÇBƒ vBµ™Á}ôBƒµÑB¶ÛåÁ|Ì!B‚ÎB´u0Á|MB‚ËÔB´zÁ{dzBƒq†B³@(Áz°§Bƒ^;Bµ;ÁyüÓB„¨BµµÐÁyI BëB´m;Áx•,BƒY¬B³`)ÁwáYBƒƒ×B´ã°Áw-†B„ÂB³ôÁvy²B…¦B³™WÁuÅßBƒ«‡B´òÓÁuB„»B´‹Át^8B‚hœBµÊGÁsªeB„'B°ùXÁrö’B„êoB²ƒ»ÁrB¾B‚JB²ŸÁqŽëB„<‘B´Œ?ÁpÛBƒZaB´,Áp'DB…¥ÑB³åÁosqBƒB³1Án¿žB‚ôCB³É‹ÁnÊBƒÓB³y?ÁmW÷Bþ}Bµ µÁl¤$Bƒ¿B³
-ÁkðPBíñB³÷1Ák<}B‚bsB²D¿ÁjˆªB€oÑB³[ýÁiÔÖBƒœ›B´Ñ%Ái!B‚HB´½]Áhm0B~!PB·MÁg¹\B„rYB³"-Ág‰B„µÍBµ7 ÁfQ¶B‚­–B±×SÁeâB€†ŸB´8ÛÁdêB‚0õB²üKÁd6<B‚ŒDB²†KÁc‚hBƒžÕB±ðaÁbÎ•B€#ÙB´á»ÁbÁB¬+B²hMÁafîBg-B°°sÁ`³BÜdB·škÁ_ÿGB€éüB³Á_KtBƒoñB²ûÁ^—¡B‚M•B²ÔÁ]ãÍBƒ¢sBµEkÁ]/úB„:ÓB±ÈÝÁ\|'BƒfBµÿ»Á[ÈSBš<B²X Á[€Bƒ`›B²ÃÁZ`­B‚‚©B²JmÁY¬ÙBÌäB±HÁXùBœtB²+'ÁXE3BÂxB´P‘ÁW‘_B„
-ðB´ZåÁVÝŒBƒeÛB¶¾÷ÁV)¹B‚ä™BµÁUuåB€p}B·ÄsÁTÂBB´x¹ÁT?B‚G}B²4ÁSZkB‚‚1B´À ÁR¦˜B„’%B³ ÁQòÅB€N(B³ÁQ>ñB„ÓCB¸+œÁP‹B…XBµ@IÁO×KBƒ|¡B´%ãÁO#wB‚MéB³ËLÁNo¤B‚âSB´-ÁM»ÑBƒŽ€B¶0±ÁMýBÙ	BµnÄÁLT*B„"B´‚‡ÁK VB‚ÄàB´ÛQÁJìƒB„×¡B¶4,ÁJ8°BƒúB²óÁI„ÜB„ûáB´!eÁHÑ	Bƒ~B³n#ÁH6B¡ÿB²w¬ÁGibBƒ5B³[ÁFµBƒnéB°ÑwÁF¼B„„ËB³7ÁEMèB…ŸþB°E·ÁDšBƒHSB´öÑÁCæBBR“B·ÔÁC2nB„œbB·ªÁB~›BƒÕûB³¨ÁAÊÈB‚ã{B³ ÁAôBƒñB³\sÁ@c!B€Ü6BµéØÁ?¯NB€îYB°>Á>ûzBƒÉåB±?ØÁ>G§B~B±P_Á=“ÔBƒðXB³MKÁ<à B‚uñB³ÃÁ<,-Bƒ…	B³¢@Á;xZB‚è1Bµ•Á:Ä†B„z‘B´ÉÁ:³B½B¶ HÁ9\àBÀ}Bµ8‘Á8©B€ÛB³’dÁ7õ9B€{¡Bµ×SÁ7AeBƒL½B¯uÁ6’B‚\pB°1½Á5Ù¿B€|ÌB²ËOÁ5%ëBïhB²½Á4rB‚º»B³7«Á3¾EB{òB±T Á3
-qBqÄB®yaÁ2VžB~PCB®SãÁ1¢ËB{û÷B³«ËÁ0î÷B|—B®çÁ0;$B‘KB°ÑÁ/‡QB~kÐB­æLÁ.Ó}B~uiB¯¦\Á.ªBx™pBª ›Á-k×BzLmB­àÁ,¸BzÛ¯B«ì•Á,0ByÐ_Bª«!Á+P]By·™B©—çÁ*œ‰Bw½ŸB¨š%Á)è¶BuiHBª‹SÁ)4ãBvÈ+Bª8Á(Bt›ÕBªyÁ'Í<BoÅB£l_Á'iBo¬‘B§ðíÁ&e•Bq—÷B °ÙÁ%±ÂBpÿ¥B¥,ëÁ$ýïBké9B¢®[Á$JBo¶[B¡hÅÁ#–HBgÝBŸÖ‡Á"âuBiìB€^Á".¡Bh]cB¡?‰Á!zÎBbStBœI0Á ÆúBbõBš·ÙÁ 'Bc9¥BšÁ_TB`ƒ-B™ì‡Á«€B[óB—Ê<Á÷­B\—B•_kÁCÚBUÐB–û	ÁBVóB’“°ÁÜ3BV¯›B’ÄEÁ(`BX‡B@ÆÁtŒBVûBÓÁÀ¹BMTB‹XÄÁæBO[”B]·ÁYBIÂÀBˆ.•Á¥?BJ©$BŒ÷ÁñlBDÂÕB‡©7Á=˜BD­yB‡ÚÛÁ‰ÅBAB„çûÁÕòB=ÇÇB€ôñÁ"B>Y„B":ÁnKB7ÿYB~¤ ÁºxB9×Bw](Á¤B3þBy®ÃÁRÑB3N7Br'ÁžþB0r°BrÂUÁë*B-±5BmÿdÁ7WB,[GBd¿EÁƒ„B(Bf7ÄÁÏ°B$VhBd^óÁÝB"u%BaŸkÁh
-B#Baš«Á´6B B]Ç-Á cBBXK@Á
-LB¼BOþyÁ	˜¼BµBSñKÁäéBê¯BE×4Á1Bs>BK¬_Á}BB¶qBGF§ÁÉoB¾BFPåÁ›BÉìBC/(ÁaÈBÇB=®áÁ­õBéB;ìqÁú!B
-‘ßB;³èÁFNB‡B6SÁ’{B@ÝB5*4ÁÞ§B6B2Þ³Á*ÔAþo¬B/Á wAùøøB/1Àÿ†[AýmCB,&{Àþ´AùŸìB'…Àü·Aõx%B'‡ÀûOgAõ¬B'ÑàÀùçÀAðøB%X¥Àø€AíÄÀB&ŒöÀ÷sAñz‡B#æGÀõ°ÌAëgìB!X5ÀôI%Aè¹¤BOÀòá~AáûaBiÀñyØAæ€‰B†Àð1Aå§½BËÝÀîªŠAæöB*€ÀíBäAäËeB¾XÀëÛ=Aèg»Bî£Àês–Aæ:kBÎ‘                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    XTENSION= 'BINTABLE'           / binary table extension                         BITPIX  =                    8 / 8-bit bytes                                    NAXIS   =                    2 / 2-dimensional binary table                     NAXIS1  =                   24 / width of table in bytes                        NAXIS2  =                  312 / number of rows in table                        PCOUNT  =                    0 / size of special data area                      GCOUNT  =                    1 / one data group (required keyword)              TFIELDS =                    3 / number of fields in each row                   EXTNAME = 'Chart   '           / name of this binary table extension            FRONTEND= '04.5S   '           / Frontend ID                                    CENTFREQ=             6668.018 / [MHz] Backend centre frequency                 BANDWDTH=                   4. / [MHz] Bandwidth of backend                     TCAL1   =                 14.2 / [K] Cal noise diode value for channel 1        TCALSIG1=                   0. / [K] uncertainty in TCAL1                       TCALFRQ1=                6670. / [Hz] Frequency the calibration applies to      TCALDAT1= '19000101'           / Calibration date                               TCAL2   =                  21. / [K] Cal noise diode value for channel 2        TCALSIG2=                   0. / [K] uncertainty in TCAL2                       TCALFRQ2=                6670. / [Hz] Frequency the calibration applies to      TCALDAT2= '19000101'           / Calibration date                               HZPERK1 =     13322.2541014883 / [Hz/K] Counter calibration                     HZKERR1 =       136.2869904621 / [Hz/K] Counter cal error                       HZPERK2 =      9522.0359701152 / [Hz/K] Counter calibration                     HZKERR2 =     106.080508291026 / [Hz/K] Counter cal error                       TSYS1   =     64.1501374951292 / [K] System temperature                         TSYSERR1=    0.662733187744262 / [K] System temp error                          TSYS2   =     87.6130535972944 / [K] System temperature                         TSYSERR2=    0.984825033093351 / [K] System temp error                          TTYPE1  = 'MJD     '           / label for field                                TFORM1  = '1D      '           / format of field                                TUNIT1  = 'days    '                                                            TTYPE2  = 'Count1  '           / label for field                                TFORM2  = '1D      '           / format of field                                TUNIT2  = 'Hz      '                                                            TTYPE3  = 'Count2  '           / label for field                                TFORM3  = '1D      '           / format of field                                TUNIT3  = 'Hz      '                                                            END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             @í
-Ñ>¼4 A+Ós§æ˜A-*Á˜ˆÜt@í
-Ñ>¾%:@ýÖþ;žâÎA!6Œ;‰`@í
-Ñ>ÀU@ýÕn¤î@ý¹K1¸è@í
-Ñ>Âo@ýÓÝéªùW@ý¸ƒ”¾Š@í
-Ñ>Ãø‰@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ>Åé¤@ýÕn¤î@ý¹K1¸è@í
-Ñ>ÇÚ¾@ýÓÕ-þú@ýºEŽ³F@í
-Ñ>ÉËØ@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ>Ë¼ò@ýÖ6'!èp@ý¹K1¸è@í
-Ñ>Í®@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ>ÏŸ'@ýÕn¤î@ý¹K1¸è@í
-Ñ>ÑA@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ>Ó\@ýÔ¥þ'ó´@ý¸ƒ”¾Š@í
-Ñ>Õrv@ýÓÝéªùW@ý¹K1¸è@í
-Ñ>×c@ýÖ6'!èp@ý¹K1¸è@í
-Ñ>ÙTª@ýÖ6'!èp@ýºEŽ³E@í
-Ñ>ÛEÅ@ýÕn¤î@ýºEŽ³F@í
-Ñ>Ý6ß@ýÕn¤î@ý¹K1¸è@í
-Ñ>ß'ù@ýÖþ;žâÎ@ý¸ƒ”¾Š@í
-Ñ>á@ýÔ¥þ'óµ@ý¸ƒ”¾Š@í
-Ñ>ã
-.@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ>äûH@ýÖþ;žâÎ@ý·»Ä,@í
-Ñ>æìb@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ>èÝ}@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ>êÎ—@ýÖ6'!èp@ýºÛZ­£@í
-Ñ>ì¿±@ýÔ¥þ'óµ@ý¹K1¸è@í
-Ñ>î°Ì@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ>ð¡æ@ýÕn¤î@ý¹K1¸è@í
-Ñ>ò“ @ýÖ6'!èp@ý»£nˆ¨ @í
-Ñ>ô„@ýÒMÀ±œ@ý¹K1¸è@í
-Ñ>öu5@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ>øfO@ýÖ6'!èp@ýºEŽ³F@í
-Ñ>úWi@ýÔ¥þ'ó´@ý¸ƒ”¾Š@í
-Ñ>üH„@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ>þ9ž@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ? *¸@ýÖþ;žâÎ@ý·»Ä,@í
-Ñ?Ó@ýÔ¥þ'óµ@ý¹K1¸è@í
-Ñ?í@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?þ@ýÕn¤î@ý¹K1¸è@í
-Ñ?ï!@ýÓÝéªùW@ýºEŽ³F@í
-Ñ?	à<@ýÖ6'!èp@ý¹K1¸è@í
-Ñ?ÑV@ý×ÆPÝ+@ý·»Ä,@í
-Ñ?Âp@ýÒMÀ±œ@ýºÛZ­£@í
-Ñ?³‹@ýÔ¥þ'óµ@ýºEŽ³F@í
-Ñ?¤¥@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?•¿@ýÖ6'!èp@ý·»Ä,@í
-Ñ?†Ù@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ?wô@ýÖþ;žâÎ@ý¸ƒ”¾Š@í
-Ñ?i@ýÕn¤î@ýºÛZ­£@í
-Ñ?Z(@ýÔ¥þ'ó´@ý¸ƒ”¾Š@í
-Ñ?KC@ýÖ6'!èp@ý¹K1¸è@í
-Ñ?<]@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?!-w@ýÖþ;žâÎ@ýºEŽ³F@í
-Ñ?#‘@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ?%¬@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?' Æ@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ?(ñà@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ?*âû@ýÔ¥þ'óµ@ýºEŽ³F@í
-Ñ?,Ô@ýÖþ;žâÎ@ý¶òóšÉÏ@í
-Ñ?.Å/@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ?0¶J@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ?2§d@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ?4˜~@ýÕn¤î@ýºÛZ­£@í
-Ñ?6‰˜@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?8z³@ýÕn¤î@ýºEŽ³F@í
-Ñ?:kÍ@ýÓÝéªùW@ý·»Ä,@í
-Ñ?<\ç@ýÕn¤î@ý¹K1¸è@í
-Ñ?>N@ý×ÆPÝ+@ý·»Ä,@í
-Ñ?@?@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ?B06@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ?D!P@ýÖ6'!èp@ý¹K1¸è@í
-Ñ?Fk@ýÖþ;žâÎ@ýºEŽ³F@í
-Ñ?H…@ýÖ6'!èp@ýºÛZ­£@í
-Ñ?IôŸ@ý×ÆPÝ+@ý¹K1¸è@í
-Ñ?Kåº@ýÕn¤î@ý¸ƒ”¾Š@í
-Ñ?MÖÔ@ýÔ¥þ'óµ@ý·»Ä,@í
-Ñ?OÇî@ýÔ¥þ'ó´@ý¸ƒ”¾Š@í
-Ñ?Q¹@ý×ÆPÝ+@ý·»Ä,@í
-Ñ?Sª#@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ?U›=@ýÖþ;žâÎ@ý¹K1¸è@í
-Ñ?WŒW@ýÖ6'!èp@ýºÛZ­£@í
-Ñ?Y}r@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ?[nŒ@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ?]_¦@ýÔ¥þ'óµ@ý¹K1¸è@í
-Ñ?_PÀ@ýÖþ;žâÎ@ý¸ƒ”¾Š@í
-Ñ?aAÛ@ýÓÝéªùW@ý¹K1¸è@í
-Ñ?c2õ@ýÖ6'!èp@ý¹K1¸è@í
-Ñ?e$@ýÖ6'!èp@ý¹K1¸è@í
-Ñ?g*@ýÓÕ-þú@ý¸ƒ”¾Š@í
-Ñ?iD@ýÖ6'!èp@ýºEŽ³F@í
-Ñ?j÷^@ýÔ¥þ'ó´@ý¹K1¸è@í
-Ñ?lèx@ýÖ6'!èp@ý¸ƒ”¾Š@í
-Ñ?nÙ“@ýÖþ;žâÎ@ý¸ƒ”¾Š@í
-Ñ?pÊ­A¥æ~ @ý¹K1¸è@í
-Ñ?r»ÇA-Ú‚—ÑIsA"ò`­½iÒ@í
-Ñ?t¬âA16ðE@ŽA1ÙrÖ@í
-Ñ?vüA1Ô-ß8	A1›kC‚4@í
-Ñ?xA1ÍÇ·xÇ%A1œ3#À|’@í
-Ñ?z€1A1ÌDÆ¢A1œqª'ŠÎ@í
-Ñ?|qKA1Ã’+Ø@¾A1žÓ!Š@í
-Ñ?~beA1Ê*X¶Á4A1ŸFôl–b@í
-Ñ?€SA1Ï%ÛS}IA1¦À8W°@í
-Ñ?‚DšA1Ð8÷UŠA1 Œ·­:@í
-Ñ?„5´A1Ð8÷UŠA1ž~ßïœ@í
-Ñ?†&ÎA1ÈØ¶#Ú¶A1£¬g«–°@í
-Ñ?ˆéA1Æ5pþºA1 s(î@í
-Ñ?Š	A1Ó½S±¼/A1£ÞlÊÕH@í
-Ñ?‹úA1ÓLÈ+oZA1¤qêà@í
-Ñ?ë7A1ÒÏ»]RàA1¦&jUp@í
-Ñ?ÜRA1ÉIAª'ŠA1¢sÇ¨O~@í
-Ñ?‘ÍlA1ÖT¹…A1¦\.3S@í
-Ñ?“¾†A1ÖG–GéßA1¬EI
-X¶@í
-Ñ?•¯¡A1ÒÜ<¥"†A1­qgÅÐC@í
-Ñ?— »A1Î+Á·DTA1¡.¦]8¦@í
-Ñ?™‘ÕA1Æ(ï¶>A1—v'ŠÎº@í
-Ñ?›‚ïA1Òª7…ãîA1£	×D@í
-Ñ?t
-A1ÒÜ<¥"†A1©®…,[`@í
-Ñ?Ÿe$A1¿„AíøA1¨Ùïg‘]@í
-Ñ?¡V>A1¿¶F¯,A1­&`ò`@í
-Ñ?£GYA1ÐÂ…•AªA1 AÏW@í
-Ñ?¥8sA1ÃÄ0÷VA1šîue¹@í
-Ñ?§)A1ÓeÊ»¦A1¡G¨ì×ò@í
-Ñ?©¨A1È¿³”;jA1§$B–-°@í
-Ñ?«ÂA1Ò9«ÿ—A1®x©ØÞ@í
-Ñ?¬üÜA1È[©U¾<A1¨Žç¸³z@í
-Ñ?®íöA1ËbøºfA1¯'—3ð@í
-Ñ?°ßA1¿èKÎk'A1ª8BG@í
-Ñ?²Ð+A1Àâej¤A1ªÁ¡X3¢@í
-Ñ?´ÁEA1Ò„³®týA1¥Ií[@í
-Ñ?¶²`A1À3S}I
-A1¨ÿs? N@í
-Ñ?¸£zA1Ë¡!¤A1™Þš¯•@í
-Ñ?º””A1Ìi“žA1™P„Ãu@í
-Ñ?¼…®A1ÊC[F`€A1—*n@í
-Ñ?¾vÉA1Ó3Å›ÐA1¤~¸0Z@í
-Ñ?ÀgãA1ÒÏ»]RàA1:Í:@í
-Ñ?ÂXýA1ÆnnnnA1œû8=vï@í
-Ñ?ÄJA1Åm\\A1œ!0ÝF@í
-Ñ?Æ;2A1Ðƒÿ.3mA1¥ë¢’æ~@í
-Ñ?È,LA1ÄfÁ
-ÂA1©oþÅM$@í
-Ñ?ÊfA1Ì¨>A1¬P¹6š@í
-Ñ?ÌA1ÊåëëëìA1«}4^Y@í
-Ñ?Íÿ›A1É{FÉf"A1¦À8W°@í
-Ñ?ÏðµA1Èš/¼ÌyA1 ±™,@í
-Ñ?ÑáÐA1Ô-ß8	A1•ÿ yJ@í
-Ñ?ÓÒêA1ÎµOÍ0tA1£zbŒX@í
-Ñ?ÕÄA1Î¿'¥A1‘[zj¾@í
-Ñ?×µA1Á-m‚ A1žr^§Ì^@í
-Ñ?Ù¦9A1É
-»CMA1œÕ´fþ@í
-Ñ?Û—SA1Æs÷eøA1§ºQóév@í
-Ñ?ÝˆmA1ËbøºfA1”
-Íè`@í
-Ñ?ßyˆA1Èþ9ûI¨A1œ¡=ú@í
-Ñ?áj¢A1ÓÃ0ÃA1 s(î@í
-Ñ?ã[¼A1ÄA=Å›ÐA1¥b|ú^@í
-Ñ?åLÖA1Ò ©o÷ÎA1¢AÂ‰ç@í
-Ñ?ç=ñA1Ça¹…FA1ÜOJ˜@í
-Ñ?é/A1ÕtüÓA1¥‡˜TiO@í
-Ñ?ë %A1ËoÃZÞA1¨æp¯a@í
-Ñ?í@A1É¹Í0t`A1©ô†Ïô@í
-Ñ?ïZA1Á„ö/ˆA1¨Cà	Õ—@í
-Ñ?ðótA1Èþ9ûI¨A1§­Ð¬Ð@í
-Ñ?òäA1Í»60÷A1Ÿ·òã7@í
-Ñ?ôÕ©A1Òx2f¥WA1˜W>—hc@í
-Ñ?öÆÃA1Õ'øÔAùA1¡G¨ì×ò@í
-Ñ?ø·ÝA1ÈÌ4ÜA1¤¦GÏ¦@í
-Ñ?ú¨øA1ÂfÉ2A1¬wN)—N@í
-Ñ?üšA1ÔõóµaA1¬Cë @í
-Ñ?þ‹,A1ÉÒÏÀ«A1³(}—·@í
-Ñ@ |GA1Æ²}Ì*4A1¦³·àÜ@í
-Ñ@maA1Â„&©A1 f‘à>I@í
-Ñ@^{A1Æí&žÈA1©Vü5­Ø@í
-Ñ@O•A1ÆØ£™&A1£XMÚê@í
-Ñ@@°A1É<ÀbWåA1 Œ·­:@í
-Ñ@
-1ÊA1Ï%ÛS}IA1¢€Hð$@í
-Ñ@"äA1Å;WaÔÅA1¦Ù:çOÍ@í
-Ñ@ÿA1Î8BÿúA1¯É¥<¿\@í
-Ñ@A1ÊÙj¤FA1¬©SHÕæ@í
-Ñ@ö3A1Æ5pþºA1©Ô	ÊR@í
-Ñ@çMA1ÐÏÝPA1³A€'V\@í
-Ñ@ØhA1Ìæ l-|A1¯'—3ð@í
-Ñ@É‚A1Ì]VA[A1¯3•ß–@í
-Ñ@ºœA1Íù¼˜¼A1­ Ü?ƒn@í
-Ñ@«·A1Í®´é'ÙA1ªµ cü@í
-Ñ@œÑA1Ë0óšÉÏA1žeÝ_ü¹@í
-Ñ@ëA1Å"TÒ5yA1 f‘à>H@í
-Ñ@!A1ÓÃ0ÃA1¬Cë @í
-Ñ@#p A1ÙÝýV'A1­?b¦‘¬@í
-Ñ@%a:A1ÍÇ·xÇ%A1±4J_E&@í
-Ñ@'RTA1Ì‹ï3A1šúƒ½5_@í
-Ñ@)CoA1ÎƒJ­ñÝA1 Œ·­:@í
-Ñ@+4‰A1ÅŸa QôA1«È<<<<@í
-Ñ@-%£A1×ðÁÑ}æA1¥ø#Ú¶$@í
-Ñ@/¾A1ÍÇ·xÇ%A1¬Î× D×@í
-Ñ@1ØA1Æs÷e÷A1£“e÷e@í
-Ñ@2øòA1ÄüÐúÆˆA1 ãž®ZÃ@í
-Ñ@4êA1Ê×nñŽA1©$÷o@@í
-Ñ@6Û'A1ÓÉÔù‹ÕA1¦§²%@í
-Ñ@8ÌAA1Ê\]ÕÿÌA1ÏÎ@ò@í
-Ñ@:½[A1Êþî{‹8A1ÏÎ@ò@í
-Ñ@<®vA1Æí&žÈA1•us
-*@í
-Ñ@>ŸA1ÁÃ|w=ÆA1«%«–°Ð@í
-Ñ@@ªA1Á„ö/ˆA1­áóL@í
-Ñ@BÄA1Ï W|XA1ž3Ø@¾!@í
-Ñ@DrßA1Â±Ë§A1§0ÃÝýV@í
-Ñ@FcùA1ÇÅ™øuA1¨PaQ¥=@í
-Ñ@HUA1»ód·­A1¦Ì¹Ÿ€'@í
-Ñ@JF.A1Í‰1¸èA1Ì“ñ@í
-Ñ@L7HA1»¨\fÙÊA1ªÎ" G@í
-Ñ@N(bA1ÃG$)bÛA1¬Î× D×@í
-Ñ@P|A1Åm\\A1xE“j@í
-Ñ@R
-—A1ÀPí©¾A1¡y®‰@í
-Ñ@Sû±A1É
-»CMA1©‰Tìo@í
-Ñ@UìËA1Ã«.gà
-A1š>ðˆ
-§@í
-Ñ@WÝæA1ÅGØ©¤kA1¥¹s§æ@í
-Ñ@YÏ A1ÆZôÕ|¬A1¥Îz@í
-Ñ@[ÀA/°·¾+¾A/4ð5È@í
-Ñ@]±4A-Í¶HRÅ¶A-.Üþß@í
-Ñ@_¢OA-Ø\_y˜òA-,çÐàŒõ@í
-Ñ@a“iA-Ö.ÐÆSA-14Aíø@í
-Ñ@c„ƒA-Þ„ ÑÌ“A--¯å]‡S@í
-Ñ@eužA-ÜÍ™Z©A-'¡F”òý@í
-Ñ@gf¸A-Ùˆ~5~A-$²ùÀH@í
-Ñ@iWÒA-É´ßRB–A-IK¾p@í
-Ñ@kHíA-Éi×£d³A-]Ð¬Ð@í
-Ñ@m:A-Âz!Î6´A-4ÆSc@í
-Ñ@o+!A-à)ËÁNA-1? N¬@í
-Ñ@q;A-Óöì:˜£A-"¥Ãø6è@í
-Ñ@sVA-Û1©¾¤…A-=8|‘wX@í
-Ñ@tþpA-Âz!Î6´A-"¥Ãø6è@í
-Ñ@vïŠA-ÍÏJâeA--ÕÿË@í
-Ñ@xà¥A-Çò±9DA--ÕÿËŒ@í
-Ñ@zÑ¿A-ÄURw	RA-&\%IÜ%@í
-Ñ@|ÂÙA-ÁËàÛ¢A-<]ÕÿË@í
-Ñ@~³óA-À·óµbA-<%`eŸ@í
-Ñ@€¥A-É›ÜÂ£JA-@P¹6š@í
-Ñ@‚–(A-Æß•7A-I
-²sÂ @í
-Ñ@„‡BA-Çu¤jòÉA-e60ø@í
-Ñ@†x]A-ß—ý¤ÔA-<ph|ú@í
-Ñ@ˆiwA-ÕÒãkAA-<»oÃZÝ@í
-Ñ@ŠZ‘A-ß3¿'¥A-:Ç<Šèó@í
-Ñ@ŒK«A-Ì¼.¶ŒÁA-3AwWÿ.@í
-Ñ@Ž<ÆA-»ŠkùµA-7Ä@í
-Ñ@-àA-Ðr1þA-7tåwÀå@í
-Ñ@’úA-Öš1`eŸA-ë'¥L@í
-Ñ@”A-Éi×£d³A-5Ë¹î,Þ@í
-Ñ@–/A-¿rÒiì‰A-3ñ%d@í
-Ñ@—òIA-ËwkuèA-%”ÌáÈ@í
-Ñ@™ãdA-Ä‡W–GêA-_9¬œð@í
-Ñ@›Ô~A-ÓÕ-þúA-'ˆDS²@í
-Ñ@Å˜A-×>.‚A-$5ìò+¤@í
-Ñ@Ÿ¶²A-Öh,A'A-$™÷0¨Ò@í
-Ñ@¡§ÍA-ÕÒãkAA-pì×ò@í
-Ñ@£˜çA-ÇÀ¬Ð¬A-%ß{¿ª@í
-Ñ@¥ŠA-Ø*ZZZZA-3r8À—@í
-Ñ@§{A-ÌÉ1¯A-5ý¿kv@í
-Ñ@©l6A-Á5 ƒÜA-3ŒÝ@í
-Ñ@«]PA-ÜÀË>.A-*¨•ù=(@í
-Ñ@­NjA-ÎÉd~÷A-,µËÁN^@í
-Ñ@¯?…A-ÜÍ™Z©A-3¾„&©@í
-Ñ@±0ŸA-Ð½—·áA-2Xœ‡¢@í
-Ñ@³!¹A-Óyßl|(A-2«gúCh@í
-Ñ@µÔA-à)ËÁNA-0·4ÁÑ~@í
-Ñ@·îA-ÆÆ’}—·A-0·4ÁÑ~@í
-Ñ@¸õA-Ãt;jo©A-rUØu1@í
-Ñ@ºæ"A-ËwkuéA-5ä¼}Ì*@í
-Ñ@¼×=A-Ã=úõA-*Á˜ˆÜt@í
-Ñ@¾ÈWA-ÙVyÑçA-.üj ü@í
-Ñ@À¹qA-ÐïœÖNxA-*“iÜ@í
-Ñ@ÂªŒA-Ö$’I$A-0l-ó›@í
-Ñ@Ä›¦A-Ä‡W–GêA-#¸à$)@í
-Ñ@ÆŒÀA-Ûc®ÝãA-*ó¨@í
-Ñ@È}ÚA-â!_“Ò„A-/½%˜ˆ@í
-Ñ@ÊnõA-Öš1`eŸA-&À/ˆYT@í
-Ñ@Ì`A-Í6ej¤A-2Äj‰â´@í
-Ñ@ÎQ)A-ÇÀ¬Ð¬A-&C"º<Ú@í
-Ñ@ÐBDA-Ý¢éÅ2êA-+‰­ÖÒ@í
-Ñ@Ò3^A-Î~\ÏÀA-)|w=Åœ@í
-Ñ@Ô$xA-ËwkuéA-½]‡S@í
-Ñ@Ö’A-Û•³ý!´A-CÄ((((@í
-Ñ@Ø­A-×>.‚A-)ù„â@í
-Ñ@Ù÷ÇA-ÎP£™A- f‰ç@í
-Ñ@ÛèáA-Ä Z%ç6A--–âÍè@í
-Ñ@ÝÙüA-É‚Ú3ÿA-ÄïMWÊ@í
-Ñ@ßËA-Ïl-{ÚA-,¼c’˜@í
-Ñ@á¼0A-½eœ¡ÛTA-1? N¬@í
-Ñ@ã­KA-ÔAóév†A-BÝP@í
-Ñ@åžeA-ÐÖšF¯,A-$gòj;@í
-Ñ@çA-Ó«ä‹ºÀA-3Zyçžz@í
-Ñ@é€™A-Ñé¶r‡mA-!’§Ì^¨@í
-Ñ@ëq´A-ÀÐöD¢­A-0…/¢’æ@í
-Ñ@íbÎA-Ä‡W–GêA-$äþß†¶@í
-Ñ@ïSèA-Ù=v†2›A-2.[,&í@í
-Ñ@ñEA-Â¹…A-<>bõ>c@í
-Ñ@ó6A-È³È®A-.ïœ‚@í
-Ñ@õ'7A-Ç\¡ÛS}A-%0Žd™@í
-Ñ@÷QA-Ï-n½&A-1ÊPí©¾@í
-Ñ@ù	lA-Ã[8ÚÐ]A-1ãS}I
-@í
-Ñ@úú†A-Â¹…A- ã•ß–@í
-Ñ@üë A-ÊJî¯þ\A-)1oŽç¸@í
-Ñ@þÜ»A-Ç\¡ÛS}A-/‹Yñ@í
-ÑA ÍÕA-Ò»‘ÆA-°'¿AÞ@í
-ÑA¾ïA-Ð½—·àA-'7777@í
-ÑA°	A-¿rÒiì‰A-e cû@í
-ÑA¡$A-®ð!™ÃA-¨ØZ÷´@í
-ÑA’>A-Í„C3‡A-6¬ÐúÆˆ@í
-ÑA
-ƒXA-¼R€vA-ÕËXh@í
-ÑAtsA-ÏFqLºqA-,jÄpz@í
-ÑAeA-¬×T·üA-íù¦Œ@í
-ÑAV§A-ÇCŸK´1A-é|BÊ¡@í
-ÑAGÂA-ËwkuèA-#¸à$)@í
-ÑA8ÜA-Ê1ì _A-/ï D× @í
-ÑA)öA-Ö6'!èpA-0"Ôvl@í
-ÑAA-È$¶XMÚA-$þo&                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                

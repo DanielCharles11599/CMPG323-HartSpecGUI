@@ -1,0 +1,3 @@
+SYNTHETIC DEMONSTRATION DATA ONLY
+
+All observation values in this folder were fabricated for HartSpecGUI deployment testing. They are not real HartRAO observations and must not be used for scientific conclusions. FITS extension/table layout and required field names were retained from a structural example.

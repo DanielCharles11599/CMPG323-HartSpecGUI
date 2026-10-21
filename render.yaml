@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: hartspec-gui
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: FITS_ARCHIVE_PATH
+        value: /opt/hartspec/data/fits
+      - key: SESSIONS_PATH
+        value: /tmp/hartspec-sessions

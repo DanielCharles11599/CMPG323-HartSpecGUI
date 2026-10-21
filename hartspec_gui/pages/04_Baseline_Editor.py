@@ -140,7 +140,10 @@ def _dash_url(port: int, session_id: str, revision: str) -> str:
     it, Streamlit can reuse the same iframe URL and the Dash app can keep an
     old/empty hydrated state even though the bridge JSON has been refreshed.
     """
-    base = os.environ.get("DASH_BRIDGE_URL", f"http://127.0.0.1:{port}").rstrip("/")
+    base = os.environ.get("DASH_BRIDGE_URL", "").rstrip("/")
+    if not base:
+        public_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+        base = f"{public_url}/baseline" if public_url else f"http://127.0.0.1:{port}"
     query = urlencode(
         {
             "session_id": session_id,

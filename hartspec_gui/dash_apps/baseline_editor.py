@@ -334,7 +334,18 @@ def _order_dropdown(component_id: str) -> dcc.Dropdown:
 
 def create_app() -> Dash:
     """Create the single Dash application used for all Streamlit sessions."""
-    app = Dash(__name__, suppress_callback_exceptions=True, title="HARTSPEC Baseline Editor")
+    dash_prefix = os.environ.get("HARTSPEC_DASH_PREFIX", "/").strip() or "/"
+    if not dash_prefix.startswith("/"):
+        dash_prefix = "/" + dash_prefix
+    if not dash_prefix.endswith("/"):
+        dash_prefix += "/"
+    app = Dash(
+        __name__,
+        suppress_callback_exceptions=True,
+        title="HARTSPEC Baseline Editor",
+        requests_pathname_prefix=dash_prefix,
+        routes_pathname_prefix="/",
+    )
 
     app.layout = html.Div(
         id="root",
