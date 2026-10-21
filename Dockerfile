@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY clc ./clc
 COPY hartspec_gui ./hartspec_gui
+COPY data/fits ./data/fits
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
