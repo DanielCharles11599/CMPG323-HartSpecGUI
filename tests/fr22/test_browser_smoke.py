@@ -68,3 +68,34 @@ def test_dash_document_local_scaling_and_input_names(page):
         .observe(document.body, {attributes: true, attributeFilter: ['style']})''')
     page.wait_for_timeout(150)
     assert page.evaluate("window.styleMutations") == 0
+
+
+def test_region_dropdown_tab_and_shift_tab_escape_react_focus_trap(page):
+    """Intercept only Tab on the region dropdown; preserve regular keyboard focus order."""
+    script = (APP / "dash_apps/assets/accessibility.js").read_text(encoding="utf-8")
+    page.set_content('''
+      <div id="root" style="--hs-root-size:16px; --hs-bg-primary:#ffffff">
+        <a class="hs-skip-link" href="#region-controls">Skip chart</a>
+        <div id="spectrum-graph" tabindex="0">Spectrum</div>
+        <div id="region-controls">
+          <label for="region-choice-input">Region to edit</label>
+          <div id="region-choice" class="Select"><input id="region-choice-input"></div>
+          <input id="region-start" aria-label="Start velocity">
+          <input id="region-end" aria-label="End velocity">
+        </div>
+      </div>''')
+    # Mimic a component consuming Tab at the React bubbling phase.
+    page.evaluate('''document.getElementById('region-choice').addEventListener('keydown',
+      function (event) { if (event.key === 'Tab') { event.preventDefault(); } });''')
+    page.add_script_tag(content=script)
+    region = page.locator("#region-choice input")
+    region.focus()
+    page.keyboard.press("Tab")
+    assert page.locator("#region-start").evaluate("e => document.activeElement === e")
+    region.focus()
+    page.keyboard.press("Shift+Tab")
+    assert page.locator("#spectrum-graph").evaluate("e => document.activeElement === e")
+    # The script must not interfere with Tab on numeric inputs.
+    page.locator("#region-start").focus()
+    page.keyboard.press("Tab")
+    assert page.locator("#region-end").evaluate("e => document.activeElement === e")

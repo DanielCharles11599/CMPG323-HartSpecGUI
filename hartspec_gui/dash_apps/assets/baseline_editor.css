@@ -140,7 +140,23 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 .hs-block-panel .dash-spreadsheet-inner { max-height: none !important; overflow-y: visible !important; }
 .hs-block-panel .hs-region-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 9px 10px; margin: 0; height: auto; min-height: 56px; border: 0; border-radius: 0; }
 .hs-region-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 0.625rem; color: var(--hs-text-muted); }
-.hs-region-controls input { width: 116px; height: 29px; padding: 4px 7px; border-radius: 6px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); }
+.hs-region-controls input, .hs-region-controls select {
+  width: 116px; height: 29px; padding: 4px 7px; border-radius: 6px;
+  background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default);
+  color: var(--hs-text-body);
+}
+.hs-region-controls #region-choice { width: 18rem; min-width: 14rem; font-size: .875rem; }
+.hs-region-controls #region-choice .Select-control {
+  min-height: 32px;
+  height: auto;
+  border-radius: 6px;
+  background: var(--hs-bg-panel);
+  border: 1px solid var(--hs-border-default);
+  color: var(--hs-text-body);
+}
+.hs-region-controls #region-choice .Select-value-label,
+.hs-region-controls #region-choice .Select-placeholder { font-size: .875rem; }
+.hs-region-controls #region-choice .Select-input { height: 30px; }
 .hs-region-controls button { min-height: 29px; border-radius: 6px; padding: 0 9px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); cursor: pointer; }
 .hs-region-controls button:first-of-type { background: var(--hs-accent); color: white; border-color: var(--hs-accent); }
 .hs-region-controls .hs-validation { margin-left: 0; max-width: none; white-space: normal; }
@@ -165,6 +181,18 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 .hs-dash-root input:is([type="radio"], [type="checkbox"]):focus-visible {
   outline: none !important; box-shadow: none !important;
 }
+/* FR-22: DataTable radios are genuine tab stops. Never hide their outline
+   without another visible indicator: the table does not wrap them in labels. */
+.hs-dash-root #block-table input[type="radio"]:focus-visible,
+.hs-dash-root #block-table input[type="radio"]:focus {
+  outline: 2px solid var(--hs-focus-ring, var(--hs-text-body)) !important;
+  outline-offset: 3px !important;
+  box-shadow: none !important;
+}
+.hs-dash-root #selection-mode label:focus-within {
+  outline: 2px solid var(--hs-focus-ring, var(--hs-text-body)) !important;
+  outline-offset: 2px !important;
+}
 .hs-dash-root .Select-input input {
   background: transparent !important; border: 0 !important;
   color: var(--hs-text-body) !important; caret-color: var(--hs-text-body);
@@ -179,7 +207,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-s
 .hs-controls-row { height: auto; flex-wrap: wrap; min-height: 3rem; }
 .hs-validation, .hs-selection-feedback { max-width: 100%; overflow: visible; white-space: normal; }
 .hs-region-controls input { width: 8rem; }
-.hs-region-controls :is(input, button), .hs-keyboard-tools :is(input, button), .Select-control {
+.hs-region-controls :is(input, select, button), .hs-keyboard-tools :is(input, button), .Select-control {
   border: 1px solid var(--hs-control-border) !important;
   background: var(--hs-bg-panel); color: var(--hs-text-body);
 }
