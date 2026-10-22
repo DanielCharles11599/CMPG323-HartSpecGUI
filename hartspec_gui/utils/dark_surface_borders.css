@@ -1,0 +1,24 @@
+/* Dark-mode decorative outlines only, explicitly requested by the user.
+   Loaded by inject_base_css only in dark mode. Reuse the header token rather
+   than recolouring border-default/subtle: those also feed axes and cell rules.
+   border-color alone preserves width, radius, layout, fills and border: none.
+   TODO: confirm against design — user-approved override of the original pale outlines. */
+.stApp [data-testid="stVerticalBlockBorderWrapper"],
+.stApp [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"],
+.stApp .hs-panel,
+.stApp .hs-accessible-table,
+.stApp .hs-export-review-table,
+.stApp [data-testid="stMarkdownContainer"] div:has(> table),
+.stApp [data-testid="stDataFrame"],
+.stApp [data-testid="stDataFrame"] .glideDataEditor,
+.stApp [data-testid="stTable"] {
+  border-color: var(--hs-table-header-bg, #111827) !important;
+}
+/* Page 08 loads its own CSS after the global CSS. Match its precise selectors
+   with one extra :root so its later border shorthand cannot restore pale edges.
+   The native, unbordered wrappers must not acquire a new outline. */
+:root .stApp [data-testid="stVerticalBlockBorderWrapper"]:has(.hs-export-section-title):not(
+  :has([data-testid="stVerticalBlockBorderWrapper"] .hs-export-section-title)),
+:root .stApp [data-testid="stVerticalBlock"]:has(> .element-container .hs-export-history-marker) {
+  border-color: var(--hs-table-header-bg, #111827) !important;
+}

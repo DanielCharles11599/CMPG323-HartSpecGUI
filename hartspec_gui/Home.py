@@ -1,1 +1,32 @@
+"""HARTSPEC GUI -- multipage entry point.
 
+Streamlit's classic ``pages/`` auto-discovery (the mechanism this project
+uses, since ``st.navigation``/``st.Page`` weren't available yet as of the
+pinned Streamlit 1.32.0) requires a root script to launch. Run this file:
+
+    streamlit run Home.py
+
+It doesn't render its own UI -- it immediately hands off to Stage 01 so
+users land on Stage 01 unless this tab has an automatic checkpoint to recover.
+
+Loads a local .env file (if present) before anything else, so env-var
+overrides like FITS_ARCHIVE_PATH work without setting them in the
+shell every session. See .env.example. utils/fits_ingest.py also loads
+.env at its own import time, independently -- this call here is defense in
+depth for the `streamlit run Home.py` entry point specifically, not the
+only place it happens.
+"""
+
+from __future__ import annotations
+
+import streamlit as st
+
+from utils.env import load_dotenv_if_present
+
+load_dotenv_if_present()
+
+from utils import session_store  # noqa: E402 — load .env before importing session code
+
+st.set_page_config(page_title="HARTSPEC — Session", layout="wide")
+session_store.init_session_state()
+st.switch_page("pages/01_Source_Browser.py")

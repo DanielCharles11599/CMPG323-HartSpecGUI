@@ -327,7 +327,7 @@ def Best_PSS(data1, data2, t):
     return AV_PS_LCP, AV_PS_RCP
     
            
-def PWR(t, longi, lati, temp, humid, Freq):
+def PWR(t, longi, lati, temp, humid, Freq, return_optical_depth=False):
     """
     The affect of attenuation in the atmosphere at higher frequencies is a very important issue to obtain
     accurate measurements. Here the position of the Telescope on Earth together with the observation time 
@@ -481,6 +481,8 @@ def PWR(t, longi, lati, temp, humid, Freq):
     tbatmos222 = 260.0*(1 - math.exp(-tau222))
     nd_lcp = 1.00
     nd_rcp = 1.00
-    return nd_lcp, nd_rcp, atcor222, SRC_deg, SRC2_deg, precip_WV   
+    if return_optical_depth:
+        return nd_lcp, nd_rcp, atcor222, SRC_deg, SRC2_deg, precip_WV, tau222
+    return nd_lcp, nd_rcp, atcor222, SRC_deg, SRC2_deg, precip_WV
     
     

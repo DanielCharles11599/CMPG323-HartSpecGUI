@@ -1,0 +1,242 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--hs-bg-primary, #FFFFFF); }
+body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+.hs-dash-root {
+  width: 100%;
+  min-height: 724px;
+  background: var(--hs-bg-primary);
+  color: var(--hs-text-body);
+  overflow: hidden;
+}
+
+.hs-dash-panel {
+  background: var(--hs-bg-panel);
+  border: 1px solid var(--hs-surface-border, var(--hs-border-default));
+  border-radius: 8px;
+}
+
+.hs-canvas-panel {
+  height: 320px;
+  padding: 9px 12px 10px;
+  margin-bottom: 16px;
+}
+
+.hs-panel-title {
+  height: 18px;
+  font-size: 0.65625rem;
+  font-weight: 600;
+  color: var(--hs-text-body);
+}
+
+.hs-block-panel {
+  height: 88px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.hs-grid-label {
+  height: 20px;
+  font-size: 0.65625rem;
+  font-weight: 600;
+  color: var(--hs-text-body);
+}
+
+.hs-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, 100px);
+  gap: 12px;
+}
+
+.hs-fit-cell {
+  height: 100px;
+  background: var(--hs-bg-panel);
+  border: 1px solid var(--hs-surface-border, var(--hs-border-default));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hs-controls-row {
+  height: 48px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--hs-bg-panel);
+  border: 1px solid var(--hs-surface-border, var(--hs-border-default));
+  border-radius: 8px;
+}
+
+.hs-controls-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--hs-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.hs-order-label {
+  font-size: 0.59375rem;
+  font-weight: 600;
+  color: var(--hs-text-muted);
+}
+
+.hs-radio label {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 30px;
+  margin-right: 6px !important;
+  padding: 0 8px;
+  border: 1px solid var(--hs-border-default);
+  border-radius: 16px;
+  color: var(--hs-text-body);
+  font-size: 0.6875rem;
+  background: var(--hs-bg-panel);
+}
+.hs-radio input { margin-right: 5px; accent-color: var(--hs-accent); }
+
+.hs-fit-button {
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  background: var(--hs-accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hs-fit-button:disabled { opacity: .55; cursor: default; }
+.hs-validation {
+  margin-left: auto;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.625rem;
+  color: var(--hs-text-muted);
+  white-space: nowrap;
+}
+.hs-validation-error { color: var(--hs-error-text); }
+.hs-selection-feedback { font-size: 0.625rem; font-weight: 600; color: var(--hs-text-body); white-space: nowrap; }
+
+.Select-control,
+.Select-menu-outer,
+.Select-menu {
+  background: var(--hs-bg-panel) !important;
+  border-color: var(--hs-border-default) !important;
+  color: var(--hs-text-body) !important;
+}
+.Select-value-label, .Select-placeholder { color: var(--hs-text-body) !important; }
+
+/* PM revision: numeric flat-baseline selection toolbar and editable region list. */
+.hs-block-panel { height: auto; min-height: 152px; overflow: visible; margin-bottom: 16px; }
+/* The table grows with its rows and naturally pushes the polynomial grid down. */
+.hs-block-panel .dash-table-container,
+.hs-block-panel .dash-spreadsheet-container,
+.hs-block-panel .dash-spreadsheet-inner { max-height: none !important; overflow-y: visible !important; }
+.hs-block-panel .hs-region-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 9px 10px; margin: 0; height: auto; min-height: 56px; border: 0; border-radius: 0; }
+.hs-region-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 0.625rem; color: var(--hs-text-muted); }
+.hs-region-controls input, .hs-region-controls select {
+  width: 116px; height: 29px; padding: 4px 7px; border-radius: 6px;
+  background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default);
+  color: var(--hs-text-body);
+}
+.hs-region-controls #region-choice { width: 18rem; min-width: 14rem; font-size: .875rem; }
+.hs-region-controls #region-choice .Select-control {
+  min-height: 32px;
+  height: auto;
+  border-radius: 6px;
+  background: var(--hs-bg-panel);
+  border: 1px solid var(--hs-border-default);
+  color: var(--hs-text-body);
+}
+.hs-region-controls #region-choice .Select-value-label,
+.hs-region-controls #region-choice .Select-placeholder { font-size: .875rem; }
+.hs-region-controls #region-choice .Select-input { height: 30px; }
+.hs-region-controls button { min-height: 29px; border-radius: 6px; padding: 0 9px; background: var(--hs-bg-panel); border: 1px solid var(--hs-border-default); color: var(--hs-text-body); cursor: pointer; }
+.hs-region-controls button:first-of-type { background: var(--hs-accent); color: white; border-color: var(--hs-accent); }
+.hs-region-controls .hs-validation { margin-left: 0; max-width: none; white-space: normal; }
+.hs-dash-root { min-height: 830px; overflow: visible; }
+
+/* FR-22: enlarge text without clipping controls, errors, rows or fit labels.
+   TODO: confirm against design — see build spec §3: variable-height panels
+   intentionally supersede the mockup's fixed heights when users enlarge text. */
+.hs-dash-root { padding: 8px; }
+.hs-dash-root h2 { margin: 0 0 .5rem; height: auto; }
+.hs-dash-root :is(button, input, select) { font-family: inherit; font-size: .875rem; }
+.hs-dash-root :is(button, input) { min-height: 2rem; height: auto; }
+/* Match the single-control focus treatment used by the surrounding pages. */
+.hs-dash-root :is(a, button, input, select, summary, [tabindex]):focus-visible,
+.hs-dash-root .Select:has(input:focus-visible) .Select-control,
+.hs-dash-root label:has(input:focus-visible) {
+  outline: 2px solid var(--hs-focus-ring, var(--hs-text-body)) !important;
+  outline-offset: 2px !important; box-shadow: none !important;
+}
+.hs-dash-root .Select:has(input:focus-visible) .Select-control { outline-offset: -2px !important; }
+.hs-dash-root .Select :is(input, [tabindex]):focus-visible,
+.hs-dash-root input:is([type="radio"], [type="checkbox"]):focus-visible {
+  outline: none !important; box-shadow: none !important;
+}
+/* FR-22: DataTable radios are genuine tab stops. Never hide their outline
+   without another visible indicator: the table does not wrap them in labels. */
+.hs-dash-root #block-table input[type="radio"]:focus-visible,
+.hs-dash-root #block-table input[type="radio"]:focus {
+  outline: 2px solid var(--hs-focus-ring, var(--hs-text-body)) !important;
+  outline-offset: 3px !important;
+  box-shadow: none !important;
+}
+.hs-dash-root #selection-mode label:focus-within {
+  outline: 2px solid var(--hs-focus-ring, var(--hs-text-body)) !important;
+  outline-offset: 2px !important;
+}
+.hs-dash-root .Select-input input {
+  background: transparent !important; border: 0 !important;
+  color: var(--hs-text-body) !important; caret-color: var(--hs-text-body);
+}
+.hs-skip-link { position: absolute; left: -10000px; }
+.hs-skip-link:focus { position: relative; left: auto; display: block; padding: .5rem;
+  background: #FFFFFF; color: #000000; }
+.hs-canvas-panel { height: auto; min-height: 320px; }
+.hs-panel-title, .hs-grid-label { height: auto; min-height: 1.25rem; }
+.hs-comparison-grid { grid-template-rows: none; grid-auto-rows: auto; }
+.hs-fit-cell { height: auto; min-height: 100px; overflow: visible; }
+.hs-controls-row { height: auto; flex-wrap: wrap; min-height: 3rem; }
+.hs-validation, .hs-selection-feedback { max-width: 100%; overflow: visible; white-space: normal; }
+.hs-region-controls input { width: 8rem; }
+.hs-region-controls :is(input, select, button), .hs-keyboard-tools :is(input, button), .Select-control {
+  border: 1px solid var(--hs-control-border) !important;
+  background: var(--hs-bg-panel); color: var(--hs-text-body);
+}
+.hs-fit-button, .hs-region-controls button:first-of-type { color: var(--hs-text-on-accent); }
+.hs-keyboard-tools { margin-top: 1rem; padding: 1rem; }
+.hs-keyboard-tools :is(label, input, button) { margin: .35rem; }
+.hs-keyboard-tools label { display: inline-block; }
+.hs-keyboard-tools table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .875rem; }
+.hs-keyboard-tools :is(td, th) { text-align: left; padding: .4rem; border: 1px solid var(--hs-control-border); }
+.hs-keyboard-tools th { background: var(--hs-table-header-bg, #395790);
+  color: var(--hs-table-header-text, #F1F5F9); }
+/* Only standalone header strips: never recolour the canvas, plot or data rows. */
+.hs-dash-root > .hs-panel-title, .hs-dash-root > .hs-grid-label {
+  background: var(--hs-section-header-bg, transparent);
+  color: var(--hs-section-header-text, var(--hs-text-body));
+  padding: var(--hs-section-header-padding, 0);
+  border-radius: 6px 6px 0 0;
+}
+.hs-keyboard-tools summary { cursor: pointer; font-size: .875rem; }
+.hs-dash-root .Select-control { height: auto !important; min-height: 2.25rem; }
+.hs-dash-root .Select-value, .hs-dash-root .Select-placeholder { line-height: 2rem !important; }
+.hs-dash-root .Select-menu-outer { z-index: 1000; }
+.hs-dash-root .dash-spreadsheet td { white-space: normal !important; }
+@media (max-width: 760px) {
+  .hs-comparison-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .hs-comparison-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; }
+}

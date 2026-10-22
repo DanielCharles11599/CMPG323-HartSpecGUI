@@ -11,7 +11,14 @@ venv/
 # Ignore Python cache files
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Ignore temporary system files
 .DS_Store
 Thumbs.db
+
+#Ignore Session files
+hartspec_gui/data/sessions/*.json
+
+data/sessions/
+hartspec_gui/data/sessions/
