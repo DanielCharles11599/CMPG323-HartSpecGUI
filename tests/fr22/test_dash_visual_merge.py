@@ -81,26 +81,41 @@ def test_invalid_view_keeps_previous_limits(limits):
     assert error
 
 
-@pytest.mark.parametrize("event,chosen", [("block-table.data", None), ("block-table.selected_rows", 1)])
-def test_region_selection_clears_after_edit_but_tracks_explicit_row_choice(event, chosen):
+@pytest.mark.parametrize(
+    "event,selected_rows,choice,expected",
+    [
+        ("block-table.data", [], None, None),
+        ("block-table.selected_rows", [1], None, 1),
+        ("region-choice.value", [], 1, 1),
+    ],
+)
+def test_region_selection_syncs_table_and_keyboard_choice(event, selected_rows, choice, expected):
     rows = [{"block": 1, "start": -4.3, "end": -2.7}, {"block": 2, "start": 1.2, "end": 2.9}]
-    context = SimpleNamespace(triggered_id="block-table", triggered_prop_ids={event: "block-table"})
-    functions = extracted("choose_region", ctx=context, region_options=region_options)
-    options, selection = functions["choose_region"](rows, [1])
-    assert options == region_options(rows)
-    assert selection == chosen
+    functions = extracted(
+        "_region_index", "_region_selection",
+        region_options=region_options,
+        selected_region_index=selected_region_index, Any=object,
+    )
+    options, value, checked = functions["_region_selection"](
+        rows, choice, selected_rows, None, {event}
+    )
+    assert [item["value"] for item in options] == [0, 1]
+    assert value == expected
+    assert checked == ([expected] if expected is not None else [])
 
 
 @pytest.mark.parametrize("selection", [None, -1, 2])
 def test_invalid_region_choice_does_not_populate_another_row(selection):
     noop = object()
-    functions = extracted("populate_region_inputs", selected_region_index=selected_region_index, no_update=noop)
+    functions = extracted("_region_index", "populate_region_inputs",
+                          selected_region_index=selected_region_index, no_update=noop, Any=object)
     values = functions["populate_region_inputs"](selection, [{"block": 1, "start": -1.2, "end": 2.3}])
     assert values == (noop, noop)
 
 
 def test_region_choice_preserves_exact_boundaries():
-    functions = extracted("populate_region_inputs", selected_region_index=selected_region_index, no_update=object())
+    functions = extracted("_region_index", "populate_region_inputs",
+                          selected_region_index=selected_region_index, no_update=object(), Any=object)
     rows = [{"block": 1, "start": -1.2, "end": 2.3}]
     assert functions["populate_region_inputs"](0, rows) == (-1.2, 2.3)
 

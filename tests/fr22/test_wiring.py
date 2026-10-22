@@ -60,11 +60,36 @@ def test_shared_helpers_can_be_used_inside_an_existing_expander():
     assert "st.expander(" not in source("utils/accessibility_ui.py")
 
 
-def test_local_js_never_traps_keys_or_accesses_parent_document():
+def test_local_js_keyboard_handling_is_scoped_and_stays_in_iframe():
+    """Dash keyboard navigation must be local, targeted, and have a route out."""
     js = source("dash_apps/assets/accessibility.js")
     assert "MutationObserver" in js and "aria-label" in js
-    for bad in ("parent.document", "top.document", "preventDefault", "keydown", "fetch(", "https://"):
+
+    # The embedded Dash editor must never reach into Streamlit's document
+    # or make network calls to handle keyboard navigation.
+    for bad in ("parent.document", "top.document", "fetch(", "https://"):
         assert bad not in js
+
+    # Tab interception is needed with Dash 2.16's React dropdown, but must
+    # only run when focus is inside the region selector.
+    assert 'if (event.key !== "Tab") return;' in js
+    assert 'target.closest && target.closest("#region-choice")' in js
+    assert 'if (!host) return;' in js
+
+    # The other keyboard handler must operate on the actual table radios,
+    # not globally prevent Tab/arrow keys on unrelated controls.
+    assert 'var table = document.getElementById("block-table");' in js
+    assert 'if (!table) return [];' in js
+    assert 'if (index < 0) return;' in js
+    assert 'target.id === "delete-region" && !event.shiftKey' in js
+    assert 'nextRadioTabStop(radios, index, event.shiftKey)' in js
+    assert 'target.closest("#selection-mode")' in js
+    assert 'if (!destination || !destination.getClientRects().length) return;' in js
+
+    # Keyboard listeners are intentional and are tested behaviourally in
+    # test_page04_tab_boundary.py / test_page04_region_radio_keyboard.py.
+    assert 'document.addEventListener("keydown", regionTabNavigation, true)' in js
+    assert 'document.addEventListener("keydown", editorTableNavigation, true)' in js
 
 
 def test_header_table_has_keyboard_scrolling_and_no_truncated_hover_only_values():

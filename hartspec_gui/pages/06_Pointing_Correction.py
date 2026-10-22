@@ -627,7 +627,7 @@ def main() -> None:
             slots = _render_processed_panels(entry, peak_vel, theme)
             powers = dict(entry["powers"])
             hpbw = hpbw_header
-    
+
     if scan is None:
         powers, hpbw_entered = _render_manual_entry()
         hpbw = hpbw_entered if hpbw_entered > 0 else None

@@ -267,6 +267,48 @@ def _fit_panel_figure(
     return fig
 
 
+def _region_index(value: Any, rows: list[dict[str, Any]] | None) -> int:
+    """Resolve the dropdown value to a valid row index, never a stale row.
+
+    Dash Dropdown values are integers, but numeric strings from older session
+    state are accepted at this UI boundary for backward compatibility.
+    """
+    if isinstance(value, str):
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError("Choose a region in 'Region to edit' first.")
+        value = int(value)
+    return selected_region_index(value, rows)
+
+
+def _region_selection(rows: list[dict[str, Any]] | None, selected: Any, table_selection: Any,
+                      edit_metadata: Any, triggered: set[str]) -> tuple[list[dict[str, Any]], int | None, list[int]]:
+    """Synchronize keyboard selector and table radios, including post-deletion renumbering.
+
+    After a deletion, select the row that takes the deleted row's position, or
+    the preceding row if the last row was deleted. An empty list has no selection.
+    The editing callback communicates the intended selection atomically with
+    its data changes so a highlighted row never represents an unselected region.
+    """
+    if "region-edit-version.data" in triggered and isinstance(edit_metadata, dict):
+        candidate = edit_metadata.get("selected_index")
+    elif "block-table.selected_rows" in triggered:
+        candidate = table_selection[0] if isinstance(table_selection, list) and table_selection else None
+    elif "region-choice.value" in triggered:
+        candidate = selected
+    else:
+        # Preserve the user's active selection when the table is refreshed, but
+        # do not invent one on initial hydration.
+        candidate = selected if selected not in (None, "") else (
+            table_selection[0] if isinstance(table_selection, list) and table_selection else None
+        )
+    try:
+        selected_index = _region_index(candidate, rows)
+    except ValueError:
+        selected_index = None
+    options = region_options(rows)
+    return options, selected_index, ([selected_index] if selected_index is not None else [])
+
+
 def _table() -> dash_table.DataTable:
     """Show committed regions; the labelled selector/buttons provide keyboard editing."""
     return dash_table.DataTable(
@@ -381,8 +423,14 @@ def create_app() -> Dash:
             html.Div(className="hs-dash-panel hs-block-panel", children=[
                 html.Div([
                     html.Label("Region to edit", htmlFor="region-choice"),
-                    dcc.Dropdown(id="region-choice", options=[], value=None, clearable=True,
-                                 placeholder="Choose a region", style={"minWidth": "14rem"}),
+                    # Dash 2.16 html.Select does not expose a value prop. Use a
+                    # real Dash dropdown and handle only its Tab focus boundary
+                    # in accessibility.js, preserving arrow-key choice semantics.
+                    dcc.Dropdown(
+                        id="region-choice", options=[], value=None,
+                        placeholder="Choose a region", clearable=True,
+                        searchable=False, style={"minWidth": "14rem"},
+                    ),
                     html.Label("Start velocity (km/s)", htmlFor="region-start"),
                     dcc.Input(id="region-start", type="number", step=0.1, debounce=True),
                     html.Label("End velocity (km/s)", htmlFor="region-end"),
@@ -482,6 +530,7 @@ def create_app() -> Dash:
     @app.callback(
         Output("block-table", "data", allow_duplicate=True),
         Output("region-error", "children"),
+        Output("region-edit-version", "data"),
         Input("spectrum-graph", "selectedData"),
         Input("add-region", "n_clicks"),
         Input("update-region", "n_clicks"),
@@ -497,59 +546,80 @@ def create_app() -> Dash:
                           rows, region_choice, start_value, end_value, state):
         """Only commit valid line-free selections; preserve old rows on errors."""
         if not state or not (state.get("spectrum") or {}).get("Vlsr"):
-            return no_update, "No corrected spectrum available."
+            return no_update, "No corrected spectrum available.", no_update
         lower, upper = spectrum_velocity_bounds(state["spectrum"]["Vlsr"])
         trigger = ctx.triggered_id
         try:
             if trigger == "spectrum-graph":
                 region = region_from_plotly_selection(selected_data, lower, upper)
                 if region is None:
-                    return no_update, ""
+                    return no_update, "", no_update
                 new_rows = add_region(rows, region.start, region.end, lower, upper)
+                next_index = len(new_rows) - 1
             elif trigger == "add-region":
                 new_rows = add_region(rows, start_value, end_value, lower, upper)
+                next_index = len(new_rows) - 1
             elif trigger in ("update-region", "delete-region"):
                 try:
-                    index = selected_region_index(region_choice, rows)
+                    index = _region_index(region_choice, rows)
                 except ValueError as exc:
                     raise RegionValidationError(str(exc)) from exc
                 if trigger == "update-region":
                     new_rows = update_region(rows, index, start_value, end_value, lower, upper)
+                    next_index = index
                 else:
                     new_rows = delete_region(rows, index, lower, upper)
+                    next_index = min(index, len(new_rows) - 1) if new_rows else None
             else:
-                return no_update, ""
-            return [{**row, "delete": ""} for row in new_rows], ""
+                return no_update, "", no_update
+            # Keep the radio highlight and the real selector value synchronized.
+            # Invalid edits do not touch either the table or its selection.
+            return ([{**row, "delete": ""} for row in new_rows], "",
+                    {"action": trigger, "selected_index": next_index})
         except RegionValidationError as exc:
-            return no_update, str(exc)
+            return no_update, str(exc), no_update
 
     @app.callback(
-        Output("region-choice", "options"), Output("region-choice", "value"),
-        Input("block-table", "data"), Input("block-table", "selected_rows"),
+        Output("region-choice", "options"),
+        Output("region-choice", "value"),
+        Output("block-table", "selected_rows"),
+        Input("block-table", "data"),
+        Input("block-table", "selected_rows"),
+        Input("region-choice", "value"),
+        Input("region-edit-version", "data"),
     )
-    def choose_region(rows, selected_rows):
-        """Row clicks and keyboard selection share the same committed region list.
+    def choose_region(rows, selected_rows, region_choice, edit_metadata):
+        """Make the Dash dropdown and DataTable radio agree on selection.
 
-        Clear selection after any edit/add/delete so a re-numbered next row
-        cannot be accidentally updated or deleted by a second activation.
+        Dash supports these within-one-callback circular updates. A separate
+        sync callback in each direction would introduce an illegal callback cycle.
         """
-        chosen = None
-        if ctx.triggered_id == "block-table" and ctx.triggered_prop_ids.get("block-table.selected_rows"):
-            if selected_rows and 0 <= selected_rows[0] < len(rows or []):
-                chosen = selected_rows[0]
-        return region_options(rows), chosen
+        triggered = set(ctx.triggered_prop_ids)
+        options, selection, radios = _region_selection(
+            rows, region_choice, selected_rows, edit_metadata, triggered,
+        )
+        # Avoid rebuilding dropdown choices for non-table changes; doing so can
+        # interfere with keyboard focus inside React Select.
+        if triggered and "block-table.data" not in triggered:
+            options = no_update
+        if region_choice == selection:
+            selection = no_update
+        if selected_rows == radios:
+            radios = no_update
+        return options, selection, radios
 
     @app.callback(
         Output("region-start", "value"), Output("region-end", "value"),
-        Input("region-choice", "value"), State("block-table", "data"),
+        Input("region-choice", "value"), Input("block-table", "data"),
         prevent_initial_call=True,
     )
     def populate_region_inputs(chosen, rows):
         """Load exact values into labelled fields without relying on table focus."""
         try:
-            row = (rows or [])[selected_region_index(chosen, rows)]
+            row = (rows or [])[_region_index(chosen, rows)]
         except ValueError:
-            return no_update, no_update
+            # An empty editor must not retain stale values from a deleted block.
+            return (None, None) if not rows else (no_update, no_update)
         return row["start"], row["end"]
 
     @app.callback(
